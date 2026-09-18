@@ -251,6 +251,24 @@ class ConfigParserTest {
     }
 
     @Test
+    fun canonicalizesUrlSafeWireGuardKeys() {
+        val urlSafe = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        val yaml = """
+            proxies:
+              - name: WG
+                type: wireguard
+                server: 198.51.100.10
+                port: 51820
+                private-key: $urlSafe
+                peer-public-key: $urlSafe
+                ip: 10.0.0.2
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals(urlSafe, raw.getString("private_key"))
+        assertEquals(urlSafe, raw.getJSONArray("peers").getJSONObject(0).getString("public_key"))
+    }
+    @Test
     fun rejectsInvalidWireGuardPrivateKey() {
         val yaml = """
             proxies:
