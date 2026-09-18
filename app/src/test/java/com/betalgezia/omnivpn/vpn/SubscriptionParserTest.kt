@@ -136,6 +136,13 @@ class SubscriptionParserTest {
         assertEquals("random", utls.getString("fingerprint"))
     }
     @Test
+    fun visionFlowIsDroppedWhenTlsIsExplicitlyDisabled() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=none&flow=xtls-rprx-vision"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("flow"))
+        assertFalse(raw.has("tls"))
+    }
+    @Test
     fun securityNoneOverridesOtherVlessTlsParameters() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=none&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
         val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
