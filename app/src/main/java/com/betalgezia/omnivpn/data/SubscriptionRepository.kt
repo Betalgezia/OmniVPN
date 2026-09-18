@@ -72,7 +72,11 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
                             ?: error("Subscription redirect has no Location header")
                     }
                     else -> {
-                        val errorBody = connection.errorStream?.let { BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() } } ?: ""
+                        val errorBody = connection.errorStream?.let {
+                            BufferedReader(InputStreamReader(it)).use { reader ->
+                                reader.readTextLimited(MAX_ERROR_BODY_CHARS)
+                            }
+                        } ?: ""
                         error("Subscription HTTP $code: ${errorBody.take(300)}")
                     }
                 }
@@ -101,6 +105,18 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
         return out.toString(Charsets.UTF_8.name())
     }
 
+    private const val MAX_ERROR_BODY_CHARS = 64 * 1024
+
+    private fun BufferedReader.readTextLimited(maxChars: Int): String {
+        val out = StringBuilder()
+        val buffer = CharArray(8192)
+        while (out.length < maxChars) {
+            val read = read(buffer, 0, minOf(buffer.size, maxChars - out.length))
+            if (read < 0) break
+            out.append(buffer, 0, read)
+        }
+        return out.toString()
+    }
     private fun validateUrl(value: String) {
         val uri = runCatching { URI(value.trim()) }.getOrElse { error("Invalid subscription URL") }
         require(uri.scheme.equals("https", ignoreCase=true)) { "Subscription URL must use HTTPS" }
