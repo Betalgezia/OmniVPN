@@ -1,4 +1,6 @@
 package com.betalgezia.omnivpn.vpn
+private const val MAX_ERROR_BODY_CHARS = 64 * 1024
+
 
 import android.util.Base64
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair
@@ -150,8 +152,6 @@ class CloudflareWarpClient {
             connection.disconnect()
         }
     }
-
-    private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
     private fun generateKeyPair(): GeneratedKeyPair {
         val generator = X25519KeyPairGenerator().apply { init(X25519KeyGenerationParameters(SecureRandom())) }
