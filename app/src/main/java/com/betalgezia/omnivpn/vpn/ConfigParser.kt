@@ -81,10 +81,12 @@ object ConfigParser {
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
-        copy(raw, canonical, setOf("flow", "packet_encoding", "network", "multiplex", "domain_strategy", "tls", "transport"))
+        copy(raw, canonical, setOf("flow", "packet_encoding", "network", "multiplex", "domain_strategy"))
+        putMapIfPresent(raw, canonical, "tls")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server))
         if (!canonical.has("tls")) buildMihomoTls(raw, server)?.let { canonical.put("tls", it) }
-        buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
+        putMapIfPresent(raw, canonical, "transport")
+        if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.VLESS, server, port, uuid = uuid, raw = canonical.toString())
     }
 
@@ -93,10 +95,12 @@ object ConfigParser {
         val port = int(raw, "server_port", "port") ?: return null
         val password = string(raw, "password") ?: return null
         val canonical = JSONObject().put("type", "trojan").put("server", server).put("server_port", port).put("password", password)
-        copy(raw, canonical, setOf("network", "multiplex", "domain_strategy", "tls", "transport"))
+        copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
+        putMapIfPresent(raw, canonical, "tls")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server))
         if (!canonical.has("tls")) buildMihomoTls(raw, server)?.let { canonical.put("tls", it) }
-        buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
+        putMapIfPresent(raw, canonical, "transport")
+        if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.TROJAN, server, port, password = password, raw = canonical.toString())
     }
 
@@ -108,9 +112,10 @@ object ConfigParser {
         if (password.isNotBlank()) canonical.put("password", password)
         int(raw, "up_mbps", "up")?.let { canonical.put("up_mbps", it) }
         int(raw, "down_mbps", "down")?.let { canonical.put("down_mbps", it) }
-        copy(raw, canonical, setOf("network", "domain_strategy", "obfs", "tls"))
-        val obfs = buildHysteriaObfs(raw)
-        if (obfs != null) canonical.put("obfs", obfs)
+        copy(raw, canonical, setOf("network", "domain_strategy"))
+        putMapIfPresent(raw, canonical, "obfs")
+        if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
+        putMapIfPresent(raw, canonical, "tls")
         if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server))
         return node(name(raw, server, port), Protocol.HYSTERIA2, server, port, password = password, raw = canonical.toString())
     }
@@ -230,6 +235,11 @@ object ConfigParser {
 
     private fun copy(raw: Map<*, *>, target: JSONObject, fields: Set<String>) {
         for (field in fields) raw[field]?.let { value -> target.put(field, toJsonValue(value)) }
+    }
+
+    private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
+        val value = raw[field] as? Map<*, *> ?: return
+        target.put(field, toJsonValue(value))
     }
 
     private fun allowedIps(raw: Map<*, *>): JSONArray {
