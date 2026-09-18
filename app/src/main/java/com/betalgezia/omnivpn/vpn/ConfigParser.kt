@@ -232,11 +232,16 @@ object ConfigParser {
                         ?: listOf("0.0.0.0/0", "::/0")
                 ))
                 .apply {
-                    string(source, "pre_shared_key", "pre-shared-key")
-                        ?.let { put("pre_shared_key", it) }
+                    string(source, "pre_shared_key", "pre-shared-key")?.let {
+                        if (!isWireguardKey32(it)) return@mapNotNull null
+                        put("pre_shared_key", it)
+                    }
                     string(raw, "pre_shared_key", "pre-shared-key")
                         ?.takeIf { !has("pre_shared_key") }
-                        ?.let { put("pre_shared_key", it) }
+                        ?.let {
+                            if (!isWireguardKey32(it)) return@mapNotNull null
+                            put("pre_shared_key", it)
+                        }
                     int(source, "persistent_keepalive_interval", "persistent-keepalive", "keepalive")
                         ?.let { put("persistent_keepalive_interval", it) }
                     int(raw, "persistent_keepalive_interval", "persistent-keepalive", "keepalive")
