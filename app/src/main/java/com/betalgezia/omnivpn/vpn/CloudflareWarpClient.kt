@@ -52,7 +52,14 @@ class CloudflareWarpClient {
             lastError
         )
         val license = licenseKey?.trim().takeUnless { it.isNullOrEmpty() }
-        return@withContext if (license == null) account else applyLicenseAtHost(account, license, registrationHost!!)
+        return@withContext if (license == null) {
+            account
+        } else {
+            runCatching { applyLicenseAtHost(account, license, registrationHost!!) }
+                .getOrElse {
+                    account.copy(license = null, warpPlus = false)
+                }
+        }
     }
 
     internal fun parseRegistration(body: String, privateKey: String, endpoint: String): WarpAccount {
