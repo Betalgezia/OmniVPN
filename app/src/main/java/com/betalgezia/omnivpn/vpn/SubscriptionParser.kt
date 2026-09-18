@@ -76,7 +76,9 @@ object SubscriptionParser {
             .put("server", server)
             .put("server_port", port)
             .put("password", password)
-            .put("tls", tls ?: JSONObject().put("enabled", true).put("server_name", server))
+            .apply {
+                tls?.let { put("tls", it) }
+            }
             .apply {
                 transport?.let {
                     put("transport", it)
@@ -107,6 +109,7 @@ object SubscriptionParser {
 
     private fun buildTls(query: Map<String, String>, server: String, defaultEnabled: Boolean, defaultFingerprint: String): JSONObject? {
         val security = query["security"]?.lowercase()
+        if (security == "none") return null
         val reality = security == "reality" || !query["pbk"].isNullOrBlank() || !query["public-key"].isNullOrBlank()
         val enabled = defaultEnabled || security == "tls" || reality || query["sni"] != null || query["servername"] != null || query["alpn"] != null || query["insecure"] != null || query["allowInsecure"] != null || query["fp"] != null || query["fingerprint"] != null
         if (!enabled) return null
