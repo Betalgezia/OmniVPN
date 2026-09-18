@@ -98,7 +98,9 @@ object SubscriptionParser {
             .put("server", server)
             .put("server_port", port)
             .put("password", password)
-            .put("tls", buildTls(query, server, defaultEnabled = true))
+            .apply {
+                buildTls(query, server, defaultEnabled = true, defaultFingerprint = "")?.let { put("tls", it) }
+            }
             .apply {
                 parseMbps(query["up"])?.let { put("up_mbps", it) }
                 parseMbps(query["down"])?.let { put("down_mbps", it) }
@@ -165,7 +167,6 @@ object SubscriptionParser {
         val type = query["obfs"]?.lowercase()?.takeIf { it == "salamander" || it == "gecko" } ?: return null
         return JSONObject().put("type", type).apply {
             query["obfs-password"]?.let { put("password", it) }
-            query["obfs-password"]?.let { if (type == "gecko") put("password", it) }
         }
     }
 
