@@ -473,7 +473,9 @@ object ConfigParser {
         if (trimmed.contains("://") || trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("proxies:") || trimmed.startsWith("outbounds:") || trimmed.startsWith("endpoints:")) return trimmed
         val compact = trimmed.replace("\\s".toRegex(), "")
         if (compact.length < 16 || compact.any { it !in BASE64_CHARS }) return trimmed
-        val bytes = runCatching { Base64.decode(compact, Base64.DEFAULT or Base64.NO_WRAP) }.getOrElse {\n            runCatching { Base64.decode(compact, Base64.URL_SAFE or Base64.NO_WRAP) }.getOrElse { return trimmed }\n        }
+        val bytes = runCatching { Base64.decode(compact, Base64.DEFAULT or Base64.NO_WRAP) }.getOrElse {
+            runCatching { Base64.decode(compact, Base64.URL_SAFE or Base64.NO_WRAP) }.getOrElse { return trimmed }
+        }
         val decoded = bytes.toString(StandardCharsets.UTF_8)
         return if (decoded.contains("://") || decoded.trimStart().startsWith("{") || decoded.contains("proxies:")) decoded else trimmed
     }
@@ -488,7 +490,17 @@ object ConfigParser {
             else -> null
         }.takeIf { !it.isNullOrEmpty() }
     }
-    private fun normalizeEndpointHost(value: String): String? {\n        val raw = value.trim()\n        if (raw.startsWith("[")) {\n            val close = raw.indexOf(']')\n            return raw.takeIf { close > 1 }?.substring(1, close)\n        }\n        if (raw.count { it == ':' } > 1) return raw\n        return raw.substringBeforeLast(':').takeIf { it.isNotBlank() } ?: raw.takeIf { it.isNotBlank() }\n    }\n\n    private fun endpointPort(value: String, fallback: Int): Int = value.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 } ?: fallback
+    private fun normalizeEndpointHost(value: String): String? {
+        val raw = value.trim()
+        if (raw.startsWith("[")) {
+            val close = raw.indexOf(']')
+            return raw.takeIf { close > 1 }?.substring(1, close)
+        }
+        if (raw.count { it == ':' } > 1) return raw
+        return raw.substringBeforeLast(':').takeIf { it.isNotBlank() } ?: raw.takeIf { it.isNotBlank() }
+    }
+
+    private fun endpointPort(value: String, fallback: Int): Int = value.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 } ?: fallback
     private fun isTrue(value: Any?): Boolean = when (value) { is Boolean -> value; else -> value?.toString()?.lowercase() in setOf("true", "1", "yes") }
     private fun isFalse(value: Any?): Boolean = when (value) { is Boolean -> !value; else -> value?.toString()?.lowercase() in setOf("false", "0", "no") }
     private fun toJsonValue(value: Any?): Any = when (value) { is Map<*, *> -> JSONObject().apply { value.forEach { (k,v) -> if (k != null && v != null) put(k.toString(), toJsonValue(v)) } }; is List<*> -> JSONArray().apply { value.forEach { put(toJsonValue(it)) } }; else -> value ?: JSONObject.NULL }
