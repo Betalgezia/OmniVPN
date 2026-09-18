@@ -39,30 +39,52 @@ The AAR is intentionally not committed to Git. Run the platform-specific fetch s
 
 Implemented:
 
-- `Libbox.setup` during application initialization.
-- `Libbox.checkConfig` before engine startup.
-- `Libbox.newService(config, platform)` lifecycle wrapper.
-- Android `VpnService` foreground service.
-- `PlatformInterface.openTun()` backed by `VpnService.Builder.establish()`.
-- `PlatformInterface.autoDetectInterfaceControl()` using `VpnService.protect()`.
-- Atomic TUN `ParcelFileDescriptor` ownership and cleanup on stop/revoke/destroy.
-- `StateFlow` + typed VPN events.
-- Network-change detection with exponential recovery starting at 5 seconds and capped at 60 seconds.
-- Sing-box configuration builder for VLESS/Trojan/Hysteria2.
-- AmneziaWG emitted as a sing-box `wireguard` endpoint with sanitized peer fields and AWG2 parameters.
-- DNS local + DoH + FakeIP baseline.
-- `VpnController.start(node)` wiring node validation/config generation into the VPN service.
-- URI subscription parser for VLESS/Trojan/Hysteria2, including standard Base64-wrapped URI lists.
-- Cloudflare WARP bootstrap client via `/reg`, optional WARP+ license application and AndroidKeyStore-backed encrypted cache.
+- `Libbox.setup`, `Libbox.checkConfig` and `Libbox.newService(config, platform)`.
+- Android `VpnService` foreground lifecycle with atomic TUN ownership.
+- `VpnService.protect()` for sing-box egress sockets.
+- Typed VPN `StateFlow`/event bus plus guarded start/stop lifecycle.
+- Network-change detection and exponential recovery starting at 5 seconds, capped at 60 seconds.
+- VLESS/Trojan/Hysteria2 configuration generation.
+- AmneziaWG 2.0 as a sing-box `wireguard` endpoint with peer sanitization.
+- Local DNS + DoH + FakeIP with sing-box 1.14 reverse mapping/resolve routing.
+- VLESS/Trojan/Hysteria2 URI import and standard Base64 URI lists.
+- Mihomo/sing-box JSON/YAML import for VLESS, Trojan, Hysteria2 and WireGuard.
+- WireGuard/AmneziaWG `.conf` import with multiple peers and AWG2 parameters.
+- HTTPS-only subscription fetching with bounded redirects/body size and per-source Room replacement.
+- Room-backed node/subscription persistence.
+- Cloudflare WARP bootstrap, optional WARP+ license application and encrypted AndroidKeyStore cache.
+- Minimal functional Compose UI and VPN permission flow.
+- Gradle Wrapper 9.3.0 committed to the repository.
+- GitHub Actions build/test workflow plus Gradle Wrapper integrity validation.
 
-Still to implement:
+## Command-line build
 
-- Mihomo/sing-box JSON/YAML import for VLESS, Trojan, Hysteria2 and WireGuard, with Room-backed node persistence.
-- Subscription URL refresh with HTTPS-only redirects, a 5 MiB response limit and per-subscription node replacement.
-- Room-backed `NodeRepository` and import service.
-- Rich structured TLS/transport model and URI parser coverage.
-- UI and VPN permission flow.
-- Instrumentation and parser/engine tests.
-- Actual device verification against the pinned AAR.
+The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build.
+
+### Windows PowerShell
+
+```powershell
+.scriptsetch-libbox.ps1
+.gradlew.bat testDebugUnitTest assembleDebug
+```
+
+### Linux/macOS
+
+```bash
+./scripts/fetch-libbox.sh
+./gradlew testDebugUnitTest assembleDebug
+```
+
+To only verify the wrapper:
+
+```text
+gradlew --version
+```
+
+The project requires the Android SDK with API 36 installed and a JDK compatible with the checked-in Gradle/Android Gradle Plugin toolchain.
+
+## Verification status
+
+The project has been successfully built locally on Windows with Gradle 9.3.0, AGP 8.13.0 and JDK 25. The additional changes after that local build have not yet been executed in a local build or on a physical Android device, and GitHub Actions has not returned a completed run for them yet.
 
 The core bridge and config builder are intentionally separated: invalid or unsupported node fields are not blindly forwarded into the running sing-box document.
