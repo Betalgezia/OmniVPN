@@ -123,7 +123,7 @@ object SubscriptionParser {
                 ?: defaultFingerprint
             if (fingerprint in VALID_FINGERPRINTS) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
             query["alpn"]?.let { values ->
-                val alpn = values.split(",").map(String::trim).filter(String::isNotBlank)
+                val alpn = values.split(",").map { decodeResidualPercent(it.trim()) }.filter(String::isNotBlank)
                 if (alpn.isNotEmpty()) put("alpn", JSONArray(alpn))
             }
             if (reality) {
@@ -141,7 +141,7 @@ object SubscriptionParser {
     private fun buildTransport(query: Map<String, String>): JSONObject? {
         return when (query["type"]?.lowercase()) {
             "ws", "websocket" -> JSONObject().put("type", "ws").apply {
-                query["path"]?.let { put("path", it) }
+                query["path"]?.let { put("path", decodeResidualPercent(it)) }
                 query["host"]?.let { host -> put("headers", JSONObject().put("Host", host)) }
             }
             "grpc" -> JSONObject().put("type", "grpc").apply {
@@ -149,7 +149,7 @@ object SubscriptionParser {
                 query["service-name"]?.let { put("service_name", it) }
             }
             "httpupgrade", "http-upgrade" -> JSONObject().put("type", "httpupgrade").apply {
-                query["path"]?.let { put("path", it) }
+                query["path"]?.let { put("path", decodeResidualPercent(it)) }
                 query["host"]?.let { put("host", it) }
             }
             "xhttp" -> JSONObject().put("type", "xhttp").apply {
@@ -188,6 +188,19 @@ object SubscriptionParser {
     }.orEmpty()
 
     private fun encodePlus(value: String): String = value.replace("+", "%2B")
+
+    private fun decodeResidualPercent(value: String): String {
+        var current = value
+        repeat(4) {
+            if (!Regex("%[0-9A-Fa-f]{2}").containsMatchIn(current)) return current
+            val next = runCatching {
+                URLDecoder.decode(current.replace("+", "%2B"), StandardCharsets.UTF_8.name())
+            }.getOrNull() ?: return current
+            if (next == current) return current
+            current = next
+        }
+        return current
+    }
 
     private fun fragment(uri: URI, fallback: String): String = decode(uri.rawFragment).takeIf { it.isNotBlank() } ?: fallback
 
