@@ -155,6 +155,7 @@ class CloudflareWarpClient {
             require(port in 1..65535) { "WARP endpoint port is invalid" }
             return
         }
+        require(raw.count { it == ':' } <= 1) { "WARP IPv6 endpoint must use [ipv6]:port" }
         val colon = raw.lastIndexOf(':')
         require(colon > 0 && colon < raw.length - 1) { "WARP endpoint must be host:port" }
         val port = raw.substring(colon + 1).toIntOrNull() ?: error("WARP endpoint port is invalid")
