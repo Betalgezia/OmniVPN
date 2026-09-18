@@ -183,8 +183,8 @@ object SubscriptionParser {
     }
 
     private fun isTlsSecurity(query: Map<String, String>): Boolean = when (query["security"]?.lowercase()) {
-        "none", "reality" -> query["security"]!!.equals("reality", ignoreCase = true)
-        else -> true
+        "tls", "reality" -> true
+        else -> false
     }
 
     private fun isTrue(value: String): Boolean = value.lowercase() in setOf("true", "1", "yes")
