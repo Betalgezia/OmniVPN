@@ -69,8 +69,10 @@ class CloudflareWarpClient {
         val root = JSONObject(body)
         val config = root.optJSONObject("config") ?: error("Cloudflare WARP response has no config")
         val peer = config.optJSONArray("peers")?.optJSONObject(0) ?: error("Cloudflare WARP response has no peer")
-        val peerPublicKey = peer.optString("public_key")
-        require(peerPublicKey.isNotBlank()) { "Cloudflare WARP peer public key is missing" }
+        val peerPublicKey = peer.optString("public_key").trim()
+        require(isValidWireguardKey(peerPublicKey)) {
+            "Cloudflare WARP peer public key is invalid"
+        }
         val apiEndpoint = peer.optJSONObject("endpoint")?.optString("host").orEmpty().trim()
         val effectiveEndpoint = endpoint.takeIf { it != WarpAccount.DEFAULT_ENDPOINT }
             ?: apiEndpoint.takeIf { it.isNotBlank() && isValidEndpoint(apiEndpoint) }
@@ -160,6 +162,13 @@ class CloudflareWarpClient {
         val privateKey = (pair.private as X25519PrivateKeyParameters).encoded
         val publicKey = (pair.public as X25519PublicKeyParameters).encoded
         return GeneratedKeyPair(Base64.encodeToString(privateKey, Base64.NO_WRAP), Base64.encodeToString(publicKey, Base64.NO_WRAP))
+    }
+
+    private fun isValidWireguardKey(value: String): Boolean {
+        val decoded = runCatching {
+            Base64.decode(value, Base64.DEFAULT or Base64.NO_WRAP)
+        }.getOrNull() ?: return false
+        return decoded.size == 32
     }
 
     private fun isValidEndpoint(value: String): Boolean {
