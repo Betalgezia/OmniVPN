@@ -61,6 +61,10 @@ class CloudflareWarpClient {
         val peer = config.optJSONArray("peers")?.optJSONObject(0) ?: error("Cloudflare WARP response has no peer")
         val peerPublicKey = peer.optString("public_key")
         require(peerPublicKey.isNotBlank()) { "Cloudflare WARP peer public key is missing" }
+        val apiEndpoint = peer.optJSONObject("endpoint")?.optString("host").orEmpty().trim()
+        val effectiveEndpoint = endpoint.takeIf { it != WarpAccount.DEFAULT_ENDPOINT }
+            ?: apiEndpoint.takeIf { it.isNotBlank() && isValidEndpoint(apiEndpoint) }
+            ?: WarpAccount.DEFAULT_ENDPOINT
         val addresses = config.optJSONObject("interface")?.optJSONObject("addresses")
             ?: error("Cloudflare WARP response has no interface addresses")
         val clientV4 = addresses.optString("v4")
@@ -80,7 +84,7 @@ class CloudflareWarpClient {
             privateKey = privateKey, peerPublicKey = peerPublicKey, clientV4 = clientV4, clientV6 = clientV6,
             clientId = clientId, accountId = accountId, deviceId = deviceId, token = token,
             license = account.optString("license").takeIf { it.isNotBlank() },
-            warpPlus = account.optBoolean("warp_plus", false), endpoint = endpoint, createdAt = nowIso8601()
+            warpPlus = account.optBoolean("warp_plus", false), endpoint = effectiveEndpoint, createdAt = nowIso8601()
         )
     }
 
@@ -144,6 +148,18 @@ class CloudflareWarpClient {
         val privateKey = (pair.private as X25519PrivateKeyParameters).encoded
         val publicKey = (pair.public as X25519PublicKeyParameters).encoded
         return GeneratedKeyPair(Base64.encodeToString(privateKey, Base64.NO_WRAP), Base64.encodeToString(publicKey, Base64.NO_WRAP))
+    }
+
+    private fun isValidEndpoint(value: String): Boolean {
+        val raw = value.trim()
+        if (raw.startsWith("[")) {
+            val close = raw.indexOf(']')
+            if (close <= 0 || close + 2 > raw.length || raw[close + 1] != ':') return false
+            return raw.substring(close + 2).toIntOrNull()?.let { it in 1..65535 } == true
+        }
+        if (raw.count { it == ':' } != 1) return false
+        val port = raw.substringAfterLast(':').toIntOrNull() ?: return false
+        return port in 1..65535
     }
 
     private fun validateEndpoint(value: String) {
