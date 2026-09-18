@@ -42,6 +42,10 @@ class VpnConfigStore(context: Context) {
 
     fun read(): String? {
         if (!configFile.isFile) return null
+        val fileSize = configFile.length()
+        require(fileSize in 1..MAX_FILE_BYTES) {
+            "Active VPN configuration is invalid or too large"
+        }
         val payload = FileInputStream(configFile).use { it.readBytes() }
         if (payload.size < MAGIC.size || !payload.copyOf(MAGIC.size).contentEquals(MAGIC)) {
             // Migrate the pre-encryption format on first read. We intentionally
@@ -90,6 +94,7 @@ class VpnConfigStore(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val TAG_BITS = 128
         private const val IV_SIZE = 12
+        private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
         private val MAGIC = byteArrayOf(0x4f, 0x56, 0x43, 0x31)
         private val KEY_LOCK = Any()
         @Suppress("unused")
