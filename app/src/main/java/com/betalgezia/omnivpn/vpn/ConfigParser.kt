@@ -159,7 +159,7 @@ object ConfigParser {
         }
         val packetEncoding = string(raw, "packet_encoding", "packet-encoding")?.lowercase()
         if (packetEncoding == "xudp") canonical.put("packet_encoding", packetEncoding)
-        copy(raw, canonical, setOf("network", "multiplex"))
+        copy(raw, canonical, setOf("network", "multiplex", "domain_resolver"))
         putTlsMapIfPresent(raw, canonical, "random")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
@@ -190,7 +190,7 @@ object ConfigParser {
         if (password.isNotBlank()) canonical.put("password", password)
         int(raw, "up_mbps", "up")?.let { canonical.put("up_mbps", it) }
         int(raw, "down_mbps", "down")?.let { canonical.put("down_mbps", it) }
-        copy(raw, canonical, setOf("network"))
+        copy(raw, canonical, setOf("network", "domain_resolver", "bbr_profile", "disable_chrome_parrot"))
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
         putTlsMapIfPresent(raw, canonical, "")
