@@ -8,6 +8,8 @@ import com.betalgezia.omnivpn.data.model.Node
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Singleton
 class VpnController @Inject constructor(
@@ -19,25 +21,32 @@ class VpnController @Inject constructor(
 
     fun prepareIntent(): Intent? = VpnService.prepare(context)
 
-    fun start(node: Node): Result<Unit> =
-        startConfig(SingBoxConfigBuilder.build(node))
+    suspend fun start(node: Node): Result<Unit> = runCatching {
+        val config = withContext(Dispatchers.Default) {
+            SingBoxConfigBuilder.build(node)
+        }
+        startConfig(config).getOrThrow()
+    }
 
-    fun startConfig(config: String): Result<Unit> {
-        return runCatching {
-            check(config.isNotBlank()) { "VPN config is empty" }
+    suspend fun startConfig(config: String): Result<Unit> = runCatching {
+        check(config.isNotBlank()) { "VPN config is empty" }
+        withContext(Dispatchers.Main.immediate) {
             check(VpnService.prepare(context) == null) {
                 "VPN permission is required"
             }
+        }
 
+        withContext(Dispatchers.IO) {
             VpnConfigStore(context).write(config)
+        }
 
+        withContext(Dispatchers.Main.immediate) {
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
             }
             ContextCompat.startForegroundService(context, intent)
         }
     }
-
     suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
         val storage = WarpStorage(context)
         val client = CloudflareWarpClient()
