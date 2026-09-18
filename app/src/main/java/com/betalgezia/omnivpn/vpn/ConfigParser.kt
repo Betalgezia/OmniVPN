@@ -320,7 +320,12 @@ object ConfigParser {
     private fun reserved(raw: Map<*, *>): List<Int>? {
         val value = raw["reserved"] ?: raw["client_id"] ?: return null
         if (value is List<*>) return value.mapNotNull { (it as? Number)?.toInt() }.takeIf { it.size == 3 && it.all { b -> b in 0..255 } }
-        val decoded = runCatching { Base64.decode(value.toString(), Base64.DEFAULT or Base64.NO_WRAP) }.getOrNull() ?: return null
+        val text = value.toString().trim()
+        if (text.contains(",")) {
+            val numbers = text.split(",").mapNotNull { it.trim().toIntOrNull() }
+            if (numbers.size == 3 && numbers.all { it in 0..255 }) return numbers
+        }
+        val decoded = runCatching { Base64.decode(text, Base64.DEFAULT or Base64.NO_WRAP) }.getOrNull() ?: return null
         return decoded.takeIf { it.size == 3 }?.map { it.toInt() and 0xff }
     }
 
