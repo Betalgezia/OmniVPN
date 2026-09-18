@@ -62,7 +62,7 @@ object SingBoxConfigBuilder {
 
     private fun buildVless(node: Node): JSONObject {
         require(node.uuid.orEmpty().isNotBlank()) { "VLESS UUID is required" }
-        return baseOutbound(node, "vless", setOf("uuid", "flow", "network", "tls", "transport", "packet_encoding", "multiplex", "domain_strategy"))
+        return baseOutbound(node, "vless", setOf("uuid", "flow", "network", "tls", "transport", "packet_encoding", "multiplex", ))
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
