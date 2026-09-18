@@ -48,14 +48,18 @@ Implemented:
 - Atomic TUN `ParcelFileDescriptor` ownership and cleanup on stop/revoke/destroy.
 - `StateFlow` + typed VPN events.
 - Network-change detection with exponential recovery starting at 5 seconds and capped at 60 seconds.
+- Sing-box configuration builder for VLESS/Trojan/Hysteria2.
+- AmneziaWG emitted as a sing-box `wireguard` endpoint with sanitized peer fields and AWG2 parameters.
+- DNS local + DoH + FakeIP baseline.
+- `VpnController.start(node)` wiring node validation/config generation into the VPN service.
 
 Still to implement:
 
-- Validated sing-box configuration builder for VLESS/Trojan/Hysteria2/AmneziaWG.
 - Cloudflare WARP bootstrap.
 - Subscription parsers (Mihomo/sing-box YAML/JSON and Base64 V2Ray formats).
-- DNS detour/fake-IP configuration.
+- Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.
 - Instrumentation and parser/engine tests.
+- Actual device verification against the pinned AAR.
 
-The core bridge is intentionally kept separate from the future config builder so invalid or unsupported node fields are never blindly forwarded.
+The core bridge and config builder are intentionally separated: invalid or unsupported node fields are not blindly forwarded into the running sing-box document.
