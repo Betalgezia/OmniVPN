@@ -56,7 +56,7 @@ class VpnController @Inject constructor(
             account = client.register(licenseKey, endpoint)
         } else {
             val license = licenseKey?.trim().takeUnless { it.isNullOrEmpty() }
-            if (license != null && !license.equals(account.license, ignoreCase = false)) {
+            if (license != null && (!license.equals(account.license, ignoreCase = false) || !account.warpPlus)) {
                 account = client.applyLicense(account, license)
             }
         }
@@ -69,9 +69,6 @@ class VpnController @Inject constructor(
         start(account.toNode()).getOrThrow()
     }
     fun stop() {
-        val intent = Intent(context, OmniVpnService::class.java).apply {
-            action = OmniVpnService.ACTION_STOP
-        }
-        context.startService(intent)
+        context.stopService(Intent(context, OmniVpnService::class.java))
     }
 }
