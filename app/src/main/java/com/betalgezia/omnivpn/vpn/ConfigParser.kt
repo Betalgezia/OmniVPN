@@ -207,6 +207,7 @@ object ConfigParser {
         val address = addressList(raw)
         if (address.isEmpty()) return null
         val privateKey = string(raw, "private_key", "private-key") ?: return null
+        if (!isWireguardKey32(privateKey)) return null
 
         val peers = sourcePeers.mapNotNull { source ->
             val endpointText = string(source, "address")
@@ -219,6 +220,7 @@ object ConfigParser {
             val publicKey = string(source, "public_key", "public-key")
                 ?: string(raw, "peer_public_key", "public_key", "public-key")
                 ?: return@mapNotNull null
+            if (!isWireguardKey32(publicKey)) return@mapNotNull null
 
             JSONObject()
                 .put("address", server)
@@ -439,6 +441,15 @@ object ConfigParser {
     private fun addressList(raw: Map<*, *>): List<String> = list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()
 
     private fun firstPeerPublicKey(raw: Map<*, *>): String? = (raw["peers"] as? List<*>)?.firstNotNullOfOrNull { (it as? Map<*, *>)?.let { p -> string(p, "public_key", "public-key") } }
+
+    private fun isWireguardKey32(value: String): Boolean {
+        val text = value.trim()
+        if (text.isEmpty()) return false
+        val decoded = runCatching {
+            Base64.decode(text, Base64.DEFAULT or Base64.NO_WRAP)
+        }.getOrNull() ?: return false
+        return decoded.size == 32
+    }
 
     private fun reserved(raw: Map<*, *>): List<Int>? {
         val value = raw["reserved"] ?: raw["client_id"] ?: return null
