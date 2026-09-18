@@ -14,7 +14,12 @@ object SingBoxConfigBuilder {
         val root = JSONObject()
             .put("log", JSONObject().put("level", "info"))
             .put("dns", buildDns(proxyTag))
-            .put("route", route)
+            .put("route", route.put("rules", JSONArray().put(
+                JSONObject()
+                    .put("inbound", JSONArray().put(TUN_TAG))
+                    .put("action", "resolve")
+                    .put("server", REMOTE_DNS_TAG)
+            )))
             .put("inbounds", buildTun())
             .put("outbounds", JSONArray().apply {
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG))
@@ -173,6 +178,7 @@ object SingBoxConfigBuilder {
             .put("server", FAKE_IP_DNS_TAG)))
         .put("final", REMOTE_DNS_TAG)
         .put("strategy", "prefer_ipv4")
+        .put("reverse_mapping", true)
 
     private fun String.requireServer(): String = trim().also { require(it.isNotEmpty()) { "Server is required" } }
     private fun Int.requirePort(): Int = also { require(it in 1..65535) { "Port must be between 1 and 65535" } }

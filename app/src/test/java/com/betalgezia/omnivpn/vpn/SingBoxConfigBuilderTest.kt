@@ -16,6 +16,8 @@ class SingBoxConfigBuilderTest {
         assertEquals("proxy", config.getJSONObject("route").getString("final"))
         assertEquals("tun", config.getJSONArray("inbounds").getJSONObject(0).getString("type"))
         assertTrue(config.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
+        assertTrue(config.getJSONObject("dns").getBoolean("reverse_mapping"))
+        assertEquals("resolve", config.getJSONObject("route").getJSONArray("rules").getJSONObject(0).getString("action"))
         assertFalse(config.has("endpoints"))
     }
 
