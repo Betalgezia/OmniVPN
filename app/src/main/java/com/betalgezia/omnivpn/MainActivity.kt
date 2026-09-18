@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.weight(1f)
                     ) { Text("File") }
                     OutlinedButton(
+                        enabled = !busy && vpnState == VpnState.DISCONNECTED,
                         onClick = {
                             val intent = viewModel.prepareVpn()
                             if (intent != null) {
@@ -138,7 +139,10 @@ class MainActivity : ComponentActivity() {
                 Text("Servers", style = MaterialTheme.typography.titleLarge)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(nodes, key = { it.id }) { node ->
-                        NodeCard(node) {
+                        NodeCard(
+                            node = node,
+                            enabled = !busy && vpnState == VpnState.DISCONNECTED
+                        ) {
                             val intent = viewModel.prepareVpn()
                             if (intent != null) { pendingNode = node; permissionLauncher.launch(intent) } else viewModel.connect(node)
                         }
@@ -164,14 +168,14 @@ private fun SubscriptionRow(subscription: Subscription, viewModel: MainViewModel
 }
 
 @androidx.compose.runtime.Composable
-private fun NodeCard(node: Node, onConnect: () -> Unit) {
+private fun NodeCard(node: Node, enabled: Boolean, onConnect: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(node.name, style = MaterialTheme.typography.titleMedium)
                 Text("${node.protocol} • ${node.server}:${node.port}")
             }
-            Button(onClick = onConnect) { Text("Connect") }
+            Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
         }
     }
 }
