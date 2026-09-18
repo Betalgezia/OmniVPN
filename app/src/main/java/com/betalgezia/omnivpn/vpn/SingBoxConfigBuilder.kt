@@ -173,13 +173,13 @@ object SingBoxConfigBuilder {
     private fun parseRawObject(rawConfig: String?): JSONObject? {
         val raw = rawConfig?.trim().orEmpty()
         if (raw.isEmpty()) return null
-        val object = runCatching { JSONObject(raw) }.getOrElse {
+        val obj = runCatching { JSONObject(raw) }.getOrElse {
             error("rawConfig must contain one sing-box outbound/endpoint JSON object: ${it.message}")
         }
-        require(!object.has("outbounds") && !object.has("inbounds")) {
+        require(!obj.has("outbounds") && !obj.has("inbounds")) {
             "rawConfig must be one entry, not a full sing-box document"
         }
-        return object
+        return obj
     }
 
     private fun buildDns(proxyTag: String): JSONObject = JSONObject()
