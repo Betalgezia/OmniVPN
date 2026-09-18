@@ -227,9 +227,10 @@ object ConfigParser {
                 .put("port", port)
                 .put("public_key", publicKey)
                 .put("allowed_ips", JSONArray(
-                    list(source, "allowed_ips", "allowed-ips")
+                    (list(source, "allowed_ips", "allowed-ips")
                         ?: list(raw, "allowed_ips", "allowed-ips")
-                        ?: listOf("0.0.0.0/0", "::/0")
+                        ?: listOf("0.0.0.0/0", "::/0"))
+                        .map(::normalizePrefix)
                 ))
                 .apply {
                     string(source, "pre_shared_key", "pre-shared-key")?.let {
@@ -443,7 +444,14 @@ object ConfigParser {
         return JSONArray(if (values.isNullOrEmpty()) listOf("0.0.0.0/0", "::/0") else values)
     }
 
-    private fun addressList(raw: Map<*, *>): List<String> = list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()
+    private fun addressList(raw: Map<*, *>): List<String> =
+        (list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()).map(::normalizePrefix)
+
+    private fun normalizePrefix(value: String): String {
+        val raw = value.trim()
+        if ('/' in raw) return raw
+        return if (raw.contains(':')) "$raw/128" else "$raw/32"
+    }
 
     private fun firstPeerPublicKey(raw: Map<*, *>): String? = (raw["peers"] as? List<*>)?.firstNotNullOfOrNull { (it as? Map<*, *>)?.let { p -> string(p, "public_key", "public-key") } }
 
