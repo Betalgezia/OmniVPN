@@ -40,7 +40,7 @@ object SubscriptionParser {
             flow = "xtls-rprx-vision"
             packetEncoding = "xudp"
         }
-        val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query, port))
+        val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query, port), defaultFingerprint = "random")
         val transport = buildTransport(query)
         val visionWithTransport = flow == "xtls-rprx-vision" && transport != null
         val raw = JSONObject()
@@ -69,7 +69,7 @@ object SubscriptionParser {
         val port = uri.port.takeIf { it in 1..65535 } ?: return null
         val password = decode(uri.rawUserInfo).substringBefore(":").takeIf { it.isNotBlank() } ?: return null
         val query = parseQuery(uri.rawQuery)
-        val tls = buildTls(query, server, defaultEnabled = true)
+        val tls = buildTls(query, server, defaultEnabled = true, defaultFingerprint = "")
         val transport = buildTransport(query)
         val raw = JSONObject()
             .put("type", "trojan")
@@ -105,7 +105,7 @@ object SubscriptionParser {
         return node(fragment(uri, "$server:$port"), Protocol.HYSTERIA2, server, port, password = password, raw = raw.toString())
     }
 
-    private fun buildTls(query: Map<String, String>, server: String, defaultEnabled: Boolean): JSONObject? {
+    private fun buildTls(query: Map<String, String>, server: String, defaultEnabled: Boolean, defaultFingerprint: String): JSONObject? {
         val security = query["security"]?.lowercase()
         val reality = security == "reality" || !query["pbk"].isNullOrBlank() || !query["public-key"].isNullOrBlank()
         val enabled = defaultEnabled || security == "tls" || reality || query["sni"] != null || query["servername"] != null || query["alpn"] != null || query["insecure"] != null || query["allowInsecure"] != null || query["fp"] != null || query["fingerprint"] != null
@@ -113,8 +113,8 @@ object SubscriptionParser {
         return JSONObject().put("enabled", true).put("server_name", query["sni"] ?: query["servername"] ?: server).apply {
             val insecure = query["insecure"] ?: query["allowInsecure"] ?: query["allow-insecure"]
             if (insecure?.let(::isTrue) == true) put("insecure", true)
-            val fingerprint = query["fp"] ?: query["fingerprint"]
-            if (!fingerprint.isNullOrBlank()) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
+            val fingerprint = (query["fp"] ?: query["fingerprint"]).orEmpty().lowercase().trim().ifBlank { defaultFingerprint }
+            if (fingerprint in VALID_FINGERPRINTS) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
             query["alpn"]?.let { values ->
                 val alpn = values.split(",").map(String::trim).filter(String::isNotBlank)
                 if (alpn.isNotEmpty()) put("alpn", JSONArray(alpn))
@@ -220,4 +220,9 @@ object SubscriptionParser {
 
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
     private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)
+    private val VALID_FINGERPRINTS = setOf(
+        "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
+        "chrome_pq", "chrome_pq_psk", "chrome", "firefox", "edge",
+        "safari", "360", "qq", "ios", "android", "random", "randomized"
+    )
 }
