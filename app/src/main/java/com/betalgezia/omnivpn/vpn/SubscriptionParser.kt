@@ -51,13 +51,14 @@ object SubscriptionParser {
         val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query, port), defaultFingerprint = "random")
         val transport = buildTransport(query)
         val visionWithTransport = flow == "xtls-rprx-vision" && transport != null
+        val visionValid = flow == "xtls-rprx-vision" && !visionWithTransport && tls != null
         val raw = JSONObject()
             .put("type", "vless")
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
             .apply {
-                if (flow.isNotBlank() && !visionWithTransport && flow == "xtls-rprx-vision") {
+                if (visionValid) {
                     put("flow", flow)
                 }
                 if (packetEncoding in VALID_PACKET_ENCODINGS) put("packet_encoding", packetEncoding)
