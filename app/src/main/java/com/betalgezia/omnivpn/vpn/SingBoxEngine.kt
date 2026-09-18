@@ -24,6 +24,7 @@ class SingBoxEngine @Inject constructor(
         lifecycleMutex.withLock {
             eventBus.emit(VpnEvent.Connecting)
 
+            var startedNormally = false
             withContext(Dispatchers.IO) {
                 OmniVpnApplication.libboxReady.await()
                 Libbox.checkConfig(config)
@@ -33,7 +34,7 @@ class SingBoxEngine @Inject constructor(
                 service = created
                 try {
                     created.start()
-                    if (service !== created) return@withLock
+                    startedNormally = service === created
                 } catch (t: Throwable) {
                     if (service === created) service = null
                     runCatching { created.close() }
@@ -41,6 +42,7 @@ class SingBoxEngine @Inject constructor(
                 }
             }
 
+            if (!startedNormally) return@withLock
             eventBus.emit(VpnEvent.Connected)
         }
     }
