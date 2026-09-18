@@ -342,8 +342,10 @@ object ConfigParser {
         if (type != "salamander" && type != "gecko") return null
         val o = JSONObject().put("type", type)
         string(raw, "obfs-password")?.let { o.put("password", it) }
-        int(raw, "obfs-min-packet-size")?.let { o.put("min_packet_size", it) }
-        int(raw, "obfs-max-packet-size")?.let { o.put("max_packet_size", it) }
+        if (type == "gecko") {
+            int(raw, "obfs-min-packet-size")?.let { o.put("min_packet_size", it) }
+            int(raw, "obfs-max-packet-size")?.let { o.put("max_packet_size", it) }
+        }
         return o
     }
 
