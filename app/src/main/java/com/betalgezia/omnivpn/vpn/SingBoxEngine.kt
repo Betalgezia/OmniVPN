@@ -30,10 +30,12 @@ class SingBoxEngine @Inject constructor(
                 check(service == null) { "sing-box is already running" }
 
                 val created = Libbox.newService(config, platformInterface)
+                service = created
                 try {
                     created.start()
-                    service = created
+                    if (service !== created) return@withContext
                 } catch (t: Throwable) {
+                    if (service === created) service = null
                     runCatching { created.close() }
                     throw t
                 }
