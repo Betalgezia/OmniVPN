@@ -130,8 +130,12 @@ object SingBoxConfigBuilder {
         require(optString("public_key").isNotBlank()) { "WireGuard peer public_key is required" }
         require(optString("address").isNotBlank()) { "WireGuard peer address is required" }
         require(optInt("port", 0) in 1..65535) { "WireGuard peer port must be between 1 and 65535" }
+        if (has("reserved")) {
+            val reserved = optJSONArray("reserved")
+            require(reserved != null && reserved.length() == 3) { "WireGuard peer reserved must contain exactly 3 bytes" }
+            for (i in 0 until 3) require(reserved.optInt(i, -1) in 0..255) { "WireGuard peer reserved byte is invalid" }
+        }
     }
-
     private fun copyAwgParameters(node: Node, target: JSONObject) {
         val awg = node.awg ?: return
         if (awg.jc > 0) target.put("jc", awg.jc)
