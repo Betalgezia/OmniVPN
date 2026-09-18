@@ -116,7 +116,9 @@ object SubscriptionParser {
         return JSONObject().put("enabled", true).put("server_name", query["sni"] ?: query["servername"] ?: server).apply {
             val insecure = query["insecure"] ?: query["allowInsecure"] ?: query["allow-insecure"]
             if (insecure?.let(::isTrue) == true) put("insecure", true)
-            val fingerprint = (query["fp"] ?: query["fingerprint"]).orEmpty().lowercase().trim().ifBlank { defaultFingerprint }
+            val requestedFingerprint = (query["fp"] ?: query["fingerprint"]).orEmpty().lowercase().trim()
+            val fingerprint = requestedFingerprint.takeIf { it in VALID_FINGERPRINTS }
+                ?: defaultFingerprint
             if (fingerprint in VALID_FINGERPRINTS) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
             query["alpn"]?.let { values ->
                 val alpn = values.split(",").map(String::trim).filter(String::isNotBlank)
