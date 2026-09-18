@@ -292,6 +292,22 @@ class ConfigParserTest {
         assertEquals(urlSafe, raw.getJSONArray("peers").getJSONObject(0).getString("public_key"))
     }
     @Test
+    fun rejectsInvalidWireGuardPresharedKey() {
+        val key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        val yaml = """
+            proxies:
+              - name: Broken PSK
+                type: wireguard
+                server: 198.51.100.10
+                port: 51820
+                private-key: $key
+                peer-public-key: $key
+                pre-shared-key: invalid
+                ip: 10.0.0.2
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(yaml).size)
+    }
+    @Test
     fun rejectsInvalidWireGuardPrivateKey() {
         val yaml = """
             proxies:
