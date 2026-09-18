@@ -1,10 +1,12 @@
 package com.betalgezia.omnivpn
 
 import android.os.Bundle
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,6 +37,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.VpnState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,7 +60,7 @@ class MainActivity : ComponentActivity() {
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
-        ) {
+        ) { result ->
             val node = pendingNode
             val warp = pendingWarp
             pendingNode = null
@@ -68,6 +73,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val fileLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                readImportedFile(uri) { result ->
+                    result.fold(
+                        onSuccess = viewModel::import,
+                        onFailure = { viewModel.showMessage(it.message ?: "Unable to read import file") }
+                    )
+                }
+            }
+        }
         Scaffold(topBar = { TopAppBar(title = { Text("OmniVPN") }) }) { padding ->
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
@@ -90,6 +107,11 @@ class MainActivity : ComponentActivity() {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(onClick = { viewModel.import(input) }, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
+                    OutlinedButton(
+                        onClick = { fileLauncher.launch(arrayOf("*/*")) },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("File") }
                     OutlinedButton(
                         onClick = {
                             val intent = viewModel.prepareVpn()
@@ -153,3 +175,27 @@ private fun NodeCard(node: Node, onConnect: () -> Unit) {
         }
     }
 }
+private fun MainActivity.readImportedFile(uri: Uri, onResult: (Result<String>) -> Unit) {
+    lifecycleScope.launch(Dispatchers.IO) {
+        val result = runCatching {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= MAX_IMPORT_BYTES) {
+                        "Import file is too large (maximum ${MAX_IMPORT_BYTES / (1024 * 1024)} MiB)"
+                    }
+                    out.write(buffer, 0, count)
+                }
+                out.toString(Charsets.UTF_8.name())
+            } ?: error("Unable to open selected file")
+        }
+        lifecycleScope.launch(Dispatchers.Main) { onResult(result) }
+    }
+}
+
+private const val MAX_IMPORT_BYTES = 5 * 1024 * 1024
