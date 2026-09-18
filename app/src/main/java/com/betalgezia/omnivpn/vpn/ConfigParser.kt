@@ -19,12 +19,78 @@ object ConfigParser {
             val uriNodes = SubscriptionParser.parse(trimmed)
             if (uriNodes.isNotEmpty()) return uriNodes
         }
+        if (looksLikeWireguardIni(trimmed)) return parseWireguardIni(trimmed)
+
         return when {
             trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
             else -> parseYaml(trimmed)
         }
     }
 
+    private fun looksLikeWireguardIni(text: String): Boolean {
+        return text.lineSequence().any { it.trim().equals("[Interface]", ignoreCase = true) } &&
+            text.lineSequence().any { it.trim().equals("[Peer]", ignoreCase = true) }
+    }
+
+    private fun parseWireguardIni(text: String): List<Node> {
+        val sections = mutableListOf<Pair<String, MutableMap<String, String>>>()
+        var section: MutableMap<String, String>? = null
+        var sectionName = ""
+
+        for (line in text.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) continue
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                sectionName = trimmed.substring(1, trimmed.length - 1).trim()
+                section = if (sectionName.equals("Interface", ignoreCase = true) || sectionName.equals("Peer", ignoreCase = true)) {
+                    mutableMapOf()
+                } else {
+                    null
+                }
+                if (section != null) sections += sectionName to section!!
+                continue
+            }
+            val target = section ?: continue
+            val separator = trimmed.indexOf("=")
+            if (separator <= 0) continue
+            val key = trimmed.substring(0, separator).trim().lowercase().replace("-", "_")
+            val value = trimmed.substring(separator + 1).trim()
+            if (value.isNotEmpty()) target[key] = value
+        }
+
+        val iface = sections.firstOrNull { it.first.equals("Interface", ignoreCase = true) }?.second ?: return emptyList()
+        val peers = sections.filter { it.first.equals("Peer", ignoreCase = true) }.map { it.second }
+        val address = iface["address"] ?: iface["addresses"] ?: return emptyList()
+        val privateKey = iface["privatekey"] ?: iface["private_key"] ?: return emptyList()
+
+        val root = mutableMapOf<String, Any?>(
+            "type" to "wireguard",
+            "address" to address,
+            "private_key" to privateKey,
+            "mtu" to (iface["mtu"] ?: "1408")
+        )
+
+        val awgKeys = listOf("jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5")
+        for (key in awgKeys) iface[key]?.let { root[key] = it }
+
+        root["peers"] = peers.mapNotNull { peer ->
+            val endpoint = peer["endpoint"] ?: return@mapNotNull null
+            val publicKey = peer["publickey"] ?: peer["public_key"] ?: return@mapNotNull null
+            mutableMapOf<String, Any?>(
+                "address" to endpoint,
+                "public_key" to publicKey,
+                "allowed_ips" to (peer["allowedips"] ?: peer["allowed_ips"] ?: "0.0.0.0/0, ::/0")
+            ).apply {
+                peer["presharedkey"]?.let { this["pre_shared_key"] = it }
+                peer["pre_shared_key"]?.let { this["pre_shared_key"] = it }
+                peer["persistentkeepalive"]?.let { this["persistent_keepalive_interval"] = it }
+                peer["persistent_keepalive"]?.let { this["persistent_keepalive_interval"] = it }
+                peer["reserved"]?.let { this["reserved"] = it }
+            }
+        }
+
+        return parseEntry(root)?.let(::listOf) ?: emptyList()
+    }
     private fun parseJson(text: String): List<Node> {
         val value = runCatching { JSONObject(text) }.map { jsonToMap(it) }
             .getOrElse { JSONArray(text).let(::jsonToList) }
