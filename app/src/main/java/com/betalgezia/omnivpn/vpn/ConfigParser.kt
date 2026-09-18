@@ -161,8 +161,8 @@ object ConfigParser {
         if (packetEncoding == "xudp") canonical.put("packet_encoding", packetEncoding)
         copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
         putMapIfPresent(raw, canonical, "tls")
-        if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server))
-        if (!canonical.has("tls")) buildMihomoTls(raw, server)?.let { canonical.put("tls", it) }
+        if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
+        if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.VLESS, server, port, uuid = uuid, raw = canonical.toString())
@@ -175,8 +175,8 @@ object ConfigParser {
         val canonical = JSONObject().put("type", "trojan").put("server", server).put("server_port", port).put("password", password)
         copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
         putMapIfPresent(raw, canonical, "tls")
-        if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server))
-        if (!canonical.has("tls")) buildMihomoTls(raw, server)?.let { canonical.put("tls", it) }
+        if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
+        if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.TROJAN, server, port, password = password, raw = canonical.toString())
@@ -194,7 +194,7 @@ object ConfigParser {
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
         putMapIfPresent(raw, canonical, "tls")
-        if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server))
+        if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server, ""))
         return node(name(raw, server, port), Protocol.HYSTERIA2, server, port, password = password, raw = canonical.toString())
     }
 
@@ -267,10 +267,11 @@ object ConfigParser {
         )
     }
 
-    private fun buildTls(raw: Map<*, *>, server: String): JSONObject = JSONObject().put("enabled", true).put("server_name", string(raw, "servername", "sni") ?: server)
+    private fun buildTls(raw: Map<*, *>, server: String, defaultFingerprint: String): JSONObject = JSONObject().put("enabled", true).put("server_name", string(raw, "servername", "sni") ?: server)
         .apply {
             if (isTrue(raw["skip-cert-verify"]) || isTrue(raw["insecure"])) put("insecure", true)
-            string(raw, "client-fingerprint", "fingerprint")?.takeIf { it.isNotBlank() }?.let { put("utls", JSONObject().put("enabled", true).put("fingerprint", it)) }
+            val fingerprint = string(raw, "client-fingerprint", "fingerprint")?.lowercase()?.trim().orEmpty().ifBlank { defaultFingerprint }
+            if (fingerprint in VALID_FINGERPRINTS) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
             list(raw, "alpn")?.let { put("alpn", JSONArray(it)) }
             val reality = raw["reality-opts"] as? Map<*, *>
             reality?.let { r ->
@@ -284,9 +285,9 @@ object ConfigParser {
             }
         }
 
-    private fun buildMihomoTls(raw: Map<*, *>, server: String): JSONObject? {
+    private fun buildMihomoTls(raw: Map<*, *>, server: String, defaultFingerprint: String): JSONObject? {
         val enabled = isTrue(raw["tls"]) || raw["servername"] != null || raw["sni"] != null || raw["reality-opts"] != null || raw["skip-cert-verify"] != null
-        return if (enabled) buildTls(raw, server) else null
+        return if (enabled) buildTls(raw, server, defaultFingerprint) else null
     }
 
     private fun buildMihomoTransport(raw: Map<*, *>): JSONObject? {
@@ -344,6 +345,12 @@ object ConfigParser {
         val raw = value?.trim()?.lowercase().orEmpty()
         return raw.isNotEmpty() && raw.length <= 16 && raw.length % 2 == 0 && raw.all { it in "0123456789abcdef" }
     }
+
+    private val VALID_FINGERPRINTS = setOf(
+        "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
+        "chrome_pq", "chrome_pq_psk", "chrome", "firefox", "edge",
+        "safari", "360", "qq", "ios", "android", "random", "randomized"
+    )
 
     private fun allowedIps(raw: Map<*, *>): JSONArray {
         val values = list(raw, "allowed-ips", "allowed_ips")
