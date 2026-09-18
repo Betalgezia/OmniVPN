@@ -439,11 +439,6 @@ object ConfigParser {
         "safari", "360", "qq", "ios", "android", "random", "randomized"
     )
 
-    private fun allowedIps(raw: Map<*, *>): JSONArray {
-        val values = list(raw, "allowed-ips", "allowed_ips")
-        return JSONArray(if (values.isNullOrEmpty()) listOf("0.0.0.0/0", "::/0") else values)
-    }
-
     private fun addressList(raw: Map<*, *>): List<String> =
         (list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()).map(::normalizePrefix)
 
@@ -452,8 +447,6 @@ object ConfigParser {
         if ('/' in raw) return raw
         return if (raw.contains(':')) "$raw/128" else "$raw/32"
     }
-
-    private fun firstPeerPublicKey(raw: Map<*, *>): String? = (raw["peers"] as? List<*>)?.firstNotNullOfOrNull { (it as? Map<*, *>)?.let { p -> string(p, "public_key", "public-key") } }
 
     private fun normalizeWireguardKey(value: String): String? {
         val text = value.trim()
