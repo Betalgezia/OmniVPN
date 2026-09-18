@@ -20,7 +20,11 @@ class SingBoxEngine @Inject constructor(
 
     private val lifecycleMutex = Mutex()
 
-    suspend fun start(config: String, platformInterface: PlatformInterface) {
+    suspend fun start(
+        config: String,
+        platformInterface: PlatformInterface,
+        shouldStart: () -> Boolean = { true }
+    ) {
         lifecycleMutex.withLock {
             eventBus.emit(VpnEvent.Connecting)
 
@@ -28,13 +32,23 @@ class SingBoxEngine @Inject constructor(
             withContext(Dispatchers.IO) {
                 OmniVpnApplication.libboxReady.await()
                 Libbox.checkConfig(config)
+                if (!shouldStart()) return@withContext
                 check(service == null) { "sing-box is already running" }
 
                 val created = Libbox.newService(config, platformInterface)
+                if (!shouldStart()) {
+                    runCatching { created.close() }
+                    return@withContext
+                }
                 service = created
                 try {
+                    if (!shouldStart()) {
+                        service = null
+                        runCatching { created.close() }
+                        return@withContext
+                    }
                     created.start()
-                    startedNormally = service === created
+                    startedNormally = service === created && shouldStart()
                 } catch (t: Throwable) {
                     if (service === created) service = null
                     runCatching { created.close() }
@@ -46,7 +60,6 @@ class SingBoxEngine @Inject constructor(
             eventBus.emit(VpnEvent.Connected)
         }
     }
-
     suspend fun stop(emitDisconnected: Boolean = true) {
         lifecycleMutex.withLock {
             withContext(Dispatchers.IO) {
