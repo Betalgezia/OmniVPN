@@ -33,7 +33,7 @@
             </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn" />
+                android:value="Persistent Android VPN tunnel for user-selected proxy configurations" />
         </service>
     </application>
 </manifest>
