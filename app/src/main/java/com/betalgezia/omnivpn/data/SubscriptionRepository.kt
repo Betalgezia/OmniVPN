@@ -8,6 +8,7 @@ import com.betalgezia.omnivpn.data.local.toDomain
 import com.betalgezia.omnivpn.data.local.toEntity
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
+import com.betalgezia.omnivpn.vpn.ConfigParser
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
