@@ -29,6 +29,7 @@ class ConfigParserTest {
         assertEquals(Protocol.VLESS, node.protocol)
         val raw = JSONObject(node.rawConfig!!)
         assertEquals("cdn.example.com", raw.getJSONObject("tls").getString("server_name"))
+        assertEquals(true, raw.getJSONObject("tls").getBoolean("enabled"))
         assertEquals("/api", raw.getJSONObject("transport").getString("path"))
         assertEquals("cdn.example.com", raw.getJSONObject("transport").getJSONObject("headers").getString("Host"))
     }
@@ -51,6 +52,55 @@ class ConfigParserTest {
         val raw = JSONObject(node.rawConfig!!)
         assertEquals(2, raw.getJSONArray("peers").length())
         assertEquals("peer-b", raw.getJSONArray("peers").getJSONObject(1).getString("public_key"))
+    }
+
+    @Test
+    fun parsesMihomoTrojanTlsBooleanAsTlsObject() {
+        val yaml = """
+            proxies:
+              - name: Trojan
+                type: trojan
+                server: edge.example.com
+                port: 443
+                password: secret
+                tls: true
+                sni: trojan.example.com
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("trojan.example.com", raw.getJSONObject("tls").getString("server_name"))
+        assertEquals(true, raw.getJSONObject("tls").getBoolean("enabled"))
+    }
+
+    @Test
+    fun parsesHysteria2TlsBooleanAsTlsObject() {
+        val yaml = """
+            proxies:
+              - name: Hysteria
+                type: hysteria2
+                server: edge.example.com
+                port: 443
+                password: secret
+                tls: true
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("edge.example.com", raw.getJSONObject("tls").getString("server_name"))
+        assertEquals(true, raw.getJSONObject("tls").getBoolean("enabled"))
+    }
+
+    @Test
+    fun preservesSingBoxTlsObject() {
+        val json = JSONObject().put("outbounds", JSONArray().put(
+            JSONObject().put("type", "vless")
+                .put("server", "edge.example.com")
+                .put("server_port", 443)
+                .put("uuid", "00000000-0000-0000-0000-000000000001")
+                .put("tls", JSONObject().put("enabled", true).put("server_name", "direct.example.com"))
+        ))
+        val node = ConfigParser.parse(json.toString()).single()
+        val tls = JSONObject(node.rawConfig!!).getJSONObject("tls")
+        assertEquals("direct.example.com", tls.getString("server_name"))
     }
 
     @Test
