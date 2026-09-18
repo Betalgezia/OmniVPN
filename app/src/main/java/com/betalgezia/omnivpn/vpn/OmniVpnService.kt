@@ -7,7 +7,9 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ServiceCompat
 import dagger.hilt.android.AndroidEntryPoint
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -83,10 +85,19 @@ class OmniVpnService : VpnService() {
         stopping.set(false)
 
         runCatching {
-            startForeground(
-                VpnNotification.NOTIFICATION_ID,
-                VpnNotification.build(this, "Connecting…")
-            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(
+                    this,
+                    VpnNotification.NOTIFICATION_ID,
+                    VpnNotification.build(this, "Connecting…"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
+                )
+            } else {
+                startForeground(
+                    VpnNotification.NOTIFICATION_ID,
+                    VpnNotification.build(this, "Connecting…")
+                )
+            }
         }.onFailure {
             startInProgress.set(false)
             eventBus.emit(
