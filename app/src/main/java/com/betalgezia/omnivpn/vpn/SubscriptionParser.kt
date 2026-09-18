@@ -16,8 +16,14 @@ object SubscriptionParser {
         .map(String::trim)
         .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith(";") }
         .flatMap { line ->
-            runCatching { parseUri(line) }.getOrNull()?.let(::listOf) ?: emptyList()
+            if (line.length > MAX_URI_CHARS_PER_LINE) {
+                emptyList()
+            } else {
+                runCatching { parseUri(line) }.getOrNull()?.let(::listOf) ?: emptyList()
+            }
         }
+        .toList()
+    }
 
     private fun parseUri(value: String): Node? {
         val normalized = value.trim()
