@@ -273,9 +273,12 @@ class OmniVpnService : VpnService() {
 
     private fun hasValidatedNetwork(): Boolean {
         val connectivity = getSystemService(ConnectivityManager::class.java)
-        val network = connectivity.activeNetwork ?: return false
-        val caps = connectivity.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return connectivity.allNetworks.any { network ->
+            val caps = connectivity.getNetworkCapabilities(network) ?: return@any false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
     }
 
     private fun unregisterNetworkCallback() {
