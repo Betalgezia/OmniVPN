@@ -270,7 +270,8 @@ object ConfigParser {
     private fun buildTls(raw: Map<*, *>, server: String, defaultFingerprint: String): JSONObject = JSONObject().put("enabled", true).put("server_name", string(raw, "servername", "sni") ?: server)
         .apply {
             if (isTrue(raw["skip-cert-verify"]) || isTrue(raw["insecure"])) put("insecure", true)
-            val fingerprint = string(raw, "client-fingerprint", "fingerprint")?.lowercase()?.trim().orEmpty().ifBlank { defaultFingerprint }
+            val requestedFingerprint = string(raw, "client-fingerprint", "fingerprint")?.lowercase()?.trim().orEmpty()
+            val fingerprint = requestedFingerprint.takeIf { it in VALID_FINGERPRINTS } ?: defaultFingerprint
             if (fingerprint in VALID_FINGERPRINTS) put("utls", JSONObject().put("enabled", true).put("fingerprint", fingerprint))
             list(raw, "alpn")?.let { put("alpn", JSONArray(it)) }
             val reality = raw["reality-opts"] as? Map<*, *>
