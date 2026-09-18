@@ -1,11 +1,15 @@
 package com.betalgezia.omnivpn.vpn
 
+import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.system.OsConstants
+import androidx.annotation.RequiresApi
 import io.nekohasekai.libbox.BridgeOptions
 import io.nekohasekai.libbox.BridgeSession
 import io.nekohasekai.libbox.ConnectionOwner
@@ -22,6 +26,7 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.InterfaceAddress
 import java.net.NetworkInterface as JNetworkInterface
@@ -31,6 +36,16 @@ class AndroidPlatformInterface @Inject constructor(
     private val vpnService: VpnService,
     private val onTunEstablished: (ParcelFileDescriptor) -> Unit
 ) : PlatformInterface {
+
+    private val monitorLock = Any()
+
+    @Volatile
+    private var defaultInterfaceListener: InterfaceUpdateListener? = null
+
+    private var defaultInterfaceCallback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var monitoredNetwork: android.net.Network? = null
 
     override fun localDNSTransport(): LocalDNSTransport? = null
 
@@ -104,13 +119,105 @@ class AndroidPlatformInterface @Inject constructor(
         return ConnectionOwner().apply {
             userId = uid
             userName = packages.firstOrNull().orEmpty()
-            setAndroidPackageNames(StringArray(packages.iterator()))
+            setAndroidPackageNames(StringArray(packages))
         }
     }
 
-    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) = Unit
+    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
+        synchronized(monitorLock) {
+            unregisterDefaultInterfaceMonitorLocked()
+            defaultInterfaceListener = listener
 
-    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) = Unit
+            val connectivity = vpnService.getSystemService(ConnectivityManager::class.java)
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    notifyDefaultInterface(network)
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: android.net.Network,
+                    capabilities: NetworkCapabilities
+                ) {
+                    notifyDefaultInterface(network)
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    if (monitoredNetwork == network) {
+                        monitoredNetwork = null
+                        notifyDefaultInterface(null)
+                    }
+                }
+            }
+
+            try {
+                connectivity.registerNetworkCallback(request, callback)
+                defaultInterfaceCallback = callback
+            } catch (t: Throwable) {
+                defaultInterfaceListener = null
+                monitoredNetwork = null
+                throw t
+            }
+        }
+    }
+
+    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
+        synchronized(monitorLock) {
+            unregisterDefaultInterfaceMonitorLocked()
+        }
+    }
+
+    private fun unregisterDefaultInterfaceMonitorLocked() {
+        val connectivity = vpnService.getSystemService(ConnectivityManager::class.java)
+        defaultInterfaceCallback?.let { callback ->
+            runCatching { connectivity.unregisterNetworkCallback(callback) }
+                .onFailure {
+                    android.util.Log.w(TAG, "default interface monitor unregister failed: " + it.message)
+                }
+        }
+        defaultInterfaceCallback = null
+        defaultInterfaceListener = null
+        monitoredNetwork = null
+    }
+
+    private fun notifyDefaultInterface(network: android.net.Network?) {
+        val listener = defaultInterfaceListener ?: return
+
+        runCatching {
+            if (network == null) {
+                listener.updateDefaultInterface("", -1, false, false)
+                listener.updateNetworkPath("")
+                return@runCatching
+            }
+
+            val connectivity = vpnService.getSystemService(ConnectivityManager::class.java)
+            val linkProperties = connectivity.getLinkProperties(network)
+            val interfaceName = linkProperties?.interfaceName.orEmpty()
+            val interfaceIndex = interfaceName.takeIf { it.isNotBlank() }
+                ?.let { JNetworkInterface.getByName(it)?.index }
+                ?: -1
+
+            if (interfaceName.isBlank()) {
+                listener.updateDefaultInterface("", -1, false, false)
+                listener.updateNetworkPath("")
+                return@runCatching
+            }
+
+            monitoredNetwork = network
+            listener.updateDefaultInterface(interfaceName, interfaceIndex, false, false)
+            listener.updateNetworkPath(interfaceName)
+        }.onFailure {
+            android.util.Log.w(TAG, "default interface callback failed: " + it.message)
+            runCatching {
+                listener.updateDefaultInterface("", -1, false, false)
+                listener.updateNetworkPath("")
+            }
+        }
+    }
 
     override fun getInterfaces(): NetworkInterfaceIterator {
         val interfaces = runCatching { buildInterfaces() }
@@ -144,9 +251,7 @@ class AndroidPlatformInterface @Inject constructor(
 
             NetworkInterface().apply {
                 name = lp.interfaceName
-                dnsServer = StringArray(
-                    lp.dnsServers.mapNotNull { it.hostAddress }.iterator()
-                )
+                dnsServer = StringArray(lp.dnsServers.mapNotNull { it.hostAddress })
                 type = when {
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ->
                         Libbox.InterfaceTypeWIFI
@@ -158,9 +263,7 @@ class AndroidPlatformInterface @Inject constructor(
                 }
                 index = nativeInterface.index
                 mtu = nativeInterface.mtu
-                addresses = StringArray(
-                    nativeInterface.interfaceAddresses.map { it.toPrefix() }.iterator()
-                )
+                addresses = StringArray(nativeInterface.interfaceAddresses.map { it.toPrefix() })
                 var flags = 0
                 if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
                     flags = OsConstants.IFF_UP or OsConstants.IFF_RUNNING
@@ -245,36 +348,55 @@ class AndroidPlatformInterface @Inject constructor(
     private fun addRoutes(builder: VpnService.Builder, options: TunOptions) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val r4 = options.inet4RouteAddress
-            if (r4.hasNext()) {
-                while (r4.hasNext()) builder.addRoute(r4.next().toIpPrefix())
-            } else if (options.inet4Address.hasNext()) {
+            var hasV4Route = false
+            while (r4.hasNext()) {
+                hasV4Route = true
+                val route = r4.next()
+                builder.addRoute(route.address(), route.prefix())
+            }
+            if (!hasV4Route && options.inet4Address.hasNext()) {
                 builder.addRoute("0.0.0.0", 0)
             }
 
             val r6 = options.inet6RouteAddress
-            if (r6.hasNext()) {
-                while (r6.hasNext()) builder.addRoute(r6.next().toIpPrefix())
-            } else if (options.inet6Address.hasNext()) {
+            var hasV6Route = false
+            while (r6.hasNext()) {
+                hasV6Route = true
+                val route = r6.next()
+                builder.addRoute(route.address(), route.prefix())
+            }
+            if (!hasV6Route && options.inet6Address.hasNext()) {
                 builder.addRoute("::", 0)
             }
 
             val x4 = options.inet4RouteExcludeAddress
-            while (x4.hasNext()) builder.excludeRoute(x4.next().toIpPrefix())
+            while (x4.hasNext()) {
+                builder.excludeRoute(x4.next().toIpPrefix())
+            }
 
             val x6 = options.inet6RouteExcludeAddress
-            while (x6.hasNext()) builder.excludeRoute(x6.next().toIpPrefix())
+            while (x6.hasNext()) {
+                builder.excludeRoute(x6.next().toIpPrefix())
+            }
         } else {
             val r4 = options.inet4RouteRange
             while (r4.hasNext()) {
-                val address = r4.next()
-                builder.addRoute(address.address(), address.prefix())
+                val route = r4.next()
+                builder.addRoute(route.address(), route.prefix())
             }
 
             val r6 = options.inet6RouteRange
             while (r6.hasNext()) {
-                val address = r6.next()
-                builder.addRoute(address.address(), address.prefix())
+                val route = r6.next()
+                builder.addRoute(route.address(), route.prefix())
             }
+
+            // Route-exclude iterators are API 33+ inputs. Consume them on
+            // older Android releases because no Builder.excludeRoute() exists.
+            val x4 = options.inet4RouteExcludeAddress
+            while (x4.hasNext()) x4.next()
+            val x6 = options.inet6RouteExcludeAddress
+            while (x6.hasNext()) x6.next()
         }
     }
 
@@ -291,11 +413,14 @@ class AndroidPlatformInterface @Inject constructor(
     }
 
     private class StringArray(
-        private val iterator: Iterator<String>
+        values: List<String>
     ) : StringIterator {
+        private val values = values.toList()
+        private val iterator = this.values.iterator()
+
         override fun hasNext(): Boolean = iterator.hasNext()
         override fun next(): String = if (iterator.hasNext()) iterator.next() else ""
-        override fun len(): Int = 0
+        override fun len(): Int = values.size
     }
 
     companion object {
@@ -312,5 +437,6 @@ private fun InterfaceAddress.toPrefix(): String {
     return host + "/" + networkPrefixLength
 }
 
-private fun RoutePrefix.toIpPrefix(): String =
-    address() + "/" + prefix()
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun RoutePrefix.toIpPrefix(): IpPrefix =
+    IpPrefix(InetAddress.getByName(address()), prefix())
