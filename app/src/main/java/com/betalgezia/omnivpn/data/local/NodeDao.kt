@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -26,6 +27,18 @@ interface NodeDao {
 
     @Query("DELETE FROM nodes WHERE sourceId IS NULL")
     suspend fun deleteManual()
+
+    @Transaction
+    suspend fun replaceManual(nodes: List<NodeEntity>) {
+        deleteManual()
+        if (nodes.isNotEmpty()) insertAll(nodes)
+    }
+
+    @Transaction
+    suspend fun replaceBySourceId(sourceId: Long, nodes: List<NodeEntity>) {
+        deleteBySourceId(sourceId)
+        if (nodes.isNotEmpty()) insertAll(nodes)
+    }
 
     @Query("DELETE FROM nodes")
     suspend fun deleteAll()
