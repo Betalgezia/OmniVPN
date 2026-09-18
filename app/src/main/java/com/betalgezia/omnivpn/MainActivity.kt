@@ -54,6 +54,9 @@ class MainActivity : ComponentActivity() {
         val vpnState by viewModel.vpnState.collectAsState()
         val busy by viewModel.busy.collectAsState()
         val message by viewModel.message.collectAsState()
+        val canStartVpn = vpnState == VpnState.DISCONNECTED ||
+            vpnState == VpnState.ERROR ||
+            vpnState == VpnState.REVOKED
         var input by remember { mutableStateOf("") }
         var pendingNode by remember { mutableStateOf<Node?>(null) }
         var pendingWarp by remember { mutableStateOf(false) }
@@ -113,7 +116,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.weight(1f)
                     ) { Text("File") }
                     OutlinedButton(
-                        enabled = !busy && vpnState == VpnState.DISCONNECTED,
+                        enabled = !busy && canStartVpn,
                         onClick = {
                             val intent = viewModel.prepareVpn()
                             if (intent != null) {
@@ -142,7 +145,7 @@ class MainActivity : ComponentActivity() {
                     items(nodes, key = { it.id }) { node ->
                         NodeCard(
                             node = node,
-                            enabled = !busy && vpnState == VpnState.DISCONNECTED
+                            enabled = !busy && canStartVpn
                         ) {
                             val intent = viewModel.prepareVpn()
                             if (intent != null) { pendingNode = node; permissionLauncher.launch(intent) } else viewModel.connect(node)
