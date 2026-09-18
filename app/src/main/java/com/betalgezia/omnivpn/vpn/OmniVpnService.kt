@@ -111,6 +111,7 @@ class OmniVpnService : VpnService() {
 
         serviceScope.launch {
             try {
+                if (operationGeneration.get() != generation || stopping.get()) return@launch
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
 
