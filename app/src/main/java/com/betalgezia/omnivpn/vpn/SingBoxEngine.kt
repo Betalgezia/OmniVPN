@@ -1,12 +1,14 @@
 package com.betalgezia.omnivpn.vpn
 
-import io.nekohasekai.libbox.BoxService
+import io.nekohasekai.libbox.CommandServer
+import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.Libbox
+import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,56 +18,98 @@ class SingBoxEngine @Inject constructor(
 ) {
 
     @Volatile
-    private var service: BoxService? = null
+    private var commandServer: CommandServer? = null
+
+    @Volatile
+    private var serviceStarted = false
 
     private val lifecycleMutex = Mutex()
 
     suspend fun start(
         config: String,
         platformInterface: PlatformInterface,
+        handler: CommandServerHandler,
         shouldStart: () -> Boolean = { true }
     ) {
         lifecycleMutex.withLock {
             eventBus.emit(VpnEvent.Connecting)
 
-            var startedNormally = false
-            withContext(Dispatchers.IO) {
-                OmniVpnApplication.libboxReady.await()
-                Libbox.checkConfig(config)
-                if (!shouldStart()) return@withContext
-                check(service == null) { "sing-box is already running" }
+            var connected = false
 
-                val created = Libbox.newService(config, platformInterface)
-                if (!shouldStart()) {
-                    runCatching { created.close() }
-                    return@withContext
+            withContext(Dispatchers.IO) {
+                Libbox.checkConfig(config)
+
+                if (!shouldStart()) return@withContext
+                check(commandServer == null && !serviceStarted) {
+                    "sing-box is already running"
                 }
-                service = created
+
+                val server = Libbox.newCommandServer(handler, platformInterface)
+                commandServer = server
+
                 try {
                     if (!shouldStart()) {
-                        service = null
-                        runCatching { created.close() }
+                        commandServer = null
+                        server.close()
                         return@withContext
                     }
-                    created.start()
-                    startedNormally = service === created && shouldStart()
+
+                    server.start()
+
+                    if (!shouldStart()) {
+                        commandServer = null
+                        server.close()
+                        return@withContext
+                    }
+
+                    server.startOrReloadService(config, OverrideOptions())
+
+                    if (!shouldStart()) {
+                        commandServer = null
+                        server.close()
+                        return@withContext
+                    }
+
+                    serviceStarted = true
+                    connected = commandServer === server && serviceStarted && shouldStart()
                 } catch (t: Throwable) {
-                    if (service === created) service = null
-                    runCatching { created.close() }
+                    if (commandServer === server) {
+                        commandServer = null
+                    }
+                    serviceStarted = false
+                    runCatching { server.close() }
                     throw t
                 }
             }
 
-            if (!startedNormally) return@withLock
-            eventBus.emit(VpnEvent.Connected)
+            if (connected) {
+                eventBus.emit(VpnEvent.Connected)
+            }
         }
     }
-    suspend fun stop(emitDisconnected: Boolean = true) {
+
+    suspend fun reload(config: String) {
         lifecycleMutex.withLock {
             withContext(Dispatchers.IO) {
-                val current = service ?: return@withContext
-                service = null
-                current.close()
+                Libbox.checkConfig(config)
+                check(serviceStarted) { "sing-box is not running" }
+                val server = commandServer
+                    ?: error("sing-box command server is not running")
+                server.startOrReloadService(config, OverrideOptions())
+            }
+        }
+    }
+
+    suspend fun stop(emitDisconnected: Boolean = true) {
+        lifecycleMutex.withLock {
+            val current = commandServer
+            commandServer = null
+            serviceStarted = false
+
+            if (current != null) {
+                withContext(Dispatchers.IO) {
+                    current.close()
+                }
             }
 
             if (emitDisconnected) {
@@ -73,23 +117,24 @@ class SingBoxEngine @Inject constructor(
             }
         }
     }
+
     fun resetNetwork() {
-        val current = service ?: return
-        runCatching { current.resetNetwork() }
-            .onFailure {
-                android.util.Log.w(TAG, "resetNetwork failed: " + it.message)
-            }
+        if (!serviceStarted) return
+        commandServer?.resetNetwork()
     }
 
-    fun isRunning(): Boolean = service != null
+    fun isRunning(): Boolean = serviceStarted
 
     fun closeNow() {
-        val current = service ?: return
-        service = null
-        runCatching { current.close() }
-            .onFailure {
-                android.util.Log.w(TAG, "closeNow failed: " + it.message)
-            }
+        val current = commandServer
+        commandServer = null
+        serviceStarted = false
+        if (current != null) {
+            runCatching { current.close() }
+                .onFailure {
+                    android.util.Log.w(TAG, "closeNow failed: " + it.message)
+                }
+        }
     }
 
     companion object {
