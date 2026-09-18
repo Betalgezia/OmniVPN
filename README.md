@@ -56,7 +56,7 @@ Implemented:
 
 Still to implement:
 
-- Cloudflare WARP bootstrap.
+- Cloudflare WARP bootstrap via direct Cloudflare client registration, local X25519 key generation and encrypted account cache.
 - Mihomo/sing-box YAML/JSON subscription parsing and broader Base64/V2Ray compatibility.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.

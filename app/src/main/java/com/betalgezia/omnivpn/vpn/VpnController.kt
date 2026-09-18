@@ -38,6 +38,15 @@ class VpnController @Inject constructor(
         }
     }
 
+    suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
+        val storage = WarpStorage(context)
+        val cached = if (!forceNew) storage.get() else null
+        val account = cached ?: CloudflareWarpClient().register(licenseKey, endpoint).also(storage::set)
+        val effectiveEndpoint = endpoint?.trim().takeUnless { it.isNullOrEmpty() } ?: account.endpoint
+        val node = account.copy(endpoint = effectiveEndpoint).toNode()
+        start(node).getOrThrow()
+    }
+
     fun stop() {
         val intent = Intent(context, OmniVpnService::class.java).apply {
             action = OmniVpnService.ACTION_STOP
