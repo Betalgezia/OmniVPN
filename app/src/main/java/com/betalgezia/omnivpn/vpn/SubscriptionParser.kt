@@ -34,16 +34,25 @@ object SubscriptionParser {
         val port = uri.port.takeIf { it in 1..65535 } ?: return null
         val uuid = decode(uri.rawUserInfo).substringBefore(":").takeIf { it.isNotBlank() } ?: return null
         val query = parseQuery(uri.rawQuery)
+        var flow = query["flow"]?.trim().orEmpty()
+        var packetEncoding = query["packetEncoding"] ?: query["packet_encoding"] ?: ""
+        if (flow == "xtls-rprx-vision-udp443") {
+            flow = "xtls-rprx-vision"
+            packetEncoding = "xudp"
+        }
         val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query))
         val transport = buildTransport(query)
+        val visionWithTransport = flow == "xtls-rprx-vision" && transport != null
         val raw = JSONObject()
             .put("type", "vless")
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
             .apply {
-                query["flow"]?.takeIf { it.isNotBlank() }?.let { put("flow", it) }
-                query["packetEncoding"]?.let { put("packet_encoding", it) }
+                if (flow.isNotBlank() && !visionWithTransport && flow == "xtls-rprx-vision") {
+                    put("flow", flow)
+                }
+                if (packetEncoding in VALID_PACKET_ENCODINGS) put("packet_encoding", packetEncoding)
                 tls?.let { put("tls", it) }
                 transport?.let {
                     put("transport", it)
@@ -112,10 +121,10 @@ object SubscriptionParser {
             }
             if (reality) {
                 val publicKey = query["pbk"] ?: query["public-key"]
-                if (!publicKey.isNullOrBlank()) {
+                if (isValidRealityPublicKey(publicKey)) {
                     put("reality", JSONObject().put("enabled", true).put("public_key", publicKey).apply {
                         val shortId = query["sid"] ?: query["short-id"]
-                        if (!shortId.isNullOrBlank()) put("short_id", shortId)
+                        if (isValidRealityShortId(shortId)) put("short_id", shortId)
                     })
                 }
             }
@@ -189,6 +198,23 @@ object SubscriptionParser {
 
     private fun isTrue(value: String): Boolean = value.lowercase() in setOf("true", "1", "yes")
 
+    private fun isValidRealityPublicKey(value: String?): Boolean {
+        val raw = value?.trim().orEmpty()
+        if (raw.isEmpty()) return false
+        val padded = raw + "=".repeat((4 - raw.length % 4) % 4)
+        val bytes = runCatching {
+            Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        }.getOrNull() ?: return false
+        return bytes.size == 32
+    }
+
+    private fun isValidRealityShortId(value: String?): Boolean {
+        val raw = value?.trim()?.lowercase().orEmpty()
+        return raw.isNotEmpty() && raw.length <= 16 && raw.length % 2 == 0 && raw.all { it in "0123456789abcdef" }
+    }
+
     private fun node(name: String, protocol: Protocol, server: String, port: Int, uuid: String? = null, password: String? = null, raw: String): Node =
         Node(name = name, protocol = protocol, server = server, port = port, uuid = uuid, password = password, rawConfig = raw)
+
+    private val VALID_PACKET_ENCODINGS = setOf("xudp")
 }
