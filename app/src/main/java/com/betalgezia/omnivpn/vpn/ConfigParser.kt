@@ -287,7 +287,9 @@ object ConfigParser {
         }
 
     private fun buildMihomoTls(raw: Map<*, *>, server: String, defaultFingerprint: String): JSONObject? {
-        val enabled = isTrue(raw["tls"]) || raw["servername"] != null || raw["sni"] != null || raw["reality-opts"] != null || raw["skip-cert-verify"] != null
+        val explicitTls = raw["tls"]
+        if (explicitTls != null && isFalse(explicitTls)) return null
+        val enabled = isTrue(explicitTls) || raw["servername"] != null || raw["sni"] != null || raw["reality-opts"] != null || raw["skip-cert-verify"] != null
         return if (enabled) buildTls(raw, server, defaultFingerprint) else null
     }
 
@@ -430,6 +432,7 @@ object ConfigParser {
     }
     private fun normalizeEndpointHost(value: String): String? {\n        val raw = value.trim()\n        if (raw.startsWith("[")) {\n            val close = raw.indexOf(']')\n            return raw.takeIf { close > 1 }?.substring(1, close)\n        }\n        if (raw.count { it == ':' } > 1) return raw\n        return raw.substringBeforeLast(':').takeIf { it.isNotBlank() } ?: raw.takeIf { it.isNotBlank() }\n    }\n\n    private fun endpointPort(value: String, fallback: Int): Int = value.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 } ?: fallback
     private fun isTrue(value: Any?): Boolean = when (value) { is Boolean -> value; else -> value?.toString()?.lowercase() in setOf("true", "1", "yes") }
+    private fun isFalse(value: Any?): Boolean = when (value) { is Boolean -> !value; else -> value?.toString()?.lowercase() in setOf("false", "0", "no") }
     private fun toJsonValue(value: Any?): Any = when (value) { is Map<*, *> -> JSONObject().apply { value.forEach { (k,v) -> if (k != null && v != null) put(k.toString(), toJsonValue(v)) } }; is List<*> -> JSONArray().apply { value.forEach { put(toJsonValue(it)) } }; else -> value ?: JSONObject.NULL }
     private fun jsonToMap(value: JSONObject): Map<String, Any?> = value.keys().asSequence().associateWith { key -> jsonToAny(value.opt(key)) }
     private fun jsonToList(value: JSONArray): List<Any?> = (0 until value.length()).map { jsonToAny(value.opt(it)) }
