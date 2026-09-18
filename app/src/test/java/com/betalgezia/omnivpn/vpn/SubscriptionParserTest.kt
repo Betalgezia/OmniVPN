@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 class SubscriptionParserTest {
     @Test
     fun parsesVlessRealityUri() {
-        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=abcdefghijklmnopqrstuvwxyz0123456789abcdef&sid=abcd&type=ws&path=%2Fapi&host=cdn.example.com&flow=xtls-rprx-vision#Reality"
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=abcd&type=ws&path=%2Fapi&host=cdn.example.com&flow=xtls-rprx-vision#Reality"
         val node = SubscriptionParser.parse(uri).single()
         assertEquals(Protocol.VLESS, node.protocol)
         assertEquals("Reality", node.name)
@@ -37,6 +37,31 @@ class SubscriptionParserTest {
         assertFalse(raw.has("tls"))
     }
 
+
+    @Test
+    fun dropsVisionFlowWhenTransportIsPresent() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&type=xhttp&path=%2F&flow=xtls-rprx-vision"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("flow"))
+        assertEquals("xhttp", raw.getJSONObject("transport").getString("type"))
+    }
+
+    @Test
+    fun normalizesVisionUdp443ToXudp() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&flow=xtls-rprx-vision-udp443"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertEquals("xtls-rprx-vision", raw.getString("flow"))
+        assertEquals("xudp", raw.getString("packet_encoding"))
+    }
+
+    @Test
+    fun rejectsInvalidRealityPublicKeyAndShortIdWithoutPoisoningTls() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=edge.example.com&pbk=not-a-key&sid=xyz"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        val tls = raw.getJSONObject("tls")
+        assertFalse(tls.has("reality"))
+        assertEquals("edge.example.com", tls.getString("server_name"))
+    }
     @Test
     fun parsesTrojanUriWithTlsAndGrpc() {
         val uri = "trojan://p%2Bss@example.com:443?sni=trojan.example.com&security=tls&type=grpc&serviceName=proxy#Trojan"
