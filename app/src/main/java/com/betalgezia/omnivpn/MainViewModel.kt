@@ -36,6 +36,7 @@ class MainViewModel @Inject constructor(
     val message: StateFlow<String?> = _message.asStateFlow()
 
     fun consumeMessage() { _message.value = null }
+    fun showMessage(message: String) { _message.value = message }
     fun prepareVpn(): Intent? = vpnController.prepareIntent()
 
     fun connect(node: Node) {
