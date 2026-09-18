@@ -53,10 +53,10 @@ Implemented:
 - DNS local + DoH + FakeIP baseline.
 - `VpnController.start(node)` wiring node validation/config generation into the VPN service.
 - URI subscription parser for VLESS/Trojan/Hysteria2, including standard Base64-wrapped URI lists.
+- Cloudflare WARP bootstrap client via `/reg`, optional WARP+ license application and AndroidKeyStore-backed encrypted cache.
 
 Still to implement:
 
-- Cloudflare WARP bootstrap via direct Cloudflare client registration, local X25519 key generation and encrypted account cache.
 - Mihomo/sing-box YAML/JSON subscription parsing and broader Base64/V2Ray compatibility.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.
