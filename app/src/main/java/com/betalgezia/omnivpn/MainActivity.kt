@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,7 +50,7 @@ class MainActivity : ComponentActivity() {
 
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(viewModel: MainViewModel = hiltViewModel()) {
-        val nodes by viewModel.nodes.collectAsState()
+        val nodes by viewModel.nodes.collectAsStateWithLifecycle()
         val subscriptions by viewModel.subscriptions.collectAsState()
         val vpnState by viewModel.vpnState.collectAsState()
         val busy by viewModel.busy.collectAsState()
