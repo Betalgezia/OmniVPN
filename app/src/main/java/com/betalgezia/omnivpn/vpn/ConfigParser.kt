@@ -149,7 +149,8 @@ object ConfigParser {
             .put("uuid", uuid)
         val flow = string(raw, "flow")?.trim().orEmpty()
         val transportType = string(raw, "network")?.lowercase()
-        if (flow == "xtls-rprx-vision" && transportType != null && transportType != "tcp") {
+        val hasTransport = raw["transport"] is Map<*, *> || (transportType != null && transportType != "tcp")
+        if (flow == "xtls-rprx-vision" && hasTransport) {
             // Vision is valid only on bare TCP; dropping the flow keeps the node loadable.
         } else if (flow == "xtls-rprx-vision") {
             canonical.put("flow", flow)
