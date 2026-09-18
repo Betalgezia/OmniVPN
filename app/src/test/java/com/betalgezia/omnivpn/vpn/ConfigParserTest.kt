@@ -147,6 +147,57 @@ class ConfigParserTest {
     }
 
     @Test
+    fun preservesFullMihomoXHttpOptions() {
+        val yaml = """
+            proxies:
+              - name: XHTTP
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                network: xhttp
+                xhttp-opts:
+                  mode: stream-one
+                  path: /xhttp
+                  host: cdn.example.com
+                  session-placement: header
+                  session-key: X-Session-Id
+                  seq-placement: query
+                  seq-key: packet_seq
+                  session-table: hex
+                  session-length: 32-32
+                  uplink-data-placement: header
+                  uplink-data-key: X-Data
+                  uplink-chunk-size: 3000-4000
+                  uplink-http-method: post
+                  x-padding-obfs-mode: true
+                  x-padding-placement: header
+                  x-padding-header: X-Padding
+                  x-padding-method: tokenish
+                  sc-max-each-post-bytes: 1000000-1000000
+                  sc-min-posts-interval-ms: 30-30
+                  no-grpc-header: true
+                  x-padding-bytes: 100-1000
+                  xmux:
+                    max-concurrency: 1-1
+                    h-max-request-times: 600-900
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!)
+        val x = raw.getJSONObject("transport")
+        assertEquals("stream-one", x.getString("mode"))
+        assertEquals("header", x.getString("session_placement"))
+        assertEquals("X-Session-Id", x.getString("session_key"))
+        assertEquals("query", x.getString("seq_placement"))
+        assertEquals("packet_seq", x.getString("seq_key"))
+        assertEquals("32-32", x.getString("session_length"))
+        assertEquals("header", x.getString("uplink_data_placement"))
+        assertEquals(true, x.getBoolean("x_padding_obfs_mode"))
+        assertEquals("tokenish", x.getString("x_padding_method"))
+        assertEquals(true, x.getBoolean("no_grpc_header"))
+        assertEquals("1-1", x.getJSONObject("xmux").getString("max-concurrency"))
+    }
+    @Test
     fun dropsVisionFlowWhenMihomoTransportIsPresent() {
         val yaml = """
             proxies:
