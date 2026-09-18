@@ -14,6 +14,7 @@ class SingBoxConfigBuilderTest {
     @Test fun vlessBuildsTunAndDns() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
         assertEquals("proxy", config.getJSONObject("route").getString("final"))
+        assertEquals("dns-local", config.getJSONObject("route").getString("default_domain_resolver"))
         assertEquals("tun", config.getJSONArray("inbounds").getJSONObject(0).getString("type"))
         assertTrue(config.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
         assertTrue(config.getJSONObject("dns").getBoolean("reverse_mapping"))
