@@ -66,7 +66,7 @@ The repository is self-contained except for the pinned `libbox.aar`, which is fe
 
 ```powershell
 .\scripts\fetch-libbox.ps1
-.gradlew.bat testDebugUnitTest assembleDebug
+.\gradlew.bat testDebugUnitTest assembleDebug
 ```
 
 ### Linux/macOS
