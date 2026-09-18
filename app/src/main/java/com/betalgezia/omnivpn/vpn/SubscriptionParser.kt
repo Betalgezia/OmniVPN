@@ -10,7 +10,9 @@ import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 object SubscriptionParser {
-    fun parse(input: String): List<Node> = input.lineSequence()
+    fun parse(input: String): List<Node> {
+        if (input.length > MAX_URI_LIST_CHARS) return emptyList()
+        return input.lineSequence()
         .map(String::trim)
         .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith(";") }
         .flatMap { line ->
@@ -237,6 +239,8 @@ object SubscriptionParser {
     private fun node(name: String, protocol: Protocol, server: String, port: Int, uuid: String? = null, password: String? = null, raw: String): Node =
         Node(name = name, protocol = protocol, server = server, port = port, uuid = uuid, password = password, rawConfig = raw)
 
+    private const val MAX_URI_LIST_CHARS = 64 * 1024
+    private const val MAX_URI_CHARS_PER_LINE = 64 * 1024
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
     private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)
     private val VALID_FINGERPRINTS = setOf(
