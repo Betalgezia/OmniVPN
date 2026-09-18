@@ -109,6 +109,13 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun invalidVlessFingerprintFallsBackToRandom() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&fp=not-a-real-fingerprint"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        val utls = raw.getJSONObject("tls").getJSONObject("utls")
+        assertEquals("random", utls.getString("fingerprint"))
+    }
+    @Test
     fun securityNoneOverridesOtherVlessTlsParameters() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=none&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
         val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
