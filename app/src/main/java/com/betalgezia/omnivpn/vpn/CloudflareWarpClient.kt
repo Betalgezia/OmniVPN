@@ -35,20 +35,24 @@ class CloudflareWarpClient {
             .toString()
 
         var lastError: Throwable? = null
+        var registered: WarpAccount? = null
+        var registrationHost: String? = null
         for (host in API_HOSTS) {
             try {
                 val response = request("https://$host/v0a2158/reg", "POST", body, null)
-                val account = parseRegistration(response, keyPair.privateKey, endpoint)
-                if (licenseKey.isNullOrBlank()) return@withContext account
-                return@withContext runCatching { applyLicense(account, licenseKey.trim()) }
-                    .getOrElse { account.copy(license = licenseKey.trim(), warpPlus = false) }
+                registered = parseRegistration(response, keyPair.privateKey, endpoint)
+                registrationHost = host
+                break
             } catch (t: Throwable) {
                 lastError = t
             }
         }
-        throw IllegalStateException("WARP registration failed: ${lastError?.message ?: "unknown error"}", lastError)
-    }
-
+        val account = registered ?: throw IllegalStateException(
+            "WARP registration failed: ${lastError?.message ?: "unknown error"}",
+            lastError
+        )
+        val license = licenseKey?.trim().takeUnless { it.isNullOrEmpty() }
+        return@withContext if (license == null) account else applyLicenseAtHost(account, license, registrationHost!!)
     private fun parseRegistration(body: String, privateKey: String, endpoint: String): WarpAccount {
         val root = JSONObject(body)
         val config = root.optJSONObject("config") ?: error("Cloudflare WARP response has no config")
@@ -78,12 +82,36 @@ class CloudflareWarpClient {
         )
     }
 
-    private fun applyLicense(account: WarpAccount, license: String): WarpAccount {
-        val response = request("https://${API_HOSTS.first()}/v0a2158/reg/${account.deviceId}/account", "PATCH", JSONObject().put("license", license).toString(), account.token)
-        val remoteAccount = JSONObject(response).optJSONObject("account")
-        return account.copy(license = license, warpPlus = remoteAccount?.optBoolean("warp_plus", true) ?: true)
+    suspend fun applyLicense(account: WarpAccount, license: String): WarpAccount = withContext(Dispatchers.IO) {
+        val normalized = license.trim()
+        require(normalized.isNotEmpty()) { "WARP license is empty" }
+        var lastError: Throwable? = null
+        for (host in API_HOSTS) {
+            try {
+                return@withContext applyLicenseAtHost(account, normalized, host)
+            } catch (t: Throwable) {
+                lastError = t
+            }
+        }
+        throw IllegalStateException(
+            "WARP license application failed: ${lastError?.message ?: "unknown error"}",
+            lastError
+        )
     }
 
+    private fun applyLicenseAtHost(account: WarpAccount, license: String, host: String): WarpAccount {
+        val response = request(
+            "https://$host/v0a2158/reg/${account.deviceId}/account",
+            "PATCH",
+            JSONObject().put("license", license).toString(),
+            account.token
+        )
+        val remoteAccount = JSONObject(response).optJSONObject("account")
+        return account.copy(
+            license = license,
+            warpPlus = remoteAccount?.optBoolean("warp_plus", true) ?: true
+        )
+    }
     private fun request(url: String, method: String, body: String, bearer: String?): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = method
