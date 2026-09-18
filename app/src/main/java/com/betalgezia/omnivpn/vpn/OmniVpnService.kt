@@ -33,6 +33,8 @@ class OmniVpnService : VpnService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeTun = AtomicReference<ParcelFileDescriptor?>(null)
     private val stopping = AtomicBoolean(false)
+    private val startInProgress = AtomicBoolean(false)
+    private val operationGeneration = java.util.concurrent.atomic.AtomicLong(0L)
     private lateinit var platformInterface: AndroidPlatformInterface
     private lateinit var configStore: VpnConfigStore
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -68,7 +70,11 @@ class OmniVpnService : VpnService() {
 
     private fun startVpn() {
         if (engine.isRunning()) return
+        if (!startInProgress.compareAndSet(false, true)) return
+        val generation = operationGeneration.incrementAndGet()
+
         if (VpnService.prepare(this) != null) {
+            startInProgress.set(false)
             eventBus.emit(VpnEvent.Error("VPN permission is required"))
             stopSelf()
             return
@@ -82,6 +88,7 @@ class OmniVpnService : VpnService() {
                 VpnNotification.build(this, "Connecting…")
             )
         }.onFailure {
+            startInProgress.set(false)
             eventBus.emit(
                 VpnEvent.Error(
                     "Unable to start VPN foreground service: " + it.message
@@ -97,27 +104,41 @@ class OmniVpnService : VpnService() {
                     ?: error("No active sing-box configuration")
 
                 engine.start(config, platformInterface)
+
+                if (operationGeneration.get() != generation || stopping.get()) {
+                    runCatching { engine.stop(emitDisconnected = false) }
+                    closeTun()
+                    return@launch
+                }
+
                 publishNotification("Connected")
             } catch (t: Throwable) {
-                eventBus.emit(
-                    VpnEvent.Error(
-                        t.message?.takeIf { it.isNotBlank() } ?: "sing-box start failed"
+                if (operationGeneration.get() == generation) {
+                    eventBus.emit(
+                        VpnEvent.Error(
+                            t.message?.takeIf { it.isNotBlank() } ?: "sing-box start failed"
+                        )
                     )
-                )
-                runCatching { engine.stop(emitDisconnected = false) }
-                closeTun()
+                    runCatching { engine.stop(emitDisconnected = false) }
+                    closeTun()
 
-                withContext(Dispatchers.Main) {
-                    stopForegroundCompat()
-                    stopSelf()
+                    withContext(Dispatchers.Main) {
+                        stopForegroundCompat()
+                        stopSelf()
+                    }
+                } else {
+                    runCatching { engine.stop(emitDisconnected = false) }
+                    closeTun()
                 }
+            } finally {
+                startInProgress.set(false)
             }
         }
     }
-
     private fun stopVpn() {
         if (!stopping.compareAndSet(false, true)) return
 
+        operationGeneration.incrementAndGet()
         recoveryJob?.cancel()
         recoveryJob = null
 
@@ -140,7 +161,6 @@ class OmniVpnService : VpnService() {
             }
         }
     }
-
     override fun onRevoke() {
         stopping.set(true)
         recoveryJob?.cancel()
@@ -161,6 +181,7 @@ class OmniVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        operationGeneration.incrementAndGet()
         unregisterNetworkCallback()
         recoveryJob?.cancel()
         recoveryJob = null
@@ -196,6 +217,7 @@ class OmniVpnService : VpnService() {
         val connectivity = getSystemService(ConnectivityManager::class.java)
         val request = android.net.NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
