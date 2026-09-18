@@ -62,7 +62,7 @@ object SingBoxConfigBuilder {
 
     private fun buildVless(node: Node): JSONObject {
         require(node.uuid.orEmpty().isNotBlank()) { "VLESS UUID is required" }
-        return baseOutbound(node, "vless", setOf("uuid", "flow", "network", "tls", "transport", "packet_encoding", "multiplex"))
+        return baseOutbound(node, "vless", setOf("uuid", "flow", "encryption", "network", "tls", "transport", "packet_encoding", "multiplex", "domain_resolver"))
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -73,7 +73,7 @@ object SingBoxConfigBuilder {
 
     private fun buildTrojan(node: Node): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Trojan password is required" }
-        return baseOutbound(node, "trojan", setOf("password", "network", "tls", "transport", "multiplex"))
+        return baseOutbound(node, "trojan", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"))
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -84,7 +84,7 @@ object SingBoxConfigBuilder {
 
     private fun buildHysteria2(node: Node): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Hysteria2 password is required" }
-        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "obfs", "up_mbps", "down_mbps", "hop_interval", "hop_interval_max", "brutal_debug"))
+        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "obfs", "up_mbps", "down_mbps", "hop_interval", "hop_interval_max", "bbr_profile", "brutal_debug", "disable_chrome_parrot", "domain_resolver"))
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
