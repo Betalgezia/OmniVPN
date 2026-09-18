@@ -30,6 +30,28 @@ class SubscriptionParserTest {
         assertEquals("/a+b", transport.getString("path"))
     }
 
+
+    @Test
+    fun defaultsVlessPortTo443() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals(443, node.port)
+    }
+
+    @Test
+    fun defaultsTrojanPortTo443AndPreservesColonInPassword() {
+        val uri = "trojan://part%3Asecret@example.com"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals(443, node.port)
+        assertEquals("part:secret", node.password)
+    }
+
+    @Test
+    fun defaultsHysteria2PortTo443() {
+        val uri = "hysteria2://secret@example.com"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals(443, node.port)
+    }
     @Test
     fun enablesDefaultTlsForVless443WithoutSecurityParameter() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
