@@ -195,7 +195,7 @@ class ConfigParserTest {
         assertEquals(true, x.getBoolean("x_padding_obfs_mode"))
         assertEquals("tokenish", x.getString("x_padding_method"))
         assertEquals(true, x.getBoolean("no_grpc_header"))
-        assertEquals("1-1", x.getJSONObject("xmux").getString("max-concurrency"))
+        assertEquals("1-1", x.getJSONObject("xmux").getString("max_concurrency"))
     }
     @Test
     fun dropsVisionFlowWhenMihomoTransportIsPresent() {
