@@ -38,15 +38,16 @@ class WarpStorage(context: Context) {
         return cipher.doFinal(blob.copyOfRange(12, blob.size)).toString(Charsets.UTF_8)
     }
 
-    private fun secretKey(): SecretKey {
+    private fun secretKey(): SecretKey = synchronized(KEY_LOCK) {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance("AES", "AndroidKeyStore").apply { init(256) }.generateKey()
+        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return@synchronized it }
+        KeyGenerator.getInstance("AES", "AndroidKeyStore").apply { init(256) }.generateKey()
     }
 
     companion object {
         private const val PREFS = "omnivpn_warp"
         private const val KEY = "account"
         private const val KEY_ALIAS = "OmniVPN.Warp.Storage.v1"
+        private val KEY_LOCK = Any()
     }
 }
