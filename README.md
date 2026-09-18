@@ -59,7 +59,7 @@ Implemented:
 
 ## Command-line build
 
-The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build.
+The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build. Active VPN configuration is encrypted at rest with Android Keystore.
 
 ### Windows PowerShell
 
@@ -83,8 +83,12 @@ gradlew --version
 
 The project requires the Android SDK with API 36 installed and a JDK compatible with the checked-in Gradle/Android Gradle Plugin toolchain.
 
-## Verification status
+## Remaining verification
 
-The project has been successfully built locally on Windows with Gradle 9.3.0, AGP 8.13.0 and JDK 25. The additional changes after that local build have not yet been executed in a local build or on a physical Android device, and GitHub Actions has not returned a completed run for them yet.
+A local Windows build was successfully confirmed before the latest runtime/parser hardening with Gradle 9.3.0, AGP 8.13.0 and JDK 25.
+
+The latest commits add additional Kotlin, parser, Room, notification and runtime changes. They have been statically audited, but they have not yet been executed by a fresh local Gradle build or on a physical Android device in this workspace. The repository CI workflows are present, but no completed run for the latest push is surfaced by the available GitHub integration.
+
+The next validation target is a real device/emulator run covering VPN permission, TUN establishment, VLESS/Trojan/Hysteria2, AmneziaWG, WARP bootstrap, DNS/FakeIP and network handover/recovery.
 
 The core bridge and config builder are intentionally separated: invalid or unsupported node fields are not blindly forwarded into the running sing-box document.
