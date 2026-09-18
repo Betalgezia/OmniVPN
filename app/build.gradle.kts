@@ -27,6 +27,14 @@ android {
     }
 }
 
+val libboxAar = file("libs/libbox.aar")
+if (!libboxAar.exists()) {
+    throw GradleException(
+        "Missing app/libs/libbox.aar. Run scripts/fetch-libbox.sh (Linux/macOS) " +
+            "or scripts/fetch-libbox.ps1 (Windows) before building."
+    )
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
@@ -51,5 +59,5 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.57.1")
     ksp("com.google.dagger:hilt-compiler:2.57.1")
 
-    // sing-box-lx libbox AAR will be wired in the next core-integration step.
+    implementation(files(libboxAar))
 }

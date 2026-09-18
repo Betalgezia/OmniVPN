@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+local.properties
+build/
+**/build/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+app/libs/*.aar
+app/libs/.libbox.version

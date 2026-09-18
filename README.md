@@ -24,21 +24,38 @@ Ordinary WireGuard is intentionally not exposed as a separate protocol in the Om
 
 ## Core
 
-Pinned target: **sing-box-lx v1.14.1-lx.3**. Its Android AAR includes AmneziaWG support.
+Pinned target: **sing-box-lx v1.14.1-lx.3**.
 
 AAR SHA-256:
 
-`bc9d313b040931323a5754500e62f5cbe8f5cb09503c44118eef4d3c0c8be83fd`
+`bc9d313b040931323a5754500e62f5cbe8f5cb09503c44118eef3d0c8cbe83fd`
 
-## Current status
+The AAR is intentionally not committed to Git. Run the platform-specific fetch script before the first Gradle build:
 
-Foundation committed:
+- Linux/macOS: `./scripts/fetch-libbox.sh`
+- Windows PowerShell: `./scripts/fetch-libbox.ps1`
 
-- Android application skeleton
-- Compose entry point
-- Hilt application
-- Room database and DAOs
-- VPN domain models
-- VPN event bus
+## Core integration status
 
-Next: wire the exact libbox AAR into the Android `VpnService.PlatformInterface.OpenTun()` bridge, then add the validated sing-box configuration builder and VPN controller.
+Implemented:
+
+- `Libbox.setup` during application initialization.
+- `Libbox.checkConfig` before engine startup.
+- `Libbox.newService(config, platform)` lifecycle wrapper.
+- Android `VpnService` foreground service.
+- `PlatformInterface.openTun()` backed by `VpnService.Builder.establish()`.
+- `PlatformInterface.autoDetectInterfaceControl()` using `VpnService.protect()`.
+- Atomic TUN `ParcelFileDescriptor` ownership and cleanup on stop/revoke/destroy.
+- `StateFlow` + typed VPN events.
+- Network-change detection with exponential recovery starting at 5 seconds and capped at 60 seconds.
+
+Still to implement:
+
+- Validated sing-box configuration builder for VLESS/Trojan/Hysteria2/AmneziaWG.
+- Cloudflare WARP bootstrap.
+- Subscription parsers (Mihomo/sing-box YAML/JSON and Base64 V2Ray formats).
+- DNS detour/fake-IP configuration.
+- UI and VPN permission flow.
+- Instrumentation and parser/engine tests.
+
+The core bridge is intentionally kept separate from the future config builder so invalid or unsupported node fields are never blindly forwarded.
