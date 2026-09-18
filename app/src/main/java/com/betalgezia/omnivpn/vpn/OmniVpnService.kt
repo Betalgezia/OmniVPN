@@ -162,6 +162,7 @@ class OmniVpnService : VpnService() {
         }
     }
     override fun onRevoke() {
+        operationGeneration.incrementAndGet()
         stopping.set(true)
         recoveryJob?.cancel()
         recoveryJob = null
