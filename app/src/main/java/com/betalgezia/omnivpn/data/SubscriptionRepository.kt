@@ -1,4 +1,6 @@
 package com.betalgezia.omnivpn.data
+private const val MAX_ERROR_BODY_CHARS = 64 * 1024
+
 
 import com.betalgezia.omnivpn.data.local.SubscriptionDao
 import com.betalgezia.omnivpn.data.local.SubscriptionEntity
@@ -104,8 +106,6 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
         }
         return out.toString(Charsets.UTF_8.name())
     }
-
-    private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
     private fun BufferedReader.readTextLimited(maxChars: Int): String {
         val out = StringBuilder()
