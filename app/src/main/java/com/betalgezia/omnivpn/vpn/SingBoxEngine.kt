@@ -33,7 +33,7 @@ class SingBoxEngine @Inject constructor(
                 service = created
                 try {
                     created.start()
-                    if (service !== created) return@withContext
+                    if (service !== created) return@withLock
                 } catch (t: Throwable) {
                     if (service === created) service = null
                     runCatching { created.close() }
