@@ -19,5 +19,6 @@ data class NodeEntity(
     val serverPublicKey: String?,
     val endpoint: String?,
     val rawConfig: String?,
-    val awgJson: String?
+    val awgJson: String?,
+    val sourceId: Long?
 )

@@ -14,6 +14,7 @@ data class Node(
     val serverPublicKey: String? = null,
     val endpoint: String? = null,
     val rawConfig: String? = null,
+    val sourceId: Long? = null,
     val awg: AwgParameters? = null
 )
 

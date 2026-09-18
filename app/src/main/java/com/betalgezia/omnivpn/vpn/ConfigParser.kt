@@ -15,6 +15,10 @@ object ConfigParser {
         val text = decodeBase64IfNeeded(input)
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return emptyList()
+        if (trimmed.contains("://") && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+            val uriNodes = SubscriptionParser.parse(trimmed)
+            if (uriNodes.isNotEmpty()) return uriNodes
+        }
         return when {
             trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
             else -> parseYaml(trimmed)

@@ -21,6 +21,12 @@ interface NodeDao {
     @Delete
     suspend fun delete(node: NodeEntity)
 
+    @Query("DELETE FROM nodes WHERE sourceId = :sourceId")
+    suspend fun deleteBySourceId(sourceId: Long)
+
+    @Query("DELETE FROM nodes WHERE sourceId IS NULL")
+    suspend fun deleteManual()
+
     @Query("DELETE FROM nodes")
     suspend fun deleteAll()
 }

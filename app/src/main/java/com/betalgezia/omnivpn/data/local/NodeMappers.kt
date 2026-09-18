@@ -7,14 +7,14 @@ fun NodeEntity.toDomain(): Node = Node(
     id = id, name = name, protocol = protocol, server = server, port = port,
     uuid = uuid, password = password, privateKey = privateKey, publicKey = publicKey,
     preSharedKey = preSharedKey, serverPublicKey = serverPublicKey, endpoint = endpoint,
-    rawConfig = rawConfig, awg = awgJson?.let(AwgParametersCodec::decode)
+    rawConfig = rawConfig, sourceId = sourceId, awg = awgJson?.let(AwgParametersCodec::decode)
 )
 
 fun Node.toEntity(): NodeEntity = NodeEntity(
     id = id, name = name, protocol = protocol, server = server, port = port,
     uuid = uuid, password = password, privateKey = privateKey, publicKey = publicKey,
     preSharedKey = preSharedKey, serverPublicKey = serverPublicKey, endpoint = endpoint,
-    rawConfig = rawConfig, awgJson = awg?.let(AwgParametersCodec::encode)
+    rawConfig = rawConfig, awgJson = awg?.let(AwgParametersCodec::encode), sourceId = sourceId
 )
 
 private object AwgParametersCodec {

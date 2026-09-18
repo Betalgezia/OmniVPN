@@ -16,4 +16,7 @@ interface SubscriptionDao {
 
     @Delete
     suspend fun delete(subscription: SubscriptionEntity)
+
+    @Query("UPDATE subscriptions SET lastUpdatedAt = :updatedAt WHERE id = :id")
+    suspend fun markUpdated(id: Long, updatedAt: Long)
 }

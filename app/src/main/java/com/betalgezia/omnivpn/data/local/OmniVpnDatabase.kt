@@ -6,8 +6,8 @@ import androidx.room.TypeConverters
 
 @Database(
     entities = [NodeEntity::class, SubscriptionEntity::class],
-    version = 1,
-    exportSchema = true
+    version = 2,
+    exportSchema = false
 )
 @TypeConverters(Converters::class)
 abstract class OmniVpnDatabase : RoomDatabase() {

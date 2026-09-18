@@ -58,6 +58,7 @@ Implemented:
 Still to implement:
 
 - Mihomo/sing-box JSON/YAML import for VLESS, Trojan, Hysteria2 and WireGuard, with Room-backed node persistence.
+- Subscription URL refresh with HTTPS-only redirects, a 5 MiB response limit and per-subscription node replacement.
 - Room-backed `NodeRepository` and import service.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.

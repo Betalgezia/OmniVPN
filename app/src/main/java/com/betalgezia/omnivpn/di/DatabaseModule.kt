@@ -20,7 +20,9 @@ object DatabaseModule {
             context,
             OmniVpnDatabase::class.java,
             "omnivpn.db"
-        ).build()
+        )
+            .addMigrations(com.betalgezia.omnivpn.data.local.OmniVpnMigrations.MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideNodeDao(database: OmniVpnDatabase) = database.nodeDao()
