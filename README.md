@@ -52,11 +52,12 @@ Implemented:
 - AmneziaWG emitted as a sing-box `wireguard` endpoint with sanitized peer fields and AWG2 parameters.
 - DNS local + DoH + FakeIP baseline.
 - `VpnController.start(node)` wiring node validation/config generation into the VPN service.
+- URI subscription parser for VLESS/Trojan/Hysteria2, including standard Base64-wrapped URI lists.
 
 Still to implement:
 
 - Cloudflare WARP bootstrap.
-- Subscription parsers (Mihomo/sing-box YAML/JSON and Base64 V2Ray formats).
+- Mihomo/sing-box YAML/JSON subscription parsing and broader Base64/V2Ray compatibility.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.
 - Instrumentation and parser/engine tests.
