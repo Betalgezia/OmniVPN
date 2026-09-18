@@ -160,7 +160,7 @@ object ConfigParser {
         val packetEncoding = string(raw, "packet_encoding", "packet-encoding")?.lowercase()
         if (packetEncoding == "xudp") canonical.put("packet_encoding", packetEncoding)
         copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
-        putMapIfPresent(raw, canonical, "tls")
+        putTlsMapIfPresent(raw, canonical, "random")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
@@ -174,7 +174,7 @@ object ConfigParser {
         val password = string(raw, "password") ?: return null
         val canonical = JSONObject().put("type", "trojan").put("server", server).put("server_port", port).put("password", password)
         copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
-        putMapIfPresent(raw, canonical, "tls")
+        putTlsMapIfPresent(raw, canonical, "")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
@@ -193,7 +193,7 @@ object ConfigParser {
         copy(raw, canonical, setOf("network", "domain_strategy"))
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
-        putMapIfPresent(raw, canonical, "tls")
+        putTlsMapIfPresent(raw, canonical, "")
         if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server, ""))
         return node(name(raw, server, port), Protocol.HYSTERIA2, server, port, password = password, raw = canonical.toString())
     }
@@ -330,6 +330,40 @@ object ConfigParser {
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
         val value = raw[field] as? Map<*, *> ?: return
         target.put(field, toJsonValue(value))
+    }
+
+    private fun putTlsMapIfPresent(
+        raw: Map<*, *>,
+        target: JSONObject,
+        defaultFingerprint: String
+    ) {
+        val value = raw["tls"] as? Map<*, *> ?: return
+        val tls = toJsonValue(value) as? JSONObject ?: return
+        val reality = tls.optJSONObject("reality")
+        if (reality != null) {
+            val publicKey = reality.optString("public_key").trim()
+            if (!isValidRealityPublicKey(publicKey)) {
+                tls.remove("reality")
+            } else if (reality.has("short_id") && !isValidRealityShortId(reality.optString("short_id"))) {
+                reality.remove("short_id")
+            }
+        }
+        val utls = tls.optJSONObject("utls")
+        if (utls != null && utls.optBoolean("enabled", false)) {
+            val fingerprint = utls.optString("fingerprint").lowercase().trim()
+            if (fingerprint.isEmpty()) {
+                if (defaultFingerprint in VALID_FINGERPRINTS) {
+                    utls.put("fingerprint", defaultFingerprint)
+                }
+            } else if (fingerprint !in VALID_FINGERPRINTS) {
+                if (defaultFingerprint in VALID_FINGERPRINTS) {
+                    utls.put("fingerprint", defaultFingerprint)
+                } else {
+                    tls.remove("utls")
+                }
+            }
+        }
+        target.put("tls", tls)
     }
 
     private fun isValidRealityPublicKey(value: String?): Boolean {
