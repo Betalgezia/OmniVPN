@@ -99,7 +99,9 @@ object SingBoxConfigBuilder {
             require(source.optString("type", type) == type) { "Imported outbound type does not match ${node.protocol}" }
             copyAllowed(source, outbound, allowedFields)
         }
-        return outbound.put("type", type).put("tag", PROXY_TAG)
+        outbound.put("type", type).put("tag", PROXY_TAG)
+        if (type == "vless") sanitizeVless(outbound)
+        return outbound
     }
 
     private fun buildAmneziaWgEndpoint(node: Node): JSONObject {
@@ -153,6 +155,17 @@ object SingBoxConfigBuilder {
             .forEach { (key, value) -> if (!value.isNullOrBlank()) target.put(key, value) }
     }
 
+    private fun sanitizeVless(outbound: JSONObject) {
+        val flow = outbound.optString("flow")
+        val hasTransportObject = outbound.optJSONObject("transport") != null
+        val network = outbound.optString("network").lowercase()
+        if (flow == "xtls-rprx-vision" && (hasTransportObject || (network.isNotEmpty() && network != "tcp"))) {
+            outbound.remove("flow")
+        }
+        if (outbound.has("packet_encoding") && outbound.optString("packet_encoding") != "xudp") {
+            outbound.remove("packet_encoding")
+        }
+    }
     private fun copyAllowed(source: JSONObject, target: JSONObject, allowedFields: Set<String>) {
         for (key in allowedFields) if (source.has(key) && !source.isNull(key)) target.put(key, source.get(key))
     }
