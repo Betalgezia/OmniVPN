@@ -216,6 +216,26 @@ class ConfigParserTest {
         val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
         assertFalse(raw.has("flow"))
     }
+
+    @Test
+    fun sanitizesNestedSingBoxRealityAndUtlsFields() {
+        val json = JSONObject().put("outbounds", JSONArray().put(
+            JSONObject().put("type", "vless")
+                .put("server", "edge.example.com")
+                .put("server_port", 443)
+                .put("uuid", "00000000-0000-0000-0000-000000000001")
+                .put("tls", JSONObject()
+                    .put("enabled", true)
+                    .put("server_name", "edge.example.com")
+                    .put("utls", JSONObject().put("enabled", true).put("fingerprint", "broken"))
+                    .put("reality", JSONObject().put("enabled", true).put("public_key", "broken").put("short_id", "xyz"))
+                )
+        ))
+        val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
+        val tls = raw.getJSONObject("tls")
+        assertFalse(tls.has("reality"))
+        assertEquals("random", tls.getJSONObject("utls").getString("fingerprint"))
+    }
     @Test
     fun parsesMihomoWireguardReserved() {
         val yaml = """
