@@ -1,5 +1,7 @@
 package com.betalgezia.omnivpn.vpn
 
+import com.betalgezia.omnivpn.OmniVpnApplication
+
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -116,6 +118,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         serviceScope.launch {
             try {
                 if (operationGeneration.get() != generation || stopping.get()) return@launch
+                OmniVpnApplication.libboxReady.await()
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
 
