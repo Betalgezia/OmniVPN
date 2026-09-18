@@ -1,0 +1,19 @@
+package com.betalgezia.omnivpn.data.local
+
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface SubscriptionDao {
+    @Query("SELECT * FROM subscriptions ORDER BY name")
+    fun observeAll(): Flow<List<SubscriptionEntity>>
+
+    @Insert
+    suspend fun insert(subscription: SubscriptionEntity): Long
+
+    @Delete
+    suspend fun delete(subscription: SubscriptionEntity)
+}
