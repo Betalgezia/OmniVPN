@@ -55,7 +55,7 @@ class CloudflareWarpClient {
         return@withContext if (license == null) account else applyLicenseAtHost(account, license, registrationHost!!)
     }
 
-    private fun parseRegistration(body: String, privateKey: String, endpoint: String): WarpAccount {
+    internal fun parseRegistration(body: String, privateKey: String, endpoint: String): WarpAccount {
         val root = JSONObject(body)
         val config = root.optJSONObject("config") ?: error("Cloudflare WARP response has no config")
         val peer = config.optJSONArray("peers")?.optJSONObject(0) ?: error("Cloudflare WARP response has no peer")
