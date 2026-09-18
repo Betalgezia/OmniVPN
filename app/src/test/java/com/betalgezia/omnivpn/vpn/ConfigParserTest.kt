@@ -251,6 +251,36 @@ class ConfigParserTest {
     }
 
     @Test
+    fun rejectsInvalidWireGuardPrivateKey() {
+        val yaml = """
+            proxies:
+              - name: Broken WG
+                type: wireguard
+                server: 198.51.100.10
+                port: 51820
+                private-key: invalid
+                peer-public-key: invalid
+                ip: 10.0.0.2
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(yaml).size)
+    }
+
+    @Test
+    fun rejectsInvalidWireGuardPeerPublicKey() {
+        val validPrivate = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        val yaml = """
+            proxies:
+              - name: Broken WG
+                type: wireguard
+                server: 198.51.100.10
+                port: 51820
+                private-key: $validPrivate
+                peer-public-key: invalid
+                ip: 10.0.0.2
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(yaml).size)
+    }
+    @Test
     fun normalizesAmneziaConfReservedBytes() {
         val conf = """
             [Interface]
