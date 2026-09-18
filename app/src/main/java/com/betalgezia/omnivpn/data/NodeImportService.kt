@@ -17,14 +17,16 @@ class NodeImportService @Inject constructor(private val repository: NodeReposito
     suspend fun importText(text: String): ImportResult {
         val parsed = ConfigParser.parse(text)
         require(parsed.isNotEmpty()) { "Configuration contains no supported nodes" }
-        repository.addAll(parsed.distinctBy(::identityKey))
-        return ImportResult(parsed)
+        val unique = parsed.distinctBy(::identityKey)
+        repository.addAll(unique)
+        return ImportResult(unique, unsupportedEntries = parsed.size - unique.size)
     }
 
     suspend fun replaceWithText(text: String): ImportResult {
         val parsed = ConfigParser.parse(text)
         require(parsed.isNotEmpty()) { "Configuration contains no supported nodes" }
-        repository.replaceAll(parsed.distinctBy(::identityKey))
-        return ImportResult(parsed)
+        val unique = parsed.distinctBy(::identityKey)
+        repository.replaceAll(unique)
+        return ImportResult(unique, unsupportedEntries = parsed.size - unique.size)
     }
 }
