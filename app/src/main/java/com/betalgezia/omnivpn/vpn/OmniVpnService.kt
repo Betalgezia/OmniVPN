@@ -178,20 +178,17 @@ class OmniVpnService : VpnService() {
         recoveryJob?.cancel()
         recoveryJob = null
 
-        serviceScope.launch {
-            runCatching { engine.stop(emitDisconnected = false) }
-            closeTun()
-            eventBus.emit(VpnEvent.Revoked)
+        // Revoke is a terminal Android lifecycle callback. Do the native
+        // engine/TUN teardown synchronously so onDestroy cannot cancel an
+        // in-flight cleanup coroutine before the VPN fd is released.
+        engine.closeNow()
+        closeTun()
+        eventBus.emit(VpnEvent.Revoked)
 
-            withContext(Dispatchers.Main) {
-                stopForegroundCompat()
-                stopSelf()
-            }
-        }
-
+        runCatching { stopForegroundCompat() }
+        stopSelf()
         super.onRevoke()
     }
-
     override fun onDestroy() {
         operationGeneration.incrementAndGet()
         unregisterNetworkCallback()
