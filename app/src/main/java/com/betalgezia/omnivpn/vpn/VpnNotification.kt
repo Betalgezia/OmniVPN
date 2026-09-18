@@ -4,6 +4,8 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.app.PendingIntent
 import androidx.core.app.NotificationCompat
 
 object VpnNotification {
@@ -22,12 +24,23 @@ object VpnNotification {
     }
 
     fun build(context: Context, text: String): Notification {
+        val stopIntent = Intent(context, OmniVpnService::class.java).apply {
+            action = OmniVpnService.ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            context,
+            1002,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentTitle("OmniVPN")
             .setContentText(text)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(0, "Disconnect", stopPendingIntent)
             .build()
     }
 }
