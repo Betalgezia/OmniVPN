@@ -2,6 +2,8 @@ package com.betalgezia.omnivpn.data
 
 import com.betalgezia.omnivpn.data.local.SubscriptionDao
 import com.betalgezia.omnivpn.data.local.SubscriptionEntity
+import com.betalgezia.omnivpn.data.local.OmniVpnDatabase
+import androidx.room.withTransaction
 import com.betalgezia.omnivpn.data.local.toDomain
 import com.betalgezia.omnivpn.data.local.toEntity
 import com.betalgezia.omnivpn.data.model.Node
@@ -23,7 +25,11 @@ import kotlinx.coroutines.sync.withLock
 private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
 @Singleton
-class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDao, private val nodes: NodeRepository) {
+class SubscriptionRepository @Inject constructor(
+    private val dao: SubscriptionDao,
+    private val nodes: NodeRepository,
+    private val database: OmniVpnDatabase
+) {
     private val addMutex = Mutex()
 
     val subscriptions: Flow<List<Subscription>> = dao.observeAll().map { list -> list.map { it.toDomain() } }
@@ -43,8 +49,10 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
     }
 
     suspend fun delete(subscription: Subscription) {
-        dao.delete(subscription.toEntity())
-        nodes.deleteBySource(subscription.id)
+        database.withTransaction {
+            dao.delete(subscription.toEntity())
+            nodes.deleteBySource(subscription.id)
+        }
     }
 
     suspend fun refresh(subscription: Subscription): List<Node> = withContext(Dispatchers.IO) {
@@ -52,8 +60,10 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
         val body = fetch(subscription.url)
         val parsed = ConfigParser.parse(body)
         require(parsed.isNotEmpty()) { "Subscription returned no supported nodes" }
-        nodes.replaceSubscription(subscription.id, parsed)
-        dao.markUpdated(subscription.id, System.currentTimeMillis())
+        database.withTransaction {
+            nodes.replaceSubscription(subscription.id, parsed)
+            dao.markUpdated(subscription.id, System.currentTimeMillis())
+        }
         parsed
     }
 
