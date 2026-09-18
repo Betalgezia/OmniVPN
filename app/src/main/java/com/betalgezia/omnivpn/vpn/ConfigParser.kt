@@ -147,7 +147,18 @@ object ConfigParser {
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
-        copy(raw, canonical, setOf("flow", "packet_encoding", "network", "multiplex", "domain_strategy"))
+        val flow = string(raw, "flow")?.trim().orEmpty()
+        val transportType = string(raw, "network")?.lowercase()
+        if (flow == "xtls-rprx-vision" && transportType != null && transportType != "tcp") {
+            // Vision is valid only on bare TCP; dropping the flow keeps the node loadable.
+        } else if (flow == "xtls-rprx-vision") {
+            canonical.put("flow", flow)
+        } else if (flow.isNotBlank()) {
+            // Unsupported VLESS flow values are ignored instead of poisoning the config.
+        }
+        val packetEncoding = string(raw, "packet_encoding", "packet-encoding")?.lowercase()
+        if (packetEncoding == "xudp") canonical.put("packet_encoding", packetEncoding)
+        copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
         putMapIfPresent(raw, canonical, "tls")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server))
         if (!canonical.has("tls")) buildMihomoTls(raw, server)?.let { canonical.put("tls", it) }
@@ -263,8 +274,11 @@ object ConfigParser {
             val reality = raw["reality-opts"] as? Map<*, *>
             reality?.let { r ->
                 val publicKey = string(r, "public-key")
-                if (!publicKey.isNullOrBlank()) {
-                    put("reality", JSONObject().put("enabled", true).put("public_key", publicKey).apply { string(r, "short-id")?.let { put("short_id", it) } })
+                if (isValidRealityPublicKey(publicKey)) {
+                    put("reality", JSONObject().put("enabled", true).put("public_key", publicKey).apply {
+                        val shortId = string(r, "short-id")
+                        if (isValidRealityShortId(shortId)) put("short_id", shortId)
+                    })
                 }
             }
         }
@@ -306,6 +320,21 @@ object ConfigParser {
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
         val value = raw[field] as? Map<*, *> ?: return
         target.put(field, toJsonValue(value))
+    }
+
+    private fun isValidRealityPublicKey(value: String?): Boolean {
+        val raw = value?.trim().orEmpty()
+        if (raw.isEmpty()) return false
+        val padded = raw + "=".repeat((4 - raw.length % 4) % 4)
+        val bytes = runCatching {
+            Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        }.getOrNull() ?: return false
+        return bytes.size == 32
+    }
+
+    private fun isValidRealityShortId(value: String?): Boolean {
+        val raw = value?.trim()?.lowercase().orEmpty()
+        return raw.isNotEmpty() && raw.length <= 16 && raw.length % 2 == 0 && raw.all { it in "0123456789abcdef" }
     }
 
     private fun allowedIps(raw: Map<*, *>): JSONArray {
