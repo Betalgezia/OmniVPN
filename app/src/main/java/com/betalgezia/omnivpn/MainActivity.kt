@@ -123,7 +123,6 @@ class MainActivity : ComponentActivity() {
                                 viewModel.startWarp()
                             }
                         },
-                        enabled = !busy,
                         modifier = Modifier.weight(1f)
                     ) { Text("Get WARP") }
                 }
