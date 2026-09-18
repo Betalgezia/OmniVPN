@@ -51,13 +51,21 @@ class MainActivity : ComponentActivity() {
         val message by viewModel.message.collectAsState()
         var input by remember { mutableStateOf("") }
         var pendingNode by remember { mutableStateOf<Node?>(null) }
+        var pendingWarp by remember { mutableStateOf(false) }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) {
             val node = pendingNode
+            val warp = pendingWarp
             pendingNode = null
-            if (node != null) viewModel.connect(node)
+            pendingWarp = false
+            if (result.resultCode == RESULT_OK) {
+                when {
+                    node != null -> viewModel.connect(node)
+                    warp -> viewModel.startWarp()
+                }
+            }
         }
 
         Scaffold(topBar = { TopAppBar(title = { Text("OmniVPN") }) }) { padding ->
@@ -82,7 +90,19 @@ class MainActivity : ComponentActivity() {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(onClick = { viewModel.import(input) }, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
-                    OutlinedButton(onClick = viewModel::startWarp, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Get WARP") }
+                    OutlinedButton(
+                        onClick = {
+                            val intent = viewModel.prepareVpn()
+                            if (intent != null) {
+                                pendingWarp = true
+                                permissionLauncher.launch(intent)
+                            } else {
+                                viewModel.startWarp()
+                            }
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Get WARP") }
                 }
 
                 if (busy) CircularProgressIndicator()
