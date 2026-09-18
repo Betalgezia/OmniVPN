@@ -5,6 +5,8 @@ import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.PlatformInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,39 +18,44 @@ class SingBoxEngine @Inject constructor(
     @Volatile
     private var service: BoxService? = null
 
+    private val lifecycleMutex = Mutex()
+
     suspend fun start(config: String, platformInterface: PlatformInterface) {
-        eventBus.emit(VpnEvent.Connecting)
+        lifecycleMutex.withLock {
+            eventBus.emit(VpnEvent.Connecting)
 
-        withContext(Dispatchers.IO) {
-            OmniVpnApplication.libboxReady.await()
-            Libbox.checkConfig(config)
-            check(service == null) { "sing-box is already running" }
+            withContext(Dispatchers.IO) {
+                OmniVpnApplication.libboxReady.await()
+                Libbox.checkConfig(config)
+                check(service == null) { "sing-box is already running" }
 
-            val created = Libbox.newService(config, platformInterface)
-            try {
-                created.start()
-                service = created
-            } catch (t: Throwable) {
-                runCatching { created.close() }
-                throw t
+                val created = Libbox.newService(config, platformInterface)
+                try {
+                    created.start()
+                    service = created
+                } catch (t: Throwable) {
+                    runCatching { created.close() }
+                    throw t
+                }
             }
-        }
 
-        eventBus.emit(VpnEvent.Connected)
+            eventBus.emit(VpnEvent.Connected)
+        }
     }
 
     suspend fun stop(emitDisconnected: Boolean = true) {
-        withContext(Dispatchers.IO) {
-            val current = service ?: return@withContext
-            service = null
-            current.close()
-        }
+        lifecycleMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val current = service ?: return@withContext
+                service = null
+                current.close()
+            }
 
-        if (emitDisconnected) {
-            eventBus.emit(VpnEvent.Disconnected)
+            if (emitDisconnected) {
+                eventBus.emit(VpnEvent.Disconnected)
+            }
         }
     }
-
     fun resetNetwork() {
         val current = service ?: return
         runCatching { current.resetNetwork() }
