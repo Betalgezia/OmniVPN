@@ -251,6 +251,29 @@ class ConfigParserTest {
     }
 
     @Test
+    fun normalizesBareWireGuardAddressesToPrefixes() {
+        val key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        val yaml = """
+            proxies:
+              - name: WG
+                type: wireguard
+                server: 198.51.100.10
+                port: 51820
+                private-key: $key
+                peer-public-key: $key
+                ip: 10.0.0.2
+                ipv6: 2001:db8::2
+                allowed-ips: 10.0.0.0, 2001:db8::/32
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!)
+        val address = raw.getJSONArray("address")
+        assertEquals("10.0.0.2/32", address.getString(0))
+        assertEquals("2001:db8::2/128", address.getString(1))
+        val allowed = raw.getJSONArray("peers").getJSONObject(0).getJSONArray("allowed_ips")
+        assertEquals("10.0.0.0/32", allowed.getString(0))
+        assertEquals("2001:db8::/32", allowed.getString(1))
+    }
+    @Test
     fun canonicalizesUrlSafeWireGuardKeys() {
         val urlSafe = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
         val yaml = """
