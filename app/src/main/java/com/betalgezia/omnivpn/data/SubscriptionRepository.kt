@@ -19,16 +19,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Singleton
 class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDao, private val nodes: NodeRepository) {
+    private val addMutex = Mutex()
+
     val subscriptions: Flow<List<Subscription>> = dao.observeAll().map { list -> list.map { it.toDomain() } }
 
-    suspend fun add(name: String, url: String): Long {
+    suspend fun add(name: String, url: String): Long = addMutex.withLock {
         val normalizedUrl = url.trim()
         validateUrl(normalizedUrl)
-        dao.findByUrl(normalizedUrl)?.let { return it.id }
-        return dao.insert(
+        dao.findByUrl(normalizedUrl)?.let { return@withLock it.id }
+        dao.insert(
             SubscriptionEntity(
                 name = name.trim().ifBlank { URI(normalizedUrl).host ?: normalizedUrl },
                 url = normalizedUrl,
