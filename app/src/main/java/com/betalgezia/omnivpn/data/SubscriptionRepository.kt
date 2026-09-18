@@ -23,8 +23,17 @@ class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDa
     val subscriptions: Flow<List<Subscription>> = dao.observeAll().map { list -> list.map { it.toDomain() } }
 
     suspend fun add(name: String, url: String): Long {
-        validateUrl(url)
-        return dao.insert(SubscriptionEntity(name=name.trim().ifBlank { URI(url).host ?: url }, url=url.trim(), enabled=true, lastUpdatedAt=null))
+        val normalizedUrl = url.trim()
+        validateUrl(normalizedUrl)
+        dao.findByUrl(normalizedUrl)?.let { return it.id }
+        return dao.insert(
+            SubscriptionEntity(
+                name = name.trim().ifBlank { URI(normalizedUrl).host ?: normalizedUrl },
+                url = normalizedUrl,
+                enabled = true,
+                lastUpdatedAt = null
+            )
+        )
     }
 
     suspend fun delete(subscription: Subscription) {
