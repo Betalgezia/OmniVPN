@@ -98,6 +98,21 @@ class SubscriptionParserTest {
         assertEquals("edge.example.com", tls.getString("server_name"))
     }
     @Test
+    fun decodesMultiplyEncodedWebsocketPath() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&type=ws&path=%2F%252Fassignment"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertEquals("//assignment", raw.getJSONObject("transport").getString("path"))
+    }
+
+    @Test
+    fun decodesMultiplyEncodedAlpn() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&alpn=http%252F1.1%2Ch2"
+        val tls = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("tls")
+        val alpn = tls.getJSONArray("alpn")
+        assertEquals("http/1.1", alpn.getString(0))
+        assertEquals("h2", alpn.getString(1))
+    }
+    @Test
     fun parsesTrojanUriWithTlsAndGrpc() {
         val uri = "trojan://p%2Bss@example.com:443?sni=trojan.example.com&security=tls&type=grpc&serviceName=proxy#Trojan"
         val node = SubscriptionParser.parse(uri).single()
