@@ -144,6 +144,63 @@ class ConfigParserTest {
         assertEquals(25, peer.getInt("persistent_keepalive_interval"))
         assertEquals(255, peer.getJSONArray("reserved").getInt(2))
     }
+
+    @Test
+    fun dropsVisionFlowWhenMihomoTransportIsPresent() {
+        val yaml = """
+            proxies:
+              - name: XHTTP Vision
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                network: xhttp
+                flow: xtls-rprx-vision
+                xhttp-opts:
+                  path: /xhttp
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!)
+        assertEquals("xhttp", raw.getJSONObject("transport").getString("type"))
+        assertEquals(false, raw.has("flow"))
+    }
+
+    @Test
+    fun rejectsInvalidRealityKeyInMihomoImportWithoutRealityBlock() {
+        val yaml = """
+            proxies:
+              - name: Broken Reality
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                reality-opts:
+                  public-key: invalid
+                  short-id: xyz
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!)
+        assertFalse(raw.getJSONObject("tls").has("reality"))
+    }
+
+    @Test
+    fun normalizesAmneziaConfReservedBytes() {
+        val conf = """
+            [Interface]
+            PrivateKey = local-private
+            Address = 10.0.0.2/32
+
+            [Peer]
+            PublicKey = peer-public
+            Endpoint = 198.51.100.10:51820
+            AllowedIPs = 0.0.0.0/0
+            Reserved = 1,2,3
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(conf).single().rawConfig!!)
+        val reserved = raw.getJSONArray("peers").getJSONObject(0).getJSONArray("reserved")
+        assertEquals(3, reserved.length())
+        assertEquals(3, reserved.getInt(2))
+    }
     @Test
     fun parsesMihomoWireguardReserved() {
         val yaml = """
