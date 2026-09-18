@@ -31,6 +31,19 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun enablesDefaultTlsForVless443WithoutSecurityParameter() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertTrue(raw.getJSONObject("tls").getBoolean("enabled"))
+    }
+
+    @Test
+    fun securityNoneDisablesTlsEvenOn443() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=none"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("tls"))
+    }
+    @Test
     fun doesNotForceTlsForPlainVless() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:80?type=ws&path=%2F"
         val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
