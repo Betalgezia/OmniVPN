@@ -39,7 +39,8 @@ The AAR is intentionally not committed to Git. Run the platform-specific fetch s
 
 Implemented:
 
-- `Libbox.setup`, `Libbox.checkConfig` and `Libbox.newService(config, platform)`.
+- `Libbox.setup`, `Libbox.checkConfig` and `Libbox.newCommandServer(handler, platform)`.
+- `CommandServer.start()`, `startOrReloadService(config, OverrideOptions())` and `close()`.
 - Android `VpnService` foreground lifecycle with atomic TUN ownership.
 - `VpnService.protect()` for sing-box egress sockets.
 - Typed VPN `StateFlow`/event bus plus guarded start/stop lifecycle.
@@ -64,7 +65,7 @@ The repository is self-contained except for the pinned `libbox.aar`, which is fe
 ### Windows PowerShell
 
 ```powershell
-.scriptsetch-libbox.ps1
+.\scripts\fetch-libbox.ps1
 .gradlew.bat testDebugUnitTest assembleDebug
 ```
 
@@ -82,6 +83,19 @@ gradlew --version
 ```
 
 The project requires the Android SDK with API 36 installed and a JDK compatible with the checked-in Gradle/Android Gradle Plugin toolchain.
+
+### Windows troubleshooting
+
+In `local.properties`, use a direct-slash SDK path, for example `sdk.dir=C:/Users/<you>/AppData/Local/Android/Sdk`. Avoid backslashes in `sdk.dir`.
+
+Before running `gradlew.bat`, make sure `JAVA_HOME` points to the JDK you intend Gradle to use, then open a new PowerShell window. Verify with:
+
+```powershell
+$env:JAVA_HOME
+java -version
+```
+
+For the current Android build, the Kotlin/Java bytecode target is Java 17.
 
 ## Remaining verification
 
