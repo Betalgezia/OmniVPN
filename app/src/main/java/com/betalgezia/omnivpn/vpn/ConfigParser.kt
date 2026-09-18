@@ -206,8 +206,8 @@ object ConfigParser {
 
         val address = addressList(raw)
         if (address.isEmpty()) return null
-        val privateKey = string(raw, "private_key", "private-key") ?: return null
-        if (!isWireguardKey32(privateKey)) return null
+        val privateKey = string(raw, "private_key", "private-key")
+            ?.let(::normalizeWireguardKey) ?: return null
 
         val peers = sourcePeers.mapNotNull { source ->
             val endpointText = string(source, "address")
@@ -217,10 +217,10 @@ object ConfigParser {
             val port = int(source, "port")
                 ?: int(raw, "server_port", "port")
                 ?: endpointPort(endpointText, 51820)
-            val publicKey = string(source, "public_key", "public-key")
-                ?: string(raw, "peer_public_key", "public_key", "public-key")
-                ?: return@mapNotNull null
-            if (!isWireguardKey32(publicKey)) return@mapNotNull null
+            val publicKey = (
+                string(source, "public_key", "public-key")
+                    ?: string(raw, "peer_public_key", "public_key", "public-key")
+                )?.let(::normalizeWireguardKey) ?: return@mapNotNull null
 
             JSONObject()
                 .put("address", server)
@@ -233,14 +233,12 @@ object ConfigParser {
                 ))
                 .apply {
                     string(source, "pre_shared_key", "pre-shared-key")?.let {
-                        if (!isWireguardKey32(it)) return@mapNotNull null
-                        put("pre_shared_key", it)
+                        put("pre_shared_key", normalizeWireguardKey(it) ?: return@mapNotNull null)
                     }
                     string(raw, "pre_shared_key", "pre-shared-key")
                         ?.takeIf { !has("pre_shared_key") }
                         ?.let {
-                            if (!isWireguardKey32(it)) return@mapNotNull null
-                            put("pre_shared_key", it)
+                            put("pre_shared_key", normalizeWireguardKey(it) ?: return@mapNotNull null)
                         }
                     int(source, "persistent_keepalive_interval", "persistent-keepalive", "keepalive")
                         ?.let { put("persistent_keepalive_interval", it) }
@@ -449,13 +447,17 @@ object ConfigParser {
 
     private fun firstPeerPublicKey(raw: Map<*, *>): String? = (raw["peers"] as? List<*>)?.firstNotNullOfOrNull { (it as? Map<*, *>)?.let { p -> string(p, "public_key", "public-key") } }
 
-    private fun isWireguardKey32(value: String): Boolean {
+    private fun normalizeWireguardKey(value: String): String? {
         val text = value.trim()
-        if (text.isEmpty()) return false
+        if (text.isEmpty()) return null
         val decoded = runCatching {
             Base64.decode(text, Base64.DEFAULT or Base64.NO_WRAP)
-        }.getOrNull() ?: return false
-        return decoded.size == 32
+        }.recoverCatching {
+            Base64.decode(text, Base64.URL_SAFE or Base64.NO_WRAP)
+        }.getOrNull() ?: return null
+        return decoded.takeIf { it.size == 32 }?.let {
+            Base64.encodeToString(it, Base64.NO_WRAP)
+        }
     }
 
     private fun reserved(raw: Map<*, *>): List<Int>? {
