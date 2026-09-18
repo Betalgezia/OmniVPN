@@ -104,6 +104,47 @@ class ConfigParserTest {
     }
 
     @Test
+    fun parsesAmneziaWireguardConf() {
+        val conf = """
+            [Interface]
+            PrivateKey = local-private
+            Address = 10.0.0.2/32, fd00::2/128
+            MTU = 1280
+            Jc = 4
+            Jmin = 10
+            Jmax = 20
+            S1 = 1
+            S2 = 2
+            S3 = 3
+            S4 = 4
+            H1 = 100
+            H4 = 400
+            I1 = 5
+            I5 = 9
+
+            [Peer]
+            PublicKey = peer-public
+            PresharedKey = peer-psk
+            Endpoint = 198.51.100.10:51820
+            AllowedIPs = 0.0.0.0/0, ::/0
+            PersistentKeepalive = 25
+            Reserved = 1, 2, 255
+        """.trimIndent()
+
+        val node = ConfigParser.parse(conf).single()
+        assertEquals(Protocol.AMNEZIAWG, node.protocol)
+        assertEquals("198.51.100.10", node.server)
+        assertEquals(51820, node.port)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals(1280, raw.getInt("mtu"))
+        assertEquals(4, raw.getInt("jc"))
+        assertEquals(20, raw.getInt("jmax"))
+        val peer = raw.getJSONArray("peers").getJSONObject(0)
+        assertEquals("peer-psk", peer.getString("pre_shared_key"))
+        assertEquals(25, peer.getInt("persistent_keepalive_interval"))
+        assertEquals(255, peer.getJSONArray("reserved").getInt(2))
+    }
+    @Test
     fun parsesMihomoWireguardReserved() {
         val yaml = """
             proxies:
