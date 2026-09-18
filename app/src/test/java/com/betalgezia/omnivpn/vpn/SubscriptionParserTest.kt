@@ -87,6 +87,19 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun securityNoneOverridesOtherVlessTlsParameters() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=none&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("tls"))
+    }
+
+    @Test
+    fun securityNoneDisablesTrojanDefaultTls() {
+        val uri = "trojan://secret@example.com:443?security=none&sni=trojan.example.com"
+        val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("tls"))
+    }
+    @Test
     fun parsesHysteria2Uri() {
         val uri = "hysteria2://p%2Bss@example.com:443?insecure=1&sni=example.com&obfs=salamander&obfs-password=secret&up=20Mbps&down=100Mbps#HY2"
         val node = SubscriptionParser.parse(uri).single()
