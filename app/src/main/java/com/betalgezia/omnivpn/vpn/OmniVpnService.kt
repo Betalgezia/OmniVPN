@@ -232,6 +232,8 @@ class OmniVpnService : VpnService() {
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                recoveryJob?.cancel()
+                recoveryJob = null
                 serviceScope.launch {
                     if (!stopping.get()) engine.resetNetwork()
                 }
