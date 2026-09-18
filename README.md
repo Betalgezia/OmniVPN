@@ -57,7 +57,7 @@ Implemented:
 
 Still to implement:
 
-- Mihomo/sing-box YAML/JSON subscription parsing and broader Base64/V2Ray compatibility.
+- Mihomo/sing-box JSON/YAML import for VLESS, Trojan, Hysteria2 and WireGuard, with Room-backed node persistence.
 - Room-backed `NodeRepository` and import service.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.
