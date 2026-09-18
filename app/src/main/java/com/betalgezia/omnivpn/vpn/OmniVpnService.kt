@@ -288,7 +288,7 @@ class OmniVpnService : VpnService() {
     }
 
     private fun stopForegroundCompat() {
-        stopForeground(true)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     }
 
     companion object {
