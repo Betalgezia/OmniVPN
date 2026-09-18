@@ -173,7 +173,7 @@ object ConfigParser {
         val port = int(raw, "server_port", "port") ?: return null
         val password = string(raw, "password") ?: return null
         val canonical = JSONObject().put("type", "trojan").put("server", server).put("server_port", port).put("password", password)
-        copy(raw, canonical, setOf("network", "multiplex", "domain_strategy"))
+        copy(raw, canonical, setOf("network", "multiplex"))
         putTlsMapIfPresent(raw, canonical, "")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
