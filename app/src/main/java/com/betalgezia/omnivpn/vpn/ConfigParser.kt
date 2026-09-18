@@ -298,14 +298,34 @@ object ConfigParser {
             "ws" -> (raw["ws-opts"] as? Map<*, *>)?.let { ws -> JSONObject().put("type", "ws").apply { string(ws, "path")?.let { put("path", it) }; (ws["headers"] as? Map<*, *>)?.let { headers -> put("headers", toJsonValue(headers)) } } }
             "grpc" -> (raw["grpc-opts"] as? Map<*, *>)?.let { g -> JSONObject().put("type", "grpc").put("service_name", string(g, "grpc-service-name", "service-name") ?: "") }
             "httpupgrade" -> (raw["http-upgrade-opts"] as? Map<*, *>)?.let { h -> JSONObject().put("type", "httpupgrade").apply { string(h, "path")?.let { put("path", it) }; string(h, "host")?.let { put("host", it) } } }
-            "xhttp" -> (raw["xhttp-opts"] as? Map<*, *>)?.let { x -> JSONObject().put("type", "xhttp").apply {
-                string(x, "path")?.let { put("path", it) }
-                string(x, "host")?.let { put("host", it) }
-                string(x, "mode")?.let { put("mode", it) }
-                string(x, "x-padding-bytes", "x_padding_bytes", "xPaddingBytes")?.let { put("x_padding_bytes", it) }
-                if (isTrue(x["no-grpc-header"]) || isTrue(x["no_grpc_header"]) || isTrue(x["noGRPCHeader"])) put("no_grpc_header", true)
-                (x["headers"] as? Map<*, *>)?.let { put("headers", toJsonValue(it)) }
-            } }
+            "xhttp" -> (raw["xhttp-opts"] as? Map<*, *>)?.let { x ->
+                JSONObject().put("type", "xhttp").apply {
+                    putXHttpString(this, x, "host", "host")
+                    putXHttpString(this, x, "path", "path")
+                    putXHttpString(this, x, "mode", "mode")
+                    putXHttpString(this, x, "x_padding_bytes", "x-padding-bytes", "xPaddingBytes", "x-padding_bytes")
+                    putXHttpString(this, x, "session_placement", "session-placement", "sessionPlacement")
+                    putXHttpString(this, x, "session_key", "session-key", "sessionKey")
+                    putXHttpString(this, x, "seq_placement", "seq-placement", "seqPlacement")
+                    putXHttpString(this, x, "seq_key", "seq-key", "seqKey")
+                    putXHttpString(this, x, "session_table", "session-table", "sessionTable")
+                    putXHttpString(this, x, "session_length", "session-length", "sessionLength")
+                    putXHttpString(this, x, "uplink_data_placement", "uplink-data-placement", "uplinkDataPlacement")
+                    putXHttpString(this, x, "uplink_data_key", "uplink-data-key", "uplinkDataKey")
+                    putXHttpString(this, x, "uplink_chunk_size", "uplink-chunk-size", "uplinkChunkSize")
+                    putXHttpString(this, x, "uplink_http_method", "uplink-http-method", "uplinkHttpMethod")
+                    putXHttpString(this, x, "x_padding_key", "x-padding-key", "xPaddingKey")
+                    putXHttpString(this, x, "x_padding_header", "x-padding-header", "xPaddingHeader")
+                    putXHttpString(this, x, "x_padding_placement", "x-padding-placement", "xPaddingPlacement")
+                    putXHttpString(this, x, "x_padding_method", "x-padding-method", "xPaddingMethod")
+                    putXHttpString(this, x, "sc_max_each_post_bytes", "sc-max-each-post-bytes", "scMaxEachPostBytes")
+                    putXHttpString(this, x, "sc_min_posts_interval_ms", "sc-min-posts-interval-ms", "scMinPostsIntervalMs")
+                    if (isTrue(x["x-padding-obfs-mode"]) || isTrue(x["x_padding_obfs_mode"]) || isTrue(x["xPaddingObfsMode"])) put("x_padding_obfs_mode", true)
+                    if (isTrue(x["no-grpc-header"]) || isTrue(x["no_grpc_header"]) || isTrue(x["noGRPCHeader"])) put("no_grpc_header", true)
+                    (x["headers"] as? Map<*, *>)?.let { put("headers", toJsonValue(it)) }
+                    (x["xmux"] as? Map<*, *>)?.let { put("xmux", toJsonValue(it)) }
+                }
+            }
             else -> null
         }
     }
@@ -327,6 +347,15 @@ object ConfigParser {
 
     private fun copy(raw: Map<*, *>, target: JSONObject, fields: Set<String>) {
         for (field in fields) raw[field]?.let { value -> target.put(field, toJsonValue(value)) }
+    }
+
+    private fun putXHttpString(
+        target: JSONObject,
+        raw: Map<*, *>,
+        targetKey: String,
+        vararg sourceKeys: String
+    ) {
+        string(raw, *sourceKeys)?.let { target.put(targetKey, it) }
     }
 
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
