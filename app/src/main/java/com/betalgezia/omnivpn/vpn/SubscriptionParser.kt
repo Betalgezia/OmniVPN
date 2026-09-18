@@ -40,7 +40,7 @@ object SubscriptionParser {
             flow = "xtls-rprx-vision"
             packetEncoding = "xudp"
         }
-        val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query))
+        val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query, port))
         val transport = buildTransport(query)
         val visionWithTransport = flow == "xtls-rprx-vision" && transport != null
         val raw = JSONObject()
@@ -191,9 +191,11 @@ object SubscriptionParser {
         return number.toInt().takeIf { it > 0 }
     }
 
-    private fun isTlsSecurity(query: Map<String, String>): Boolean = when (query["security"]?.lowercase()) {
+    private fun isTlsSecurity(query: Map<String, String>, port: Int): Boolean = when (query["security"]?.lowercase()) {
+        "none" -> false
         "tls", "reality" -> true
-        else -> false
+        null, "" -> port !in PLAINTEXT_VLESS_PORTS
+        else -> true
     }
 
     private fun isTrue(value: String): Boolean = value.lowercase() in setOf("true", "1", "yes")
@@ -217,4 +219,5 @@ object SubscriptionParser {
         Node(name = name, protocol = protocol, server = server, port = port, uuid = uuid, password = password, rawConfig = raw)
 
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
+    private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)
 }
