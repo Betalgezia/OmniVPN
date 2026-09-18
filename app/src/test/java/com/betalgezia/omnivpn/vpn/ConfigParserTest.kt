@@ -167,6 +167,21 @@ class ConfigParserTest {
     }
 
     @Test
+    fun explicitMihomoTlsFalseWinsOverSni() {
+        val yaml = """
+            proxies:
+              - name: Plain
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: false
+                sni: cdn.example.com
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!)
+        assertFalse(raw.has("tls"))
+    }
+    @Test
     fun rejectsInvalidRealityKeyInMihomoImportWithoutRealityBlock() {
         val yaml = """
             proxies:
