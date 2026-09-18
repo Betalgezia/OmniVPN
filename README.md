@@ -58,6 +58,7 @@ Implemented:
 Still to implement:
 
 - Mihomo/sing-box YAML/JSON subscription parsing and broader Base64/V2Ray compatibility.
+- Room-backed `NodeRepository` and import service.
 - Rich structured TLS/transport model and URI parser coverage.
 - UI and VPN permission flow.
 - Instrumentation and parser/engine tests.

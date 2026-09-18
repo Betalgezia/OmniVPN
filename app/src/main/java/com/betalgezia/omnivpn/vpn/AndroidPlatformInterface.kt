@@ -247,14 +247,14 @@ class AndroidPlatformInterface @Inject constructor(
             val r4 = options.inet4RouteAddress
             if (r4.hasNext()) {
                 while (r4.hasNext()) builder.addRoute(r4.next().toIpPrefix())
-            } else {
+            } else if (options.inet4Address.hasNext()) {
                 builder.addRoute("0.0.0.0", 0)
             }
 
             val r6 = options.inet6RouteAddress
             if (r6.hasNext()) {
                 while (r6.hasNext()) builder.addRoute(r6.next().toIpPrefix())
-            } else {
+            } else if (options.inet6Address.hasNext()) {
                 builder.addRoute("::", 0)
             }
 
