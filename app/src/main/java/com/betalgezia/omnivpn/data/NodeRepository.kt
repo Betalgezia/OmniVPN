@@ -16,15 +16,16 @@ class NodeRepository @Inject constructor(private val dao: NodeDao) {
     suspend fun add(node: Node): Long = dao.insert(node.toEntity())
     suspend fun addAll(nodes: List<Node>): List<Long> = dao.insertAll(nodes.map(Node::toEntity))
     suspend fun replaceAll(nodes: List<Node>) {
-        dao.deleteManual()
-        if (nodes.isNotEmpty()) dao.insertAll(nodes.map(Node::toEntity))
+        dao.replaceManual(nodes.map(Node::toEntity))
     }
 
     suspend fun deleteBySource(sourceId: Long) = dao.deleteBySourceId(sourceId)
 
     suspend fun replaceSubscription(sourceId: Long, nodes: List<Node>) {
-        dao.deleteBySourceId(sourceId)
-        if (nodes.isNotEmpty()) dao.insertAll(nodes.map { it.copy(sourceId = sourceId).toEntity() })
+        dao.replaceBySourceId(
+            sourceId,
+            nodes.map { it.copy(sourceId = sourceId).toEntity() }
+        )
     }
     suspend fun delete(node: Node) {
         if (node.id == 0L) return
