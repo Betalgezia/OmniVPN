@@ -1,12 +1,10 @@
 package com.betalgezia.omnivpn.vpn
 
 import android.content.Context
-import android.util.Base64
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -97,7 +95,5 @@ class VpnConfigStore(context: Context) {
         private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
         private val MAGIC = byteArrayOf(0x4f, 0x56, 0x43, 0x31)
         private val KEY_LOCK = Any()
-        @Suppress("unused")
-        private val RANDOM = SecureRandom()
     }
 }
