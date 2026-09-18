@@ -141,13 +141,17 @@ class CloudflareWarpClient {
             if (connection.doOutput) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = BufferedReader(InputStreamReader(stream ?: error("HTTP $code"))).use { it.readText() }
+            val text = BufferedReader(InputStreamReader(stream ?: error("HTTP $code"))).use {
+                it.readTextLimited(MAX_ERROR_BODY_CHARS)
+            }
             if (code !in 200..299) error("HTTP $code: ${text.take(400)}")
             text
         } finally {
             connection.disconnect()
         }
     }
+
+    private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
     private fun generateKeyPair(): GeneratedKeyPair {
         val generator = X25519KeyPairGenerator().apply { init(X25519KeyGenerationParameters(SecureRandom())) }
@@ -187,5 +191,16 @@ class CloudflareWarpClient {
 
     private fun nowIso8601(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
     private data class GeneratedKeyPair(val privateKey: String, val publicKey: String)
+
+    private fun BufferedReader.readTextLimited(maxChars: Int): String {
+        val out = StringBuilder()
+        val buffer = CharArray(8192)
+        while (out.length < maxChars) {
+            val read = read(buffer, 0, minOf(buffer.size, maxChars - out.length))
+            if (read < 0) break
+            out.append(buffer, 0, read)
+        }
+        return out.toString()
+    }
     companion object { private val API_HOSTS = listOf("api.devices.cloudflare.com", "api.cloudflareclient.com") }
 }
