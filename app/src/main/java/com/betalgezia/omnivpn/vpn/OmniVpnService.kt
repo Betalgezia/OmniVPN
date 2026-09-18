@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import android.content.pm.ServiceInfo
 import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.SystemProxyStatus
+import io.nekohasekai.libbox.CommandServerHandler
+import io.nekohasekai.libbox.SystemProxyStatus
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import dagger.hilt.android.AndroidEntryPoint
@@ -208,6 +210,46 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         }
 
         super.onDestroy()
+    }
+
+    override fun serviceReload() {
+        serviceScope.launch {
+            runCatching {
+                val config = configStore.read()
+                    ?: error("No active sing-box configuration")
+                engine.reload(config)
+                publishNotification("Connected")
+            }.onFailure {
+                android.util.Log.e(TAG, "CommandServer serviceReload failed", it)
+                eventBus.emit(
+                    VpnEvent.Error(
+                        it.message?.takeIf(String::isNotBlank)
+                            ?: "sing-box reload failed"
+                    )
+                )
+            }
+        }
+    }
+
+    override fun serviceStop() {
+        stopVpn()
+    }
+
+    override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus()
+
+    override fun setSystemProxyEnabled(isEnabled: Boolean) {
+        // System proxy mode is intentionally unsupported by OmniVPN.
+    }
+
+    override fun connectSSHAgent(): Int =
+        throw UnsupportedOperationException("SSH agent not supported on Android")
+
+    override fun triggerNativeCrash() {
+        // Deliberate native-crash hook is intentionally disabled.
+    }
+
+    override fun writeDebugMessage(message: String) {
+        runCatching { android.util.Log.d(TAG, "[libbox] $message") }
     }
 
     override fun serviceReload() {
