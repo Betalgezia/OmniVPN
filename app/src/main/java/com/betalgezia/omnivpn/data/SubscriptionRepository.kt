@@ -1,6 +1,4 @@
 package com.betalgezia.omnivpn.data
-private const val MAX_ERROR_BODY_CHARS = 64 * 1024
-
 
 import com.betalgezia.omnivpn.data.local.SubscriptionDao
 import com.betalgezia.omnivpn.data.local.SubscriptionEntity
@@ -21,6 +19,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
 @Singleton
 class SubscriptionRepository @Inject constructor(private val dao: SubscriptionDao, private val nodes: NodeRepository) {
