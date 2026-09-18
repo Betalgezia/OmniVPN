@@ -133,7 +133,9 @@ class MainActivity : ComponentActivity() {
 
                 if (subscriptions.isNotEmpty()) {
                     Text("Subscriptions", style = MaterialTheme.typography.titleLarge)
-                    subscriptions.forEach { subscription -> SubscriptionRow(subscription, viewModel) }
+                    subscriptions.forEach { subscription ->
+                        SubscriptionRow(subscription, viewModel, enabled = !busy)
+                    }
                 }
 
                 Text("Servers", style = MaterialTheme.typography.titleLarge)
@@ -154,14 +156,24 @@ class MainActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun SubscriptionRow(subscription: Subscription, viewModel: MainViewModel) {
+private fun SubscriptionRow(
+    subscription: Subscription,
+    viewModel: MainViewModel,
+    enabled: Boolean
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(subscription.name, style = MaterialTheme.typography.titleMedium)
             Text(subscription.url, maxLines = 1)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { viewModel.refresh(subscription) }) { Text("Refresh") }
-                OutlinedButton(onClick = { viewModel.delete(subscription) }) { Text("Delete") }
+                OutlinedButton(
+                    onClick = { viewModel.refresh(subscription) },
+                    enabled = enabled
+                ) { Text("Refresh") }
+                OutlinedButton(
+                    onClick = { viewModel.delete(subscription) },
+                    enabled = enabled
+                ) { Text("Delete") }
             }
         }
     }
