@@ -9,7 +9,10 @@ object SingBoxConfigBuilder {
     fun build(node: Node): String {
         val endpointMode = node.protocol == Protocol.AMNEZIAWG
         val proxyTag = if (endpointMode) AWG_TAG else PROXY_TAG
-        val route = JSONObject()\n            .put("auto_detect_interface", true)\n            .put("default_domain_resolver", LOCAL_DNS_TAG)\n            .put("final", proxyTag)
+        val route = JSONObject()
+            .put("auto_detect_interface", true)
+            .put("default_domain_resolver", LOCAL_DNS_TAG)
+            .put("final", proxyTag)
 
         val root = JSONObject()
             .put("log", JSONObject().put("level", "info"))
