@@ -4,7 +4,6 @@ import android.app.Application
 import dagger.hilt.android.HiltAndroidApp
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.SetupOptions
-import java.util.Locale
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,14 +32,6 @@ class OmniVpnApplication : Application() {
     }
 
     private fun initializeLibbox() {
-        runCatching {
-            Libbox.setLocale(
-                Locale.getDefault().toLanguageTag().replace("-", "_")
-            )
-        }.onFailure {
-            android.util.Log.w(TAG, "libbox locale setup failed: " + it.message)
-        }
-
         val baseDir = filesDir.also { it.mkdirs() }
         val tempDir = cacheDir.also { it.mkdirs() }
 
