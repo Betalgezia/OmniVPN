@@ -1,5 +1,4 @@
 package com.betalgezia.omnivpn.vpn
-private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
 
 import android.util.Base64
@@ -20,6 +19,8 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
 class CloudflareWarpClient {
     suspend fun register(licenseKey: String? = null, endpointOverride: String? = null): WarpAccount = withContext(Dispatchers.IO) {
