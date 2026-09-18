@@ -202,6 +202,20 @@ class ConfigParserTest {
         assertEquals(3, reserved.length())
         assertEquals(3, reserved.getInt(2))
     }
+
+    @Test
+    fun dropsVisionFlowWhenSingBoxTransportObjectIsPresent() {
+        val json = JSONObject().put("outbounds", JSONArray().put(
+            JSONObject().put("type", "vless")
+                .put("server", "edge.example.com")
+                .put("server_port", 443)
+                .put("uuid", "00000000-0000-0000-0000-000000000001")
+                .put("flow", "xtls-rprx-vision")
+                .put("transport", JSONObject().put("type", "xhttp").put("path", "/"))
+        ))
+        val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
+        assertFalse(raw.has("flow"))
+    }
     @Test
     fun parsesMihomoWireguardReserved() {
         val yaml = """
