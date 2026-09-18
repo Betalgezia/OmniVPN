@@ -11,6 +11,9 @@ interface SubscriptionDao {
     @Query("SELECT * FROM subscriptions ORDER BY name")
     fun observeAll(): Flow<List<SubscriptionEntity>>
 
+    @Query("SELECT * FROM subscriptions WHERE url = :url LIMIT 1")
+    suspend fun findByUrl(url: String): SubscriptionEntity?
+
     @Insert
     suspend fun insert(subscription: SubscriptionEntity): Long
 
