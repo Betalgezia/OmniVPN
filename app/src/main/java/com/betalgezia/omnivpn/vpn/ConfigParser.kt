@@ -323,7 +323,7 @@ object ConfigParser {
                     if (isTrue(x["x-padding-obfs-mode"]) || isTrue(x["x_padding_obfs_mode"]) || isTrue(x["xPaddingObfsMode"])) put("x_padding_obfs_mode", true)
                     if (isTrue(x["no-grpc-header"]) || isTrue(x["no_grpc_header"]) || isTrue(x["noGRPCHeader"])) put("no_grpc_header", true)
                     (x["headers"] as? Map<*, *>)?.let { put("headers", toJsonValue(it)) }
-                    (x["xmux"] as? Map<*, *>)?.let { put("xmux", toJsonValue(it)) }
+                    (x["xmux"] as? Map<*, *>)?.let { put("xmux", buildXHttpXmux(it)) }
                 }
             }
             else -> null
@@ -358,6 +358,19 @@ object ConfigParser {
         string(raw, *sourceKeys)?.let { target.put(targetKey, it) }
     }
 
+    private fun buildXHttpXmux(raw: Map<*, *>): JSONObject = JSONObject().apply {
+        val fields = mapOf(
+            "max_concurrency" to arrayOf("max_concurrency", "max-concurrency", "maxConcurrency"),
+            "max_connections" to arrayOf("max_connections", "max-connections", "maxConnections"),
+            "c_max_reuse_times" to arrayOf("c_max_reuse_times", "c-max-reuse-times", "cMaxReuseTimes"),
+            "h_max_request_times" to arrayOf("h_max_request_times", "h-max-request-times", "hMaxRequestTimes"),
+            "h_max_reusable_secs" to arrayOf("h_max_reusable_secs", "h-max-reusable-secs", "hMaxReusableSecs"),
+            "h_keep_alive_period" to arrayOf("h_keep_alive_period", "h-keep-alive-period", "hKeepAlivePeriod")
+        )
+        for ((targetKey, sourceKeys) in fields) {
+            sourceKeys.firstNotNullOfOrNull { raw[it] }?.let { put(targetKey, toJsonValue(it)) }
+        }
+    }
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
         val value = raw[field] as? Map<*, *> ?: return
         target.put(field, toJsonValue(value))
