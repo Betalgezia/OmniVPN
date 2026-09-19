@@ -61,6 +61,7 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.57.1")
     ksp("com.google.dagger:hilt-compiler:2.57.1")
     testImplementation(kotlin("test"))
+    testImplementation("org.json:json:20260814")
     implementation("org.bouncycastle:bcprov-jdk18on:1.83")
     implementation("org.yaml:snakeyaml:2.7")
     implementation(files(libboxAar))
