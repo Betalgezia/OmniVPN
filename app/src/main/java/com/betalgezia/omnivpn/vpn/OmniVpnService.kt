@@ -59,6 +59,11 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.i(
+            TAG,
+            "onStartCommand: action=${intent?.action}, flags=${flags}, startId=${startId}, " +
+                "engineRunning=${engine.isRunning()}, stopping=${stopping.get()}"
+        )
         return when (intent?.action) {
             ACTION_START, null -> {
                 startVpn()
@@ -75,8 +80,15 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     }
 
     private fun startVpn() {
-        if (engine.isRunning()) return
-        if (!startInProgress.compareAndSet(false, true)) return
+        android.util.Log.i(TAG, "startVpn: requested")
+        if (engine.isRunning()) {
+            android.util.Log.w(TAG, "startVpn: engine already running, ignoring duplicate start")
+            return
+        }
+        if (!startInProgress.compareAndSet(false, true)) {
+            android.util.Log.w(TAG, "startVpn: another start is already in progress")
+            return
+        }
         val generation = operationGeneration.incrementAndGet()
 
         if (VpnService.prepare(this) != null) {
@@ -117,8 +129,10 @@ class OmniVpnService : VpnService(), CommandServerHandler {
             try {
                 if (operationGeneration.get() != generation || stopping.get()) return@launch
                 OmniVpnApplication.libboxReady.await()
+                android.util.Log.d(TAG, "startVpn: reading active configuration")
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
+                android.util.Log.d(TAG, "startVpn: active configuration loaded (${config.length} chars)")
 
                 engine.start(config, platformInterface, this@OmniVpnService) {
                     operationGeneration.get() == generation && !stopping.get()
@@ -132,6 +146,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
 
                 publishNotification("Connected")
             } catch (t: Throwable) {
+                android.util.Log.e(TAG, "startVpn: service startup failed", t)
                 if (operationGeneration.get() == generation) {
                     eventBus.emit(
                         VpnEvent.Error(
