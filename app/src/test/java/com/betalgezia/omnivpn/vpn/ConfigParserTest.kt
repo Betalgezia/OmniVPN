@@ -341,11 +341,11 @@ class ConfigParserTest {
     fun normalizesAmneziaConfReservedBytes() {
         val conf = """
             [Interface]
-            PrivateKey = local-private
+            PrivateKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
             Address = 10.0.0.2/32
 
             [Peer]
-            PublicKey = peer-public
+            PublicKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
             Endpoint = 198.51.100.10:51820
             AllowedIPs = 0.0.0.0/0
             Reserved = 1,2,3
