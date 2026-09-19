@@ -1,6 +1,5 @@
 package com.betalgezia.omnivpn.vpn
 
-import android.util.Base64
 import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -8,7 +7,7 @@ import kotlin.test.assertEquals
 class WarpAccountTest {
     @Test
     fun clientIdBecomesThreePeerReservedBytes() {
-        val clientId = Base64.encodeToString(byteArrayOf(1, 127, 255.toByte()), Base64.NO_WRAP)
+        val clientId = "AX//"
         val account = WarpAccount(
             privateKey = "private", peerPublicKey = "peer",
             clientV4 = "172.16.0.2", clientV6 = "2606:4700:4700::1001",
