@@ -42,17 +42,17 @@ class ConfigParserTest {
                 JSONObject().put("type", "wireguard")
                     .put("mtu", 1280)
                     .put("address", JSONArray().put("10.0.0.2/32"))
-                    .put("private_key", "local-private")
+                    .put("private_key", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
                     .put("peers", JSONArray().apply {
-                        put(JSONObject().put("address", "198.51.100.10").put("port", 51820).put("public_key", "peer-a").put("allowed_ips", JSONArray().put("0.0.0.0/0")))
-                        put(JSONObject().put("address", "198.51.100.11").put("port", 51821).put("public_key", "peer-b").put("allowed_ips", JSONArray().put("10.0.0.0/8")))
+                        put(JSONObject().put("address", "198.51.100.10").put("port", 51820).put("public_key", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8").put("allowed_ips", JSONArray().put("0.0.0.0/0")))
+                        put(JSONObject().put("address", "198.51.100.11").put("port", 51821).put("public_key", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8").put("allowed_ips", JSONArray().put("10.0.0.0/8")))
                     })
             ))
         val node = ConfigParser.parse(json.toString()).single()
         assertEquals(Protocol.AMNEZIAWG, node.protocol)
         val raw = JSONObject(node.rawConfig!!)
         assertEquals(2, raw.getJSONArray("peers").length())
-        assertEquals("peer-b", raw.getJSONArray("peers").getJSONObject(1).getString("public_key"))
+        assertEquals("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", raw.getJSONArray("peers").getJSONObject(1).getString("public_key"))
     }
 
     @Test
@@ -108,7 +108,7 @@ class ConfigParserTest {
     fun parsesAmneziaWireguardConf() {
         val conf = """
             [Interface]
-            PrivateKey = local-private
+            PrivateKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
             Address = 10.0.0.2/32, fd00::2/128
             MTU = 1280
             Jc = 4
@@ -124,8 +124,8 @@ class ConfigParserTest {
             I5 = 9
 
             [Peer]
-            PublicKey = peer-public
-            PresharedKey = peer-psk
+            PublicKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+            PresharedKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
             Endpoint = 198.51.100.10:51820
             AllowedIPs = 0.0.0.0/0, ::/0
             PersistentKeepalive = 25
@@ -141,7 +141,7 @@ class ConfigParserTest {
         assertEquals(4, raw.getInt("jc"))
         assertEquals(20, raw.getInt("jmax"))
         val peer = raw.getJSONArray("peers").getJSONObject(0)
-        assertEquals("peer-psk", peer.getString("pre_shared_key"))
+        assertEquals("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", peer.getString("pre_shared_key"))
         assertEquals(25, peer.getInt("persistent_keepalive_interval"))
         assertEquals(255, peer.getJSONArray("reserved").getInt(2))
     }
@@ -397,8 +397,8 @@ class ConfigParserTest {
                 type: wireguard
                 server: engage.cloudflareclient.com
                 port: 2408
-                private-key: local-private
-                peer-public-key: peer-public
+                private-key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+                peer-public-key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
                 ip: 172.16.0.2
                 ipv6: 2606:4700:4700::1001
                 reserved: [1, 2, 255]
