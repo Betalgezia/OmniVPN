@@ -36,6 +36,7 @@ class VpnController @Inject constructor(
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         startConfig(config).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
+        Unit
     }.onFailure {
         android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
     }
@@ -65,6 +66,7 @@ class VpnController @Inject constructor(
             context.startService(intent)
             android.util.Log.i(tag, "startConfig: Context.startService() returned")
         }
+        Unit
     }.onFailure {
         android.util.Log.e(tag, "startConfig: FAILED: ${it.message}", it)
     }
@@ -96,6 +98,7 @@ class VpnController @Inject constructor(
 
         start(account.toNode()).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
+        Unit
     }.onFailure {
         android.util.Log.e(tag, "startWarp: FAILED: ${it.message}", it)
     }
