@@ -3,6 +3,8 @@ package com.betalgezia.omnivpn.vpn
 import android.content.Context
 import android.util.Base64
 import java.security.KeyStore
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -41,7 +43,18 @@ class WarpStorage(context: Context) {
     private fun secretKey(): SecretKey = synchronized(KEY_LOCK) {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return@synchronized it }
-        KeyGenerator.getInstance("AES", "AndroidKeyStore").apply { init(256) }.generateKey()
+        KeyGenerator.getInstance("AES", "AndroidKeyStore").apply {
+            init(
+                KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setKeySize(256)
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .build()
+            )
+        }.generateKey()
     }
 
     companion object {
