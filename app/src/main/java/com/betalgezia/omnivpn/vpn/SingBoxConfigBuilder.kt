@@ -23,7 +23,7 @@ object SingBoxConfigBuilder {
                     .put("action", "resolve")
                     .put("server", REMOTE_DNS_TAG)
             )))
-            .put("inbounds", buildTun())
+            .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
