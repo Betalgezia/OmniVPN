@@ -98,7 +98,7 @@ object SubscriptionParser {
 
     private fun parseHysteria2(uri: URI): Node? {
         val server = uri.host?.takeIf { it.isNotBlank() } ?: return null
-        val port = uri.port.takeIf { it in 1..65535 } ?: return null
+        val port = if (uri.port == -1) 443 else uri.port.takeIf { it in 1..65535 } ?: return null
         val password = decode(uri.rawUserInfo).takeIf { it.isNotBlank() } ?: return null
         val query = parseQuery(uri.rawQuery)
         val raw = JSONObject()
