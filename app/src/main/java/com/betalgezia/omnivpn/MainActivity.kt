@@ -2,6 +2,7 @@ package com.betalgezia.omnivpn
 
 import dagger.hilt.android.AndroidEntryPoint
 import android.os.Bundle
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -80,15 +81,20 @@ class MainActivity : ComponentActivity() {
         }
 
         val fileLauncher = rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            if (uri != null) {
-                readImportedFile(uri) { result ->
-                    result.fold(
-                        onSuccess = viewModel::import,
-                        onFailure = { viewModel.showMessage(it.message ?: "Unable to read import file") }
-                    )
-                }
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode != RESULT_OK) return@rememberLauncherForActivityResult
+            val data = result.data ?: return@rememberLauncherForActivityResult
+            val uri = data.data ?: return@rememberLauncherForActivityResult
+            readImportedFile(uri) { importResult ->
+                importResult.fold(
+                    onSuccess = viewModel::import,
+                    onFailure = {
+                        viewModel.showMessage(
+                            it.message ?: "Unable to read import file"
+                        )
+                    }
+                )
             }
         }
         Scaffold(topBar = { TopAppBar(title = { Text("OmniVPN") }) }) { padding ->
@@ -114,7 +120,15 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(onClick = { viewModel.import(input) }, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
                     OutlinedButton(
-                        onClick = { fileLauncher.launch(arrayOf("*/*")) },
+                        onClick = {
+                            fileLauncher.launch(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                    type = "*/*"
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                            )
+                        },
                         enabled = !busy,
                         modifier = Modifier.weight(1f)
                     ) { Text("File") }
