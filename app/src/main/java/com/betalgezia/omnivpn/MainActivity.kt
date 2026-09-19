@@ -45,6 +45,9 @@ import java.io.ByteArrayOutputStream
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val TAG = "MainActivity"
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { OmniVpnScreen() }
@@ -72,11 +75,36 @@ class MainActivity : ComponentActivity() {
             val warp = pendingWarp
             pendingNode = null
             pendingWarp = false
-            if (result.resultCode == RESULT_OK) {
-                when {
-                    node != null -> viewModel.connect(node)
-                    warp -> viewModel.startWarp()
+            android.util.Log.i(
+                TAG,
+                "VPN permission result: code=${result.resultCode}, dataPresent=${result.data != null}, " +
+                    "pendingNode=${node?.name}, pendingWarp=${warp}"
+            )
+            try {
+                if (result.resultCode != RESULT_OK) {
+                    android.util.Log.w(TAG, "VPN permission denied/cancelled")
+                    viewModel.showMessage("VPN permission denied")
+                    return@rememberLauncherForActivityResult
                 }
+
+                // VpnService.prepare() does not require a result Intent payload.
+                when {
+                    node != null -> {
+                        android.util.Log.i(TAG, "VPN permission granted -> connecting node=${node.name}")
+                        viewModel.connect(node)
+                    }
+                    warp -> {
+                        android.util.Log.i(TAG, "VPN permission granted -> starting WARP flow")
+                        viewModel.startWarp()
+                    }
+                    else -> {
+                        android.util.Log.w(TAG, "VPN permission result received without pending action")
+                        viewModel.showMessage("VPN permission returned without a pending action")
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e(TAG, "VPN permission callback failed", t)
+                viewModel.showMessage(t.message ?: "VPN permission callback failed")
             }
         }
 
@@ -135,11 +163,14 @@ class MainActivity : ComponentActivity() {
                     OutlinedButton(
                         enabled = !busy && canStartVpn,
                         onClick = {
+                            android.util.Log.i(TAG, "Get WARP clicked")
                             val intent = viewModel.prepareVpn()
                             if (intent != null) {
+                                android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
                                 pendingWarp = true
                                 permissionLauncher.launch(intent)
                             } else {
+                                android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
                                 viewModel.startWarp()
                             }
                         },
@@ -164,8 +195,16 @@ class MainActivity : ComponentActivity() {
                             node = node,
                             enabled = !busy && canStartVpn
                         ) {
+                            android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
                             val intent = viewModel.prepareVpn()
-                            if (intent != null) { pendingNode = node; permissionLauncher.launch(intent) } else viewModel.connect(node)
+                            if (intent != null) {
+                                android.util.Log.i(TAG, "Connect: launching VPN permission activity")
+                                pendingNode = node
+                                permissionLauncher.launch(intent)
+                            } else {
+                                android.util.Log.i(TAG, "Connect: VPN permission already granted")
+                                viewModel.connect(node)
+                            }
                         }
                     }
                 }
