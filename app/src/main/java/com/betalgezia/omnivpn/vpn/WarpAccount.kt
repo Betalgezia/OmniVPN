@@ -1,6 +1,5 @@
 package com.betalgezia.omnivpn.vpn
 
-import android.util.Base64
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import org.json.JSONArray
@@ -54,7 +53,7 @@ data class WarpAccount(
 
     private fun reservedBytes(): List<Int>? {
         val raw = clientId ?: return null
-        val bytes = runCatching { Base64.decode(raw, Base64.DEFAULT or Base64.NO_WRAP) }.getOrNull() ?: return null
+        val bytes = runCatching { Base64Compat.decode(raw) }.getOrNull() ?: return null
         return bytes.takeIf { it.size == 3 }?.map { it.toInt() and 0xff }
     }
 
