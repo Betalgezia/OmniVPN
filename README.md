@@ -99,7 +99,6 @@ For the current Android build, the Kotlin/Java bytecode target is Java 17.
 
 GitHub Actions runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch`. Commits made by automation with GitHub's `GITHUB_TOKEN` do not normally create another workflow run, so for a deterministic CI check use **Run workflow** or push from a human-authenticated account. citeturn420831search0
 
-GitHub Actions is configured for `push` and `pull_request` events on `main`, plus manual `workflow_dispatch`. GitHub does not create a new workflow run for most events caused by the repository's `GITHUB_TOKEN`, so automation commits may not produce a run; use **Run workflow** (`workflow_dispatch`) or push from a human-authenticated account when you need to verify CI. citeturn420831search0
 
 ## Remaining verification
 
