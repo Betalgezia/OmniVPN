@@ -3,7 +3,6 @@ package com.betalgezia.omnivpn.vpn
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
-import androidx.core.content.ContextCompat
 import com.betalgezia.omnivpn.data.model.Node
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -62,9 +61,9 @@ class VpnController @Inject constructor(
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
             }
-            android.util.Log.i(tag, "startConfig: calling ContextCompat.startForegroundService()")
-            ContextCompat.startForegroundService(context, intent)
-            android.util.Log.i(tag, "startConfig: ContextCompat.startForegroundService() returned")
+            android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
+            context.startService(intent)
+            android.util.Log.i(tag, "startConfig: Context.startService() returned")
         }
     }.onFailure {
         android.util.Log.e(tag, "startConfig: FAILED: ${it.message}", it)
