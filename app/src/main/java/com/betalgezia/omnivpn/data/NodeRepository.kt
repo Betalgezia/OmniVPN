@@ -31,4 +31,12 @@ class NodeRepository @Inject constructor(private val dao: NodeDao) {
         if (node.id == 0L) return
         dao.delete(node.toEntity())
     }
+
+    suspend fun removeLegacyDemoNode() {
+        dao.deleteKnownDemoNode(
+            name = "Стандартный 1",
+            server = "162.159.192.1",
+            port = 4500
+        )
+    }
 }
