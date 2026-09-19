@@ -1,5 +1,6 @@
 package com.betalgezia.omnivpn.vpn
 
+import org.json.JSONArray
 import com.betalgezia.omnivpn.data.model.AwgParameters
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
