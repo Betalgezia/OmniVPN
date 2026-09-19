@@ -83,7 +83,7 @@ class CloudflareWarpClient {
         require(clientV4.isNotBlank() && clientV6.isNotBlank()) { "Cloudflare WARP client addresses are missing" }
         val clientId = config.optString("client_id").takeIf { it.isNotBlank() }
         if (clientId != null) {
-            val decoded = runCatching { Base64Compat.decode(clientId, Base64.DEFAULT or Base64.NO_WRAP) }.getOrNull()
+            val decoded = runCatching { Base64Compat.decode(clientId) }.getOrNull()
             require(decoded?.size == 3) { "Cloudflare WARP client_id must decode to 3 bytes" }
         }
         val account = root.optJSONObject("account") ?: error("Cloudflare WARP response has no account")
@@ -160,12 +160,12 @@ class CloudflareWarpClient {
         val pair: AsymmetricCipherKeyPair = generator.generateKeyPair()
         val privateKey = (pair.private as X25519PrivateKeyParameters).encoded
         val publicKey = (pair.public as X25519PublicKeyParameters).encoded
-        return GeneratedKeyPair(Base64Compat.encode(privateKey, Base64.NO_WRAP), Base64.encodeToString(publicKey, Base64.NO_WRAP))
+        return GeneratedKeyPair(Base64Compat.encode(privateKey), Base64Compat.encode(publicKey))
     }
 
     private fun isValidWireguardKey(value: String): Boolean {
         val decoded = runCatching {
-            Base64.decode(value, Base64.DEFAULT or Base64.NO_WRAP)
+            Base64Compat.decode(value)
         }.getOrNull() ?: return false
         return decoded.size == 32
     }
