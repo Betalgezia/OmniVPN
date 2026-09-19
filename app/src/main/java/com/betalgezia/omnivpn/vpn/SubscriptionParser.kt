@@ -1,6 +1,5 @@
 package com.betalgezia.omnivpn.vpn
 
-import android.util.Base64
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import org.json.JSONArray
@@ -233,7 +232,7 @@ object SubscriptionParser {
         if (raw.isEmpty()) return false
         val padded = raw + "=".repeat((4 - raw.length % 4) % 4)
         val bytes = runCatching {
-            Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            Base64Compat.decodeUrl(padded)
         }.getOrNull() ?: return false
         return bytes.size == 32
     }
