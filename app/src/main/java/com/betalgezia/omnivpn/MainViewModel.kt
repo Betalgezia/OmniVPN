@@ -26,6 +26,13 @@ class MainViewModel @Inject constructor(
     private val subscriptionRepository: SubscriptionRepository,
     private val vpnController: VpnController
 ) : ViewModel() {
+
+    init {
+        viewModelScope.launch {
+            runCatching { nodeRepository.removeLegacyDemoNode() }
+        }
+    }
+
     val nodes = nodeRepository.nodes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val subscriptions = subscriptionRepository.subscriptions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val vpnState: StateFlow<VpnState> = vpnController.state
