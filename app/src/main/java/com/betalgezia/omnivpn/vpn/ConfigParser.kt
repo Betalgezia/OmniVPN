@@ -451,12 +451,12 @@ object ConfigParser {
         val text = value.trim()
         if (text.isEmpty()) return null
         val decoded = runCatching {
-            Base64.decode(text, Base64.DEFAULT or Base64.NO_WRAP)
+            Base64Compat.decode(text)
         }.recoverCatching {
-            Base64.decode(text, Base64.URL_SAFE or Base64.NO_WRAP)
+            Base64Compat.decodeUrl(text)
         }.getOrNull() ?: return null
         return decoded.takeIf { it.size == 32 }?.let {
-            Base64Compat.encode(it, Base64.NO_WRAP)
+            Base64Compat.encode(it)
         }
     }
 
@@ -477,8 +477,8 @@ object ConfigParser {
         if (trimmed.contains("://") || trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("proxies:") || trimmed.startsWith("outbounds:") || trimmed.startsWith("endpoints:")) return trimmed
         val compact = trimmed.replace("\\s".toRegex(), "")
         if (compact.length < 16 || compact.any { it !in BASE64_CHARS }) return trimmed
-        val bytes = runCatching { Base64.decode(compact, Base64.DEFAULT or Base64.NO_WRAP) }.getOrElse {
-            runCatching { Base64.decode(compact, Base64.URL_SAFE or Base64.NO_WRAP) }.getOrElse { return trimmed }
+        val bytes = runCatching { Base64Compat.decode(compact) }.getOrElse {
+            runCatching { Base64Compat.decodeUrl(compact) }.getOrElse { return trimmed }
         }
         val decoded = bytes.toString(StandardCharsets.UTF_8)
         return if (decoded.contains("://") || decoded.trimStart().startsWith("{") || decoded.contains("proxies:")) decoded else trimmed
