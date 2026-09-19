@@ -57,6 +57,55 @@ jobs:
             fi
           done < <(find app/src -type f -name '*Activity.kt' -print)
 
+      - name: Repository safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Kotlin package/import ordering and duplicate imports..."
+          python3 - <<'PY'
+          from pathlib import Path
+
+          failures = []
+          for path in Path("app").rglob("*.kt"):
+              lines = path.read_text(encoding="utf-8").splitlines()
+              package_index = next(
+                  (i for i, line in enumerate(lines) if line.startswith("package ")),
+                  None,
+              )
+              if package_index is None:
+                  failures.append(f"{path}: missing package declaration")
+                  continue
+
+              for i, line in enumerate(lines[:package_index]):
+                  if line.startswith("import "):
+                      failures.append(
+                          f"{path}:{i + 1}: import appears before package"
+                      )
+
+              seen = set()
+              for i, line in enumerate(lines):
+                  if line.startswith("import "):
+                      if line in seen:
+                          failures.append(
+                              f"{path}:{i + 1}: duplicate import: {line}"
+                          )
+                      seen.add(line)
+
+          if failures:
+              print("\n".join(failures))
+              raise SystemExit(1)
+          PY
+
+          echo "Checking Activity classes that use Hilt..."
+          while IFS= read -r file; do
+            if grep -Eq 'hiltViewModel\(|@Inject' "$file" &&
+               ! grep -q '@AndroidEntryPoint' "$file"; then
+              echo "Missing @AndroidEntryPoint in $file"
+              exit 1
+            fi
+          done < <(find app/src -type f -name '*Activity.kt' -print)
+
       - name: Set up JDK 25
         uses: actions/setup-java@v6
         with:
