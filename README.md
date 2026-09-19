@@ -97,6 +97,8 @@ java -version
 
 For the current Android build, the Kotlin/Java bytecode target is Java 17.
 
+GitHub Actions is configured for `push` and `pull_request` events on `main`, plus manual `workflow_dispatch`. GitHub does not create a new workflow run for most events caused by the repository's `GITHUB_TOKEN`, so automation commits may not produce a run; use **Run workflow** (`workflow_dispatch`) or push from a human-authenticated account when you need to verify CI. citeturn420831search0
+
 ## Remaining verification
 
 A local Windows build was successfully confirmed before the latest runtime/parser hardening with Gradle 9.3.0, AGP 8.13.0 and JDK 25.
