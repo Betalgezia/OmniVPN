@@ -23,22 +23,22 @@ class VpnController @Inject constructor(
 
     fun prepareIntent(): Intent? {
         val intent = VpnService.prepare(context)
-        android.util.Log.d(tag, "prepareVpn: permissionRequired="+D+"{intent != null}")
+        android.util.Log.d(tag, "prepareVpn: permissionRequired=${intent != null}")
         return intent
     }
 
     suspend fun start(node: Node): Result<Unit> = runCatching {
-        android.util.Log.i(tag, "start(node): protocol="+D+"{node.protocol}, server="+D+"{node.server}, port="+D+"{node.port}")
-        android.util.Log.d(tag, "start(node): currentState="+D+"{eventBus.state.value}")
+        android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
+        android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val config = withContext(Dispatchers.Default) {
             android.util.Log.d(tag, "start(node): building sing-box config")
             SingBoxConfigBuilder.build(node)
         }
-        android.util.Log.d(tag, "start(node): config built ("+D+"{config.length} chars)")
+        android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         startConfig(config).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
     }.onFailure {
-        android.util.Log.e(tag, "start(node): FAILED: "+D+"{it.message}", it)
+        android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
     }
 
     suspend fun startConfig(config: String): Result<Unit> = runCatching {
@@ -46,7 +46,7 @@ class VpnController @Inject constructor(
         android.util.Log.d(tag, "startConfig: checking VPN permission")
         withContext(Dispatchers.Main.immediate) {
             val permissionIntent = VpnService.prepare(context)
-            android.util.Log.d(tag, "startConfig: permissionRequired="+D+"{permissionIntent != null}")
+            android.util.Log.d(tag, "startConfig: permissionRequired=${permissionIntent != null}")
             check(permissionIntent == null) {
                 "VPN permission is required"
             }
@@ -67,19 +67,25 @@ class VpnController @Inject constructor(
             android.util.Log.i(tag, "startConfig: ContextCompat.startForegroundService() returned")
         }
     }.onFailure {
-        android.util.Log.e(tag, "startConfig: FAILED: "+D+"{it.message}", it)
+        android.util.Log.e(tag, "startConfig: FAILED: ${it.message}", it)
     }
     suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
+        android.util.Log.i(tag, "startWarp: begin forceNew=${forceNew}, endpointOverride=${!endpoint.isNullOrBlank()}, licenseProvided=${!licenseKey.isNullOrBlank()}")
         val storage = WarpStorage(context)
         val client = CloudflareWarpClient()
         var account = if (!forceNew) storage.get() else null
+        android.util.Log.d(tag, "startWarp: cachedAccount=${account != null}")
 
         if (account == null) {
+            android.util.Log.i(tag, "startWarp: registering WARP account")
             account = client.register(licenseKey, endpoint)
+            android.util.Log.i(tag, "startWarp: WARP registration succeeded")
         } else {
             val license = licenseKey?.trim().takeUnless { it.isNullOrEmpty() }
             if (license != null && (!license.equals(account.license, ignoreCase = false) || !account.warpPlus)) {
+                android.util.Log.i(tag, "startWarp: applying WARP+ license")
                 account = client.applyLicense(account, license)
+                android.util.Log.i(tag, "startWarp: WARP+ license applied")
             }
         }
 
@@ -87,8 +93,12 @@ class VpnController @Inject constructor(
         val effectiveEndpoint = normalizedEndpoint ?: account.endpoint
         account = account.copy(endpoint = effectiveEndpoint)
         storage.set(account)
+        android.util.Log.d(tag, "startWarp: account cached, starting VPN")
 
         start(account.toNode()).getOrThrow()
+        android.util.Log.i(tag, "startWarp: VPN start requested successfully")
+    }.onFailure {
+        android.util.Log.e(tag, "startWarp: FAILED: ${it.message}", it)
     }
     fun stop() {
         android.util.Log.i(tag, "stop: requesting OmniVpnService stop")
