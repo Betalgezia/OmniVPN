@@ -1,6 +1,5 @@
 package com.betalgezia.omnivpn.vpn
 
-import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.test.Test
@@ -15,7 +14,7 @@ class CloudflareWarpClientTest {
             .put(
                 "config",
                 JSONObject()
-                    .put("client_id", Base64.encodeToString(byteArrayOf(1, 2, 3), Base64.NO_WRAP))
+                    .put("client_id", "AQID")
                     .put(
                         "interface",
                         JSONObject().put(
@@ -29,7 +28,7 @@ class CloudflareWarpClientTest {
                         "peers",
                         JSONArray().put(
                             JSONObject()
-                                .put("public_key", "peer-public")
+                                .put("public_key", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
                                 .put("endpoint", JSONObject().put("host", endpoint))
                         )
                     )
