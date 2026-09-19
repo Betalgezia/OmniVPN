@@ -7,15 +7,15 @@ internal object Base64Compat {
         return runCatching {
             Base64.decode(value, Base64.DEFAULT or Base64.NO_WRAP)
         }.getOrElse {
-            java.util.Base64.getDecoder().decode(value)
-        }
-    }
-
-    fun encode(value: ByteArray): String {
-        return runCatching {
-            Base64.encodeToString(value, Base64.NO_WRAP)
-        }.getOrElse {
-            java.util.Base64.getEncoder().withoutPadding().encodeToString(value)
+            runCatching {
+                Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            }.getOrElse {
+                runCatching {
+                    java.util.Base64.getDecoder().decode(value)
+                }.getOrElse {
+                    java.util.Base64.getUrlDecoder().decode(value)
+                }
+            }
         }
     }
 
@@ -24,6 +24,14 @@ internal object Base64Compat {
             Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         }.getOrElse {
             java.util.Base64.getUrlDecoder().decode(value)
+        }
+    }
+
+    fun encode(value: ByteArray): String {
+        return runCatching {
+            Base64.encodeToString(value, Base64.NO_WRAP)
+        }.getOrElse {
+            java.util.Base64.getEncoder().withoutPadding().encodeToString(value)
         }
     }
 }
