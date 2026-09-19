@@ -468,7 +468,7 @@ object ConfigParser {
             val numbers = text.split(",").mapNotNull { it.trim().toIntOrNull() }
             if (numbers.size == 3 && numbers.all { it in 0..255 }) return numbers
         }
-        val decoded = runCatching { Base64.decode(text, Base64.DEFAULT or Base64.NO_WRAP) }.getOrNull() ?: return null
+        val decoded = runCatching { Base64Compat.decode(text) }.getOrNull() ?: return null
         return decoded.takeIf { it.size == 3 }?.map { it.toInt() and 0xff }
     }
 
