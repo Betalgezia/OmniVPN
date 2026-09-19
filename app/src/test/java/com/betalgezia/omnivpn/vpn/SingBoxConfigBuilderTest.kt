@@ -12,6 +12,21 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SingBoxConfigBuilderTest {
+    @Test fun `inbounds must be array`() {
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(
+                Node(
+                    name = "test",
+                    protocol = Protocol.VLESS,
+                    server = "example.com",
+                    port = 443,
+                    uuid = "00000000-0000-0000-0000-000000000001"
+                )
+            )
+        )
+        assertTrue(config.get("inbounds") is JSONArray)
+    }
+
     @Test fun vlessBuildsTunAndDns() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
         assertEquals("proxy", config.getJSONObject("route").getString("final"))
