@@ -40,6 +40,13 @@ interface NodeDao {
         if (nodes.isNotEmpty()) insertAll(nodes)
     }
 
+    @Query("DELETE FROM nodes WHERE name = :name AND server = :server AND port = :port")
+    suspend fun deleteKnownDemoNode(
+        name: String,
+        server: String,
+        port: Int
+    )
+
     @Query("DELETE FROM nodes")
     suspend fun deleteAll()
 }
