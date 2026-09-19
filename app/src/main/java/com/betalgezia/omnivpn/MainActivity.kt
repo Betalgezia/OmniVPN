@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -48,7 +47,6 @@ class MainActivity : ComponentActivity() {
         setContent { OmniVpnScreen() }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @OptIn(ExperimentalMaterial3Api::class)
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(viewModel: MainViewModel = hiltViewModel()) {
