@@ -16,7 +16,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "Fetching $AAR from Leadaxe/sing-box-lx @ $VER"
 curl -fsSL --retry 3 -o "$TMP/$AAR" "$BASE_URL/$AAR"
 
-printf '%s  %s\\n' "$EXPECTED_SHA" "$TMP/$AAR" | sha256sum -c -
+printf '%s  %s\n' "$EXPECTED_SHA" "$TMP/$AAR" | sha256sum -c -
 
 mv "$TMP/$AAR" "$DEST/libbox.aar"
 printf '%s' "$VER" > "$DEST/.libbox.version"
