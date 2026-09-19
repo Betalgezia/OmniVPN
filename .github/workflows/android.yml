@@ -18,6 +18,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Repository safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Kotlin package/import ordering..."
+          python3 - <<'PY'
+          from pathlib import Path
+
+          failures = []
+          for path in Path(".").rglob("*.kt"):
+              lines = path.read_text(encoding="utf-8").splitlines()
+              package_index = next((i for i, line in enumerate(lines) if line.startswith("package ")), None)
+              if package_index is None:
+                  failures.append(f"{path}: missing package declaration")
+                  continue
+              for i, line in enumerate(lines[:package_index]):
+                  if line.startswith("import "):
+                      failures.append(f"{path}:{i + 1}: import appears before package")
+              seen = set()
+              for i, line in enumerate(lines):
+                  if line.startswith("import "):
+                      if line in seen:
+                          failures.append(f"{path}:{i + 1}: duplicate import: {line}")
+                      seen.add(line)
+
+          if failures:
+              print("\n".join(failures))
+              raise SystemExit(1)
+          PY
+
+          echo "Checking Hilt Android entry points..."
+          while IFS= read -r file; do
+            if grep -Eq 'hiltViewModel\(|@Inject' "$file" && ! grep -q '@AndroidEntryPoint' "$file"; then
+              echo "Missing @AndroidEntryPoint in $file"
+              exit 1
+            fi
+          done < <(find app/src -type f -name '*Activity.kt' -print)
+
       - name: Set up JDK 25
         uses: actions/setup-java@v6
         with:
@@ -31,7 +70,7 @@ jobs:
         uses: android-actions/setup-android@v4.0.1
 
       - name: Install Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
 
       - name: Fetch libbox
         run: ./scripts/fetch-libbox.sh
@@ -39,5 +78,8 @@ jobs:
       - name: Verify Gradle wrapper
         run: ./gradlew --version
 
-      - name: Run unit tests and assemble debug APK
-        run: ./gradlew testDebugUnitTest assembleDebug --no-daemon --stacktrace
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
