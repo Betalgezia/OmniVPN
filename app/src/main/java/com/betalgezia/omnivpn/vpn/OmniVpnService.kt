@@ -272,6 +272,13 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     }
 
     override fun writeDebugMessage(message: String) {
+        // NOTE: this CommandServerHandler callback is a low-volume native-debug hook,
+        // not sing-box's regular per-connection log stream - it does not fire for
+        // ordinary dial/routing/handshake log lines regardless of "log.level" in the
+        // generated config, which is why this tag alone never showed anything useful
+        // while chasing "connects but no traffic passes". The actual log stream is
+        // now handled separately by SingBoxEngine's SingBoxLogClient, which forwards
+        // it to logcat under the "SingBoxLog" tag for the life of the VPN session.
         runCatching { android.util.Log.d(TAG, "[libbox] $message") }
     }
 

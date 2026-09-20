@@ -60,6 +60,18 @@ class SubscriptionRepository @Inject constructor(
         require(subscription.id > 0) { "Subscription must be persisted before refresh" }
         val body = fetch(subscription.url)
         val parsed = ConfigParser.parse(body)
+        if (parsed.isEmpty()) {
+            // Not logging the full body (it may contain live UUIDs/passwords), just enough
+            // to tell apart the failure modes: an empty/near-empty response (dead or expired
+            // subscription), an HTML error/login page (wrong URL, needs auth, blocked by a
+            // WAF), vs. content ConfigParser genuinely fails to recognize (new format, or a
+            // parser bug) - those need very different fixes.
+            android.util.Log.w(
+                TAG,
+                "refresh: parse returned no nodes; body length=${body.length}, " +
+                    "startsWith=${body.trimStart().take(80).replace(Regex("[\\r\\n]"), " ")}"
+            )
+        }
         require(parsed.isNotEmpty()) { "Subscription returned no supported nodes" }
         database.withTransaction {
             nodes.replaceSubscription(subscription.id, parsed)
@@ -139,6 +151,7 @@ class SubscriptionRepository @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "SubscriptionRepository"
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_REDIRECTS = 3

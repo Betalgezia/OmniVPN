@@ -5,7 +5,9 @@ import io.nekohasekai.libbox.CommandServerHandler
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -24,6 +26,12 @@ class SingBoxEngine @Inject constructor(
     private var serviceStarted = false
 
     private val lifecycleMutex = Mutex()
+
+    // Own scope for the headless log-streaming CommandClient (see SingBoxLogClient) -
+    // independent of any single start()/stop() call so it can outlive the suspend
+    // functions here without being cancelled by their caller's scope.
+    private val logClientScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val logClient = SingBoxLogClient(logClientScope)
 
     suspend fun start(
         config: String,
@@ -79,6 +87,10 @@ class SingBoxEngine @Inject constructor(
                     serviceStarted = true
                     connected = commandServer === server && serviceStarted && shouldStart()
                     android.util.Log.i(TAG, "start: engine running, connected=$connected, ready=${server.ready()}")
+                    if (connected) {
+                        android.util.Log.i(TAG, "start: starting log stream client")
+                        logClient.start()
+                    }
                 } catch (t: Throwable) {
                     android.util.Log.e(TAG, "start: engine startup failed", t)
                     if (commandServer === server) commandServer = null
@@ -111,6 +123,7 @@ class SingBoxEngine @Inject constructor(
     suspend fun stop(emitDisconnected: Boolean = true) {
         lifecycleMutex.withLock {
             android.util.Log.i(TAG, "stop: begin, running=$serviceStarted")
+            logClient.stop()
             val current = commandServer
             commandServer = null
             serviceStarted = false
@@ -134,6 +147,7 @@ class SingBoxEngine @Inject constructor(
     fun isRunning(): Boolean = serviceStarted
 
     fun closeNow() {
+        logClient.stop()
         val current = commandServer
         commandServer = null
         serviceStarted = false
