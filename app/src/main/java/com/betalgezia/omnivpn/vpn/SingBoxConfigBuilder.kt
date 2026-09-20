@@ -73,7 +73,23 @@ object SingBoxConfigBuilder {
             put("fdfe:dcba:9876::2")
         })
         .put("auto_route", true)
-        .put("strict_route", false)
+        // Was false. With it off, sing-box tolerates routes it can't fully
+        // enforce instead of forcing every packet through the tun - on
+        // Android that's the documented mechanism behind "unsupported
+        // network unreachable" being skipped, which is also the known class
+        // of leak for system-level DNS-over-TLS ("Private DNS"): the OS can
+        // resolve a blocked domain's real IP via the physical WiFi interface
+        // instead of the app's fake-ip/hijack-dns route, and any DPI on that
+        // WiFi ISP sees (and blocks) the query/connection before the proxy
+        // ever gets a chance. That matches what's been observed: it's WiFi-
+        // only (many carriers ignore Private DNS or block DoT, so mobile
+        // data isn't affected), and it only breaks blocked domains (an
+        // unblocked domain resolves/loads fine either way, so a leak there
+        // is invisible). Flipping this to true is the standard sing-box
+        // leak-prevention setting; verify by testing with Settings -> Network
+        // & internet -> Private DNS set to "Off" on WiFi - if that alone also
+        // fixes blocked resources, it confirms this is a Private DNS leak.
+        .put("strict_route", true)
 
     private fun buildVless(node: Node): JSONObject {
         require(node.uuid.orEmpty().isNotBlank()) { "VLESS UUID is required" }
@@ -223,11 +239,28 @@ object SingBoxConfigBuilder {
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
+        // A/AAAA queries must answer from fakeip, not local. "local" resolves
+        // via the platform interface, which on Android *always* goes out over
+        // the raw underlying network (see AndroidPlatformInterface/libbox
+        // docs: "there is no other way to obtain upstream DNS servers") -
+        // it never touches the tun, regardless of auto_route/strict_route.
+        // Routing every real query there (the previous code) meant every
+        // domain the user visits was resolved in clear text on the physical
+        // WiFi network *before* the app ever attempted to proxy anything -
+        // classic sing-box tun+sniff+hijack-dns setups exist specifically to
+        // avoid this by answering with a throwaway fakeip address instead;
+        // the real domain is recovered afterwards by the "sniff" route rule
+        // above (from the TLS ClientHello/SNI) and only ever leaves the
+        // device inside the proxied connection. This is very likely why
+        // blocked domains failed specifically: their DNS query (or, for
+        // domain-based blocking, the resulting behavior) was visible to the
+        // WiFi ISP outside the tunnel while unblocked domains resolved fine
+        // either way, so the leak was invisible for them.
         .put("rules", JSONArray().put(JSONObject()
             .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
             .put("action", "route")
-            .put("server", LOCAL_DNS_TAG)))
-        .put("final", LOCAL_DNS_TAG)
+            .put("server", FAKE_IP_DNS_TAG)))
+        .put("final", FAKE_IP_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         .put("reverse_mapping", true)
 
