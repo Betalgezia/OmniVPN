@@ -15,7 +15,15 @@ object SingBoxConfigBuilder {
             .put("final", proxyTag)
 
         val root = JSONObject()
-            .put("log", JSONObject().put("level", "info"))
+            // "debug" (was "info") while we're still chasing the "connects but no
+            // traffic passes" symptom: at "info" the device logs only showed
+            // AndroidLocalDns (the app's own system-DNS bootstrap, bound outside the
+            // tunnel) and protect() calls - neither says anything about whether the
+            // proxy/endpoint outbound itself ever dialed or completed a handshake. At
+            // "debug" libbox additionally logs each inbound connection and its routing
+            // decision on the OmniVpnService "[libbox] ..." channel, which is what we
+            // actually need to see. Safe to turn back down to "info" once resolved.
+            .put("log", JSONObject().put("level", "debug"))
             .put("dns", buildDns())
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
