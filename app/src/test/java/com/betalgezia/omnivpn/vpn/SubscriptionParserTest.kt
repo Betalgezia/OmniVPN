@@ -10,14 +10,16 @@ import kotlin.test.assertTrue
 class SubscriptionParserTest {
     @Test
     fun parsesVlessRealityUri() {
-        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=abcd&type=ws&path=%2Fapi&host=cdn.example.com&flow=xtls-rprx-vision#Reality"
+        // xtls-rprx-vision is only valid on bare TCP, so a Reality/Vision URI
+        // must not also carry a transport (ws/grpc/xhttp/...); that combination
+        // is intentionally sanitized away elsewhere (see
+        // SingBoxConfigBuilderTest#removesVisionWhenNodeCarriesTransport).
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=abcd&flow=xtls-rprx-vision#Reality"
         val node = SubscriptionParser.parse(uri).single()
         assertEquals(Protocol.VLESS, node.protocol)
         assertEquals("Reality", node.name)
         val raw = JSONObject(node.rawConfig!!)
         assertEquals("xtls-rprx-vision", raw.getString("flow"))
-        assertEquals("ws", raw.getJSONObject("transport").getString("type"))
-        assertEquals("/api", raw.getJSONObject("transport").getString("path"))
         assertEquals("cdn.example.com", raw.getJSONObject("tls").getString("server_name"))
         assertTrue(raw.getJSONObject("tls").getJSONObject("reality").getBoolean("enabled"))
     }

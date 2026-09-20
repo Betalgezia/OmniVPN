@@ -218,7 +218,7 @@ object ConfigParser {
                 ?: endpointPort(endpointText, 51820)
             val publicKey = (
                 string(source, "public_key", "public-key")
-                    ?: string(raw, "peer_public_key", "public_key", "public-key")
+                    ?: string(raw, "peer_public_key", "peer-public-key", "public_key", "public-key")
                 )?.let(::normalizeWireguardKey) ?: return@mapNotNull null
 
             JSONObject()
@@ -438,8 +438,19 @@ object ConfigParser {
         "safari", "360", "qq", "ios", "android", "random", "randomized"
     )
 
-    private fun addressList(raw: Map<*, *>): List<String> =
-        (list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()).map(::normalizePrefix)
+    private fun addressList(raw: Map<*, *>): List<String> {
+        // sing-box style configs carry one combined "address"/"addresses" list.
+        // Mihomo-style configs instead split the IPv4 and IPv6 client address
+        // into separate "ip" and "ipv6" scalars, both of which must be kept
+        // (a `firstNotNullOfOrNull` lookup would silently drop whichever one
+        // isn't checked first and leave the peer with only a single-stack
+        // address).
+        list(raw, "address", "addresses")?.let { return it.map(::normalizePrefix) }
+        val combined = mutableListOf<String>()
+        list(raw, "ip")?.let { combined += it }
+        list(raw, "ipv6")?.let { combined += it }
+        return combined.map(::normalizePrefix)
+    }
 
     private fun normalizePrefix(value: String): String {
         val raw = value.trim()

@@ -144,9 +144,11 @@ class SingBoxConfigBuilderTest {
         assertEquals(7L, endpoint.getLong("jc"))
         assertEquals(123L, endpoint.getLong("h1"))
         assertEquals("direct", endpoint.getString("detour"))
+        // Rule 0 is the tun-wide sniff (see directOutboundIsNonEmptyAndUsedForDnsBootstrap
+        // / the dedicated "sniff precedes DNS hijack" coverage); the DNS hijack is rule 1.
         assertEquals(
             "hijack-dns",
-            config.getJSONObject("route").getJSONArray("rules").getJSONObject(0).getString("action")
+            config.getJSONObject("route").getJSONArray("rules").getJSONObject(1).getString("action")
         )
     }
 

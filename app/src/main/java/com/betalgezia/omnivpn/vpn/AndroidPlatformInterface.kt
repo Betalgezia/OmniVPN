@@ -312,6 +312,13 @@ class AndroidPlatformInterface @Inject constructor(
         return connectivity.allNetworks.mapNotNull { network ->
             val lp = connectivity.getLinkProperties(network) ?: return@mapNotNull null
             val caps = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
+            // Exclude our own VPN network. Once the tun is up, OmniVPN's own
+            // interface is a member of allNetworks like any other; surfacing it
+            // here would let it be picked up as a candidate "physical" interface
+            // by anything that walks this list, which is exactly the kind of
+            // self-referential loop protect()/auto-detect-interface is meant to
+            // avoid (see notifyDefaultInterface's identical isVpnNetwork guard).
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
             val nativeInterface =
                 systemInterfaces.find { it.name == lp.interfaceName }
                     ?: return@mapNotNull null

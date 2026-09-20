@@ -55,7 +55,7 @@ Implemented:
 - Room-backed node/subscription persistence.
 - Cloudflare WARP bootstrap, optional WARP+ license application and encrypted AndroidKeyStore cache.
 - Minimal functional Compose UI and VPN permission flow.
-- Gradle Wrapper 9.3.0 committed to the repository.
+- Gradle Wrapper 9.3.1 committed to the repository.
 - GitHub Actions build/test workflow plus Gradle Wrapper integrity validation.
 
 ## Command-line build

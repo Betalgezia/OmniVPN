@@ -28,14 +28,18 @@ object SingBoxConfigBuilder {
             }))
             .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {
+                // The proxy outbound (when present) must stay at index 0: callers
+                // and tests rely on outbounds[0] being the app-owned proxy tag.
+                // "direct"/"block" are appended afterwards so they always exist
+                // (e.g. as the AWG/WARP endpoint bootstrap detour) instead of
+                // being silently dropped.
+                if (!endpointMode) put(buildProxyOutbound(node))
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
             })
 
         if (endpointMode) {
             root.put("endpoints", JSONArray().put(buildAmneziaWgEndpoint(node)))
-        } else {
-            root.getJSONArray("outbounds").put(0, buildProxyOutbound(node))
         }
         return root.toString()
     }
