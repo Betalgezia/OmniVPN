@@ -49,7 +49,10 @@ class MainViewModel @Inject constructor(
     fun connect(node: Node) {
         viewModelScope.launch {
             _busy.value = true
-            vpnController.start(node).onFailure { _message.value = it.message ?: "Unable to start VPN" }
+            vpnController.start(node).onFailure {
+                android.util.Log.e(TAG, "connect: failed", it)
+                _message.value = it.message ?: "Unable to start VPN"
+            }
             _busy.value = false
         }
     }
@@ -70,7 +73,13 @@ class MainViewModel @Inject constructor(
                 }
             }.onSuccess {
                 _message.value = if (value.startsWith("https://", ignoreCase = true)) "Subscription added and synced" else "Configuration imported"
-            }.onFailure { _message.value = it.message ?: "Import failed" }
+            }.onFailure {
+                // Logged explicitly: SubscriptionRepository/NodeImportService never call
+                // android.util.Log themselves, so without this line an import/subscription
+                // failure was visible only as a short-lived toast and left nothing in logcat.
+                android.util.Log.e(TAG, "import: failed for ${if (value.startsWith("https://", ignoreCase = true)) "subscription url" else "pasted config"}", it)
+                _message.value = it.message ?: "Import failed"
+            }
             _busy.value = false
         }
     }
@@ -80,21 +89,36 @@ class MainViewModel @Inject constructor(
             _busy.value = true
             runCatching { subscriptionRepository.refresh(subscription) }
                 .onSuccess { _message.value = "Updated ${it.size} nodes" }
-                .onFailure { _message.value = it.message ?: "Refresh failed" }
+                .onFailure {
+                    android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
+                    _message.value = it.message ?: "Refresh failed"
+                }
             _busy.value = false
         }
     }
 
     fun delete(subscription: Subscription) {
-        viewModelScope.launch { runCatching { subscriptionRepository.delete(subscription) }.onFailure { _message.value = it.message } }
+        viewModelScope.launch {
+            runCatching { subscriptionRepository.delete(subscription) }.onFailure {
+                android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
+                _message.value = it.message
+            }
+        }
     }
 
     fun startWarp() {
         viewModelScope.launch {
             _busy.value = true
-            vpnController.startWarp().onFailure { _message.value = it.message ?: "WARP registration failed" }
+            vpnController.startWarp().onFailure {
+                android.util.Log.e(TAG, "startWarp: failed", it)
+                _message.value = it.message ?: "WARP registration failed"
+            }
                 .onSuccess { _message.value = "WARP registered" }
             _busy.value = false
         }
+    }
+
+    private companion object {
+        private const val TAG = "MainViewModel"
     }
 }
