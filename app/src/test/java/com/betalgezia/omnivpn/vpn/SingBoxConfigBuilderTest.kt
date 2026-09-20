@@ -27,6 +27,26 @@ class SingBoxConfigBuilderTest {
         assertTrue(config.get("inbounds") is JSONArray)
     }
 
+    @Test fun directOutboundIsNonEmptyAndUsedForDnsBootstrap() {
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(
+                Node(
+                    name = "test",
+                    protocol = Protocol.VLESS,
+                    server = "196.196.206.38",
+                    port = 443,
+                    uuid = "00000000-0000-0000-0000-000000000001"
+                )
+            )
+        )
+        val outbounds = config.getJSONArray("outbounds")
+        val direct = (0 until outbounds.length())
+            .map { outbounds.getJSONObject(it) }
+            .first { it.getString("tag") == "direct" }
+        assertEquals("direct", config.getJSONObject("dns").getJSONArray("servers")
+            .getJSONObject(1).getString("detour"))
+        assertEquals("dns-local", direct.getString("domain_resolver"))
+    }
     @Test fun vlessBuildsTunAndDns() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
         assertEquals("proxy", config.getJSONObject("route").getString("final"))

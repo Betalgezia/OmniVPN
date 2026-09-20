@@ -25,7 +25,7 @@ object SingBoxConfigBuilder {
             )))
             .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {
-                put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG))
+                put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
             })
 
@@ -206,7 +206,7 @@ object SingBoxConfigBuilder {
             put(JSONObject().put("type", "https").put("tag", REMOTE_DNS_TAG)
                 .put("server", "1.1.1.1").put("server_port", 443).put("path", "/dns-query")
                 .put("tls", JSONObject().put("enabled", true).put("server_name", "cloudflare-dns.com"))
-                .put("detour", if (proxyTag == AWG_TAG) DIRECT_TAG else proxyTag))
+                .put("detour", DIRECT_TAG))
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
