@@ -158,7 +158,8 @@ object ConfigParser {
         }
         val packetEncoding = string(raw, "packet_encoding", "packet-encoding")?.lowercase()
         if (packetEncoding == "xudp") canonical.put("packet_encoding", packetEncoding)
-        copy(raw, canonical, setOf("network", "multiplex", "domain_resolver"))
+        copyNetworkField(raw, canonical)
+        copy(raw, canonical, setOf("multiplex", "domain_resolver"))
         putTlsMapIfPresent(raw, canonical, "random")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
@@ -172,7 +173,8 @@ object ConfigParser {
         val port = int(raw, "server_port", "port") ?: return null
         val password = string(raw, "password") ?: return null
         val canonical = JSONObject().put("type", "trojan").put("server", server).put("server_port", port).put("password", password)
-        copy(raw, canonical, setOf("network", "multiplex"))
+        copyNetworkField(raw, canonical)
+        copy(raw, canonical, setOf("multiplex"))
         putTlsMapIfPresent(raw, canonical, "")
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
@@ -189,7 +191,8 @@ object ConfigParser {
         if (password.isNotBlank()) canonical.put("password", password)
         int(raw, "up_mbps", "up")?.let { canonical.put("up_mbps", it) }
         int(raw, "down_mbps", "down")?.let { canonical.put("down_mbps", it) }
-        copy(raw, canonical, setOf("network", "domain_resolver", "bbr_profile", "disable_chrome_parrot"))
+        copyNetworkField(raw, canonical)
+        copy(raw, canonical, setOf("domain_resolver", "bbr_profile", "disable_chrome_parrot"))
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
         putTlsMapIfPresent(raw, canonical, "")
@@ -354,6 +357,20 @@ object ConfigParser {
 
     private fun copy(raw: Map<*, *>, target: JSONObject, fields: Set<String>) {
         for (field in fields) raw[field]?.let { value -> target.put(field, toJsonValue(value)) }
+    }
+
+    // sing-box's outbound "network" field only ever selects "tcp"/"udp" for the
+    // underlying socket; it is a different field from the V2Ray transport kind
+    // (ws/grpc/httpupgrade/xhttp), which lives under "transport" instead. Mihomo
+    // YAML overloads its own "network" key to mean the transport kind (consumed
+    // separately by buildMihomoTransport), so a blind `copy(raw, canonical,
+    // setOf("network", ...))` would carry that value straight into the canonical
+    // sing-box outbound and make Libbox.checkConfig() reject it with e.g.
+    // "unknown network: grpc" (confirmed on-device). Only forward "network" when
+    // it is actually tcp/udp.
+    private fun copyNetworkField(raw: Map<*, *>, target: JSONObject) {
+        val network = string(raw, "network")?.lowercase()
+        if (network == "tcp" || network == "udp") target.put("network", network)
     }
 
     private fun putXHttpString(

@@ -62,12 +62,15 @@ object SubscriptionParser {
                 }
                 if (packetEncoding in VALID_PACKET_ENCODINGS) put("packet_encoding", packetEncoding)
                 tls?.let { put("tls", it) }
-                transport?.let {
-                    put("transport", it)
-                    when (it.optString("type")) {
-                        "ws", "httpupgrade", "xhttp", "grpc" -> put("network", it.optString("type"))
-                    }
-                }
+                // sing-box's outbound "network" field only ever selects "tcp"/"udp"
+                // (see the `!has("tls") && !has("transport") -> "tcp"` default in
+                // SingBoxConfigBuilder.buildVless); it is NOT where the V2Ray
+                // transport kind (ws/grpc/httpupgrade/xhttp) goes - that belongs
+                // solely under "transport". Setting network to the transport type
+                // made Libbox.checkConfig() reject every gRPC/ws/etc VLESS node
+                // with "unknown network: grpc" (confirmed on-device). Only
+                // "transport" should be written here.
+                transport?.let { put("transport", it) }
             }
         return node(fragment(uri, "$server:$port"), Protocol.VLESS, server, port, uuid = uuid, raw = raw.toString())
     }
@@ -88,10 +91,9 @@ object SubscriptionParser {
                 tls?.let { put("tls", it) }
             }
             .apply {
-                transport?.let {
-                    put("transport", it)
-                    put("network", it.optString("type"))
-                }
+                // Same fix as parseVless: "network" is tcp/udp only, never the
+                // transport kind - don't set it from the transport type here.
+                transport?.let { put("transport", it) }
             }
         return node(fragment(uri, "$server:$port"), Protocol.TROJAN, server, port, password = password, raw = raw.toString())
     }

@@ -301,11 +301,20 @@ class OmniVpnService : VpnService(), CommandServerHandler {
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                // Do NOT call engine.resetNetwork() here. AndroidPlatformInterface's
+                // own startDefaultInterfaceMonitor (the libbox-sanctioned channel for
+                // auto_detect_interface) already calls notifyDefaultInterface() for
+                // every network that becomes available/changes, including this one.
+                // Having this second, independent callback also force a full
+                // commandServer.resetNetwork() on the same transition raced the two
+                // mechanisms against each other - plausibly the source of the
+                // DNS "resNetworkResult ETIMEDOUT" bursts and SELinux
+                // netlink_route_socket bind denials seen right after reconnects on
+                // real devices. Cancelling any pending recovery loop is still
+                // correct here: a network is back, so the retry-with-backoff below
+                // no longer needs to keep firing.
                 recoveryJob?.cancel()
                 recoveryJob = null
-                serviceScope.launch {
-                    if (!stopping.get()) engine.resetNetwork()
-                }
             }
 
             override fun onLost(network: Network) {
