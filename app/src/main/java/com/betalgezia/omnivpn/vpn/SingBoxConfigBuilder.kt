@@ -113,6 +113,7 @@ object SingBoxConfigBuilder {
         endpoint.put("type", "wireguard").put("tag", AWG_TAG)
 
         if (node.privateKey.orEmpty().isNotBlank()) endpoint.put("private_key", node.privateKey)
+        normalizeAwgNumericParameters(endpoint)
         if (node.awg != null) copyAwgParameters(node, endpoint)
 
         val address = endpoint.optJSONArray("address")
@@ -138,6 +139,23 @@ object SingBoxConfigBuilder {
             for (i in 0 until 3) require(reserved.optInt(i, -1) in 0..255) { "WireGuard peer reserved byte is invalid" }
         }
     }
+    private fun normalizeAwgNumericParameters(target: JSONObject) {
+        for (key in AWG_NUMERIC_FIELDS) {
+            if (!target.has(key) || target.isNull(key)) continue
+            val value = target.get(key)
+            val numericValue = when (value) {
+                is Number -> value.toLong()
+                is String -> value.trim().toLongOrNull()
+                    ?: error("AmneziaWG parameter $key must be an integer")
+                else -> error("AmneziaWG parameter $key must be a number")
+            }
+            require(numericValue in 0L..UINT32_MAX) {
+                "AmneziaWG parameter $key is out of uint32 range"
+            }
+            target.put(key, numericValue)
+        }
+    }
+
     private fun copyAwgParameters(node: Node, target: JSONObject) {
         val awg = node.awg ?: return
         if (awg.jc > 0) target.put("jc", awg.jc)
@@ -188,7 +206,7 @@ object SingBoxConfigBuilder {
             put(JSONObject().put("type", "https").put("tag", REMOTE_DNS_TAG)
                 .put("server", "1.1.1.1").put("server_port", 443).put("path", "/dns-query")
                 .put("tls", JSONObject().put("enabled", true).put("server_name", "cloudflare-dns.com"))
-                .put("detour", proxyTag))
+                .put("detour", if (proxyTag == AWG_TAG) DIRECT_TAG else proxyTag))
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
@@ -218,6 +236,9 @@ object SingBoxConfigBuilder {
         "jc", "jmin", "jmax", "s1", "s2", "s3", "s4",
         "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"
     )
+    private val AWG_NUMERIC_FIELDS = setOf("jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4")
+    private const val UINT32_MAX = 4_294_967_295L
+
     private val PEER_FIELDS = setOf(
         "address", "port", "public_key", "pre_shared_key", "allowed_ips",
         "persistent_keepalive_interval", "reserved"

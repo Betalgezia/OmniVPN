@@ -103,7 +103,15 @@ class VpnController @Inject constructor(
         android.util.Log.e(tag, "startWarp: FAILED: ${it.message}", it)
     }
     fun stop() {
-        android.util.Log.i(tag, "stop: requesting OmniVpnService stop")
-        context.stopService(Intent(context, OmniVpnService::class.java))
+        android.util.Log.i(tag, "stop: requesting OmniVpnService ACTION_STOP")
+        val intent = Intent(context, OmniVpnService::class.java).apply {
+            action = OmniVpnService.ACTION_STOP
+        }
+        runCatching {
+            context.startService(intent)
+        }.onFailure {
+            android.util.Log.w(tag, "stop: ACTION_STOP delivery failed; falling back to stopService", it)
+            context.stopService(intent)
+        }
     }
 }

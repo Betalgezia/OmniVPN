@@ -134,6 +134,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                     ?: error("No active sing-box configuration")
                 android.util.Log.d(TAG, "startVpn: active configuration loaded (${config.length} chars)")
 
+                android.util.Log.i(TAG, "startVpn: starting SingBoxEngine")
                 engine.start(config, platformInterface, this@OmniVpnService) {
                     operationGeneration.get() == generation && !stopping.get()
                 }
@@ -144,6 +145,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                     return@launch
                 }
 
+                android.util.Log.i(TAG, "startVpn: SingBoxEngine completed, engineRunning=${engine.isRunning()}")
                 publishNotification("Connected")
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startVpn: service startup failed", t)
@@ -213,18 +215,23 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         super.onRevoke()
     }
     override fun onDestroy() {
+        android.util.Log.i(TAG, "onDestroy called, engineRunning=${engine.isRunning()}, state=${eventBus.state.value}")
         operationGeneration.incrementAndGet()
+        stopping.set(true)
         unregisterNetworkCallback()
         recoveryJob?.cancel()
         recoveryJob = null
         engine.closeNow()
         closeTun()
-        serviceScope.cancel()
 
         if (eventBus.state.value != VpnState.REVOKED) {
             eventBus.emit(VpnEvent.Disconnected)
         }
 
+        runCatching { stopForegroundCompat() }
+        stopSelf()
+        serviceScope.cancel()
+        android.util.Log.i(TAG, "onDestroy: cleanup complete, state=${eventBus.state.value}")
         super.onDestroy()
     }
 

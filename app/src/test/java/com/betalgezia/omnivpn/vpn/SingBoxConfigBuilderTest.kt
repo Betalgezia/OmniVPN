@@ -84,6 +84,46 @@ class SingBoxConfigBuilderTest {
         assertFalse(config.getJSONArray("outbounds").toString().contains("wireguard"))
     }
 
+    @Test fun awgNormalizesStringNumericParametersAndUsesDirectBootstrapDns() {
+        val raw = JSONObject()
+            .put("type", "wireguard")
+            .put("address", JSONArray().put("10.0.0.2/32"))
+            .put("private_key", "base64-private")
+            .put("jc", "7")
+            .put("h1", "123")
+            .put(
+                "peers",
+                JSONArray().put(
+                    JSONObject()
+                        .put("address", "203.0.113.10")
+                        .put("port", 4500)
+                        .put("public_key", "base64-public")
+                        .put("allowed_ips", JSONArray().put("0.0.0.0/0"))
+                )
+            )
+            .toString()
+
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(
+                Node(
+                    name = "awg",
+                    protocol = Protocol.AMNEZIAWG,
+                    server = "203.0.113.10",
+                    port = 4500,
+                    privateKey = "base64-private",
+                    rawConfig = raw
+                )
+            )
+        )
+
+        val endpoint = config.getJSONArray("endpoints").getJSONObject(0)
+        assertEquals(7L, endpoint.getLong("jc"))
+        assertEquals(123L, endpoint.getLong("h1"))
+        assertEquals(
+            "direct",
+            config.getJSONObject("dns").getJSONArray("servers").getJSONObject(1).getString("detour")
+        )
+    }
     @Test fun invalidPortIsRejectedBeforeCore() {
         assertFailsWith<IllegalArgumentException> { SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=70000, uuid="00000000-0000-0000-0000-000000000003")) }
     }

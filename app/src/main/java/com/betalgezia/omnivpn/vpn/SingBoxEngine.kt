@@ -32,62 +32,70 @@ class SingBoxEngine @Inject constructor(
         shouldStart: () -> Boolean = { true }
     ) {
         lifecycleMutex.withLock {
+            android.util.Log.i(TAG, "start: begin, configChars=${config.length}")
             eventBus.emit(VpnEvent.Connecting)
-
             var connected = false
-
             withContext(Dispatchers.IO) {
+                android.util.Log.i(TAG, "start: Libbox.checkConfig() begin")
                 Libbox.checkConfig(config)
-
-                if (!shouldStart()) return@withContext
+                android.util.Log.i(TAG, "start: Libbox.checkConfig() passed")
+                if (!shouldStart()) {
+                    android.util.Log.i(TAG, "start: cancelled after checkConfig")
+                    return@withContext
+                }
                 check(commandServer == null && !serviceStarted) {
                     "sing-box is already running"
                 }
-
+                android.util.Log.i(TAG, "start: Libbox.newCommandServer() begin")
                 val server = Libbox.newCommandServer(handler, platformInterface)
                 commandServer = server
-
+                android.util.Log.i(TAG, "start: Libbox.newCommandServer() returned")
                 try {
                     if (!shouldStart()) {
+                        android.util.Log.i(TAG, "start: cancelled before server.start()")
                         commandServer = null
                         server.close()
                         return@withContext
                     }
-
+                    android.util.Log.i(TAG, "start: server.start() begin")
                     server.start()
-
+                    android.util.Log.i(TAG, "start: server.start() returned, ready=${server.ready()}")
                     if (!shouldStart()) {
+                        android.util.Log.i(TAG, "start: cancelled after server.start()")
                         commandServer = null
                         server.close()
                         return@withContext
                     }
-
+                    android.util.Log.i(TAG, "start: server.startOrReloadService() begin")
                     server.startOrReloadService(config, OverrideOptions())
-
+                    android.util.Log.i(TAG, "start: server.startOrReloadService() returned, ready=${server.ready()}")
                     if (!shouldStart()) {
+                        android.util.Log.i(TAG, "start: cancelled after startOrReloadService()")
                         commandServer = null
+                        runCatching { server.closeService() }
                         server.close()
                         return@withContext
                     }
-
                     serviceStarted = true
                     connected = commandServer === server && serviceStarted && shouldStart()
+                    android.util.Log.i(TAG, "start: engine running, connected=$connected, ready=${server.ready()}")
                 } catch (t: Throwable) {
-                    if (commandServer === server) {
-                        commandServer = null
-                    }
+                    android.util.Log.e(TAG, "start: engine startup failed", t)
+                    if (commandServer === server) commandServer = null
                     serviceStarted = false
+                    runCatching { server.closeService() }
                     runCatching { server.close() }
                     throw t
                 }
             }
-
             if (connected) {
+                android.util.Log.i(TAG, "start: emitting Connected")
                 eventBus.emit(VpnEvent.Connected)
+            } else {
+                android.util.Log.i(TAG, "start: not connected")
             }
         }
     }
-
     suspend fun reload(config: String) {
         lifecycleMutex.withLock {
             withContext(Dispatchers.IO) {
@@ -102,22 +110,22 @@ class SingBoxEngine @Inject constructor(
 
     suspend fun stop(emitDisconnected: Boolean = true) {
         lifecycleMutex.withLock {
+            android.util.Log.i(TAG, "stop: begin, running=$serviceStarted")
             val current = commandServer
             commandServer = null
             serviceStarted = false
-
             if (current != null) {
                 withContext(Dispatchers.IO) {
-                    current.close()
+                    runCatching { current.closeService() }
+                        .onFailure { android.util.Log.w(TAG, "stop: closeService failed", it) }
+                    runCatching { current.close() }
+                        .onFailure { android.util.Log.w(TAG, "stop: close failed", it) }
                 }
             }
-
-            if (emitDisconnected) {
-                eventBus.emit(VpnEvent.Disconnected)
-            }
+            if (emitDisconnected) eventBus.emit(VpnEvent.Disconnected)
+            android.util.Log.i(TAG, "stop: completed")
         }
     }
-
     fun resetNetwork() {
         if (!serviceStarted) return
         commandServer?.resetNetwork()
@@ -130,13 +138,13 @@ class SingBoxEngine @Inject constructor(
         commandServer = null
         serviceStarted = false
         if (current != null) {
+            android.util.Log.i(TAG, "closeNow: closing command server and service")
+            runCatching { current.closeService() }
+                .onFailure { android.util.Log.w(TAG, "closeNow: closeService failed", it) }
             runCatching { current.close() }
-                .onFailure {
-                    android.util.Log.w(TAG, "closeNow failed: " + it.message)
-                }
+                .onFailure { android.util.Log.w(TAG, "closeNow: close failed", it) }
         }
     }
-
     companion object {
         private const val TAG = "SingBoxEngine"
     }

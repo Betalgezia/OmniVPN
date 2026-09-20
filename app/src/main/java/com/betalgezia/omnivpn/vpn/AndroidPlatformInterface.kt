@@ -47,12 +47,14 @@ class AndroidPlatformInterface @Inject constructor(
     @Volatile
     private var monitoredNetwork: android.net.Network? = null
 
-    override fun localDNSTransport(): LocalDNSTransport? = null
+    override fun localDNSTransport(): LocalDNSTransport? = AndroidLocalDnsResolver(vpnService)
 
     override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
 
     override fun autoDetectInterfaceControl(fd: Int) {
+        android.util.Log.i(TAG, "protect(fd=$fd) called")
         check(vpnService.protect(fd)) { "VpnService.protect($fd) failed" }
+        android.util.Log.i(TAG, "protect(fd=$fd) succeeded")
     }
 
     override fun openTun(options: TunOptions): Int {
@@ -79,7 +81,9 @@ class AndroidPlatformInterface @Inject constructor(
         val pfd = builder.establish()
             ?: error("VpnService.Builder.establish() returned null")
 
+        android.util.Log.i(TAG, "openTun: TUN established fd=" + pfd.fd + ", mtu=" + options.mtu + ", autoRoute=" + options.autoRoute)
         onTunEstablished(pfd)
+        android.util.Log.i(TAG, "openTun: TUN handed to libbox fd=" + pfd.fd)
         return pfd.fd
     }
 
