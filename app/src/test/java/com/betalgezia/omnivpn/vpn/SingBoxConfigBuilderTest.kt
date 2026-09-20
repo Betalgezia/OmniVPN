@@ -95,7 +95,6 @@ class SingBoxConfigBuilderTest {
 
     @Test fun awgBuildsEndpointAndRoutesThroughIt() {
         val raw = JSONObject().put("type","wireguard").put("tag","bad-tag").put("address", JSONArray().put("10.0.0.2/32")).put("private_key","base64-private").put("jc",10).put("h1",123).put("peers",JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820).put("public_key","base64-public").put("allowed_ips",JSONArray().put("0.0.0.0/0")))).toString()
-        const val unused = 1
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="awg", protocol=Protocol.AMNEZIAWG, server="203.0.113.10", port=51820, privateKey="base64-private", awg=AwgParameters(jc=10,h1=123), rawConfig=raw)))
         assertEquals("awg", config.getJSONObject("route").getString("final"))
         val endpoint = config.getJSONArray("endpoints").getJSONObject(0)
