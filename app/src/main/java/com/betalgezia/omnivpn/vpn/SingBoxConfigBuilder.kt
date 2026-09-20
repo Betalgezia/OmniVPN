@@ -17,11 +17,15 @@ object SingBoxConfigBuilder {
         val root = JSONObject()
             .put("log", JSONObject().put("level", "info"))
             .put("dns", buildDns())
-            .put("route", route.put("rules", JSONArray().put(
-                JSONObject()
+            .put("route", route.put("rules", JSONArray().apply {
+                put(JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
-                    .put("action", "hijack-dns")
-            )))
+                    .put("action", "sniff"))
+                put(JSONObject()
+                    .put("inbound", JSONArray().put(TUN_TAG))
+                    .put("protocol", "dns")
+                    .put("action", "hijack-dns"))
+            }))
             .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
