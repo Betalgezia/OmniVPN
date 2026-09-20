@@ -135,8 +135,27 @@ class AndroidPlatformInterface @Inject constructor(
             val connectivity = vpnService.getSystemService(ConnectivityManager::class.java)
             val request = NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .build()
+
+            // Android's activeNetwork can resolve to the VPN once this
+            // VpnService is established. Seed only with a non-VPN network.
+            val initialNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                connectivity.activeNetwork?.takeUnless { isVpnNetwork(connectivity, it) }
+            } else {
+                null
+            }
+            android.util.Log.i(
+                TAG,
+                "default network monitor: initial=" +
+                    (initialNetwork?.toString() ?: "null") +
+                    ", vpn=" +
+                    (initialNetwork?.let { isVpnNetwork(connectivity, it) } ?: false)
+            )
+            if (initialNetwork != null) {
+                notifyDefaultInterface(initialNetwork)
+            }
 
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: android.net.Network) {
@@ -159,7 +178,31 @@ class AndroidPlatformInterface @Inject constructor(
             }
 
             try {
-                connectivity.registerNetworkCallback(request, callback)
+                when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                        // Android 12+: receive the best matching underlying
+                        // network rather than every INTERNET-capable network.
+                        connectivity.registerBestMatchingNetworkCallback(
+                            request,
+                            callback,
+                            android.os.Handler(android.os.Looper.getMainLooper())
+                        )
+                    }
+
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> {
+                        // Android 9-11: requestNetwork selects the requested
+                        // network instead of exposing every candidate interface.
+                        connectivity.requestNetwork(
+                            request,
+                            callback,
+                            android.os.Handler(android.os.Looper.getMainLooper())
+                        )
+                    }
+
+                    else -> {
+                        connectivity.registerDefaultNetworkCallback(callback)
+                    }
+                }
                 defaultInterfaceCallback = callback
             } catch (t: Throwable) {
                 defaultInterfaceListener = null
@@ -193,25 +236,37 @@ class AndroidPlatformInterface @Inject constructor(
 
         runCatching {
             if (network == null) {
+                android.util.Log.w(TAG, "default network monitor: no underlying network")
                 listener.updateDefaultInterface("", -1, false, false)
                 listener.updateNetworkPath("")
                 return@runCatching
             }
 
             val connectivity = vpnService.getSystemService(ConnectivityManager::class.java)
+            if (isVpnNetwork(connectivity, network)) {
+                android.util.Log.w(TAG, "default network monitor: ignoring VPN network=$network")
+                return@runCatching
+            }
+
             val linkProperties = connectivity.getLinkProperties(network)
             val interfaceName = linkProperties?.interfaceName.orEmpty()
             val interfaceIndex = interfaceName.takeIf { it.isNotBlank() }
                 ?.let { JNetworkInterface.getByName(it)?.index }
                 ?: -1
 
-            if (interfaceName.isBlank()) {
-                listener.updateDefaultInterface("", -1, false, false)
-                listener.updateNetworkPath("")
+            if (interfaceName.isBlank() || interfaceIndex < 0) {
+                android.util.Log.w(
+                    TAG,
+                    "default network monitor: unusable network=$network iface='$interfaceName' index=$interfaceIndex"
+                )
                 return@runCatching
             }
 
             monitoredNetwork = network
+            android.util.Log.i(
+                TAG,
+                "default network monitor: selected network=$network iface=$interfaceName index=$interfaceIndex"
+            )
             listener.updateDefaultInterface(interfaceName, interfaceIndex, false, false)
             listener.updateNetworkPath(interfaceName)
         }.onFailure {
@@ -221,6 +276,14 @@ class AndroidPlatformInterface @Inject constructor(
                 listener.updateNetworkPath("")
             }
         }
+    }
+
+    private fun isVpnNetwork(
+        connectivity: ConnectivityManager,
+        network: android.net.Network
+    ): Boolean {
+        return connectivity.getNetworkCapabilities(network)
+            ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
     }
 
     override fun getInterfaces(): NetworkInterfaceIterator {
@@ -345,7 +408,10 @@ class AndroidPlatformInterface @Inject constructor(
         val dns = options.dnsServerAddress
         while (dns.hasNext()) {
             val address = dns.next()
-            if (address.isNotBlank()) builder.addDnsServer(address)
+            if (address.isNotBlank()) {
+                android.util.Log.i(TAG, "openTun: addDnsServer=$address")
+                builder.addDnsServer(address)
+            }
         }
     }
 
@@ -356,9 +422,11 @@ class AndroidPlatformInterface @Inject constructor(
             while (r4.hasNext()) {
                 hasV4Route = true
                 val route = r4.next()
+                android.util.Log.i(TAG, "openTun: addRoute4=${route.address()}/${route.prefix()}")
                 builder.addRoute(route.address(), route.prefix())
             }
             if (!hasV4Route && options.inet4Address.hasNext()) {
+                android.util.Log.i(TAG, "openTun: addRoute4=0.0.0.0/0 (fallback)")
                 builder.addRoute("0.0.0.0", 0)
             }
 
@@ -367,9 +435,11 @@ class AndroidPlatformInterface @Inject constructor(
             while (r6.hasNext()) {
                 hasV6Route = true
                 val route = r6.next()
+                android.util.Log.i(TAG, "openTun: addRoute6=${route.address()}/${route.prefix()}")
                 builder.addRoute(route.address(), route.prefix())
             }
             if (!hasV6Route && options.inet6Address.hasNext()) {
+                android.util.Log.i(TAG, "openTun: addRoute6=::/0 (fallback)")
                 builder.addRoute("::", 0)
             }
 
