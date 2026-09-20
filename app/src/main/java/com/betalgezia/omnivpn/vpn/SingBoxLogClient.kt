@@ -64,7 +64,12 @@ class SingBoxLogClient(private val scope: CoroutineScope) {
         client = null
     }
 
-    private suspend fun connectLoop() {
+    // Extension on CoroutineScope (not a bare suspend fun) so that `isActive` below
+    // resolves against this coroutine's own scope - a plain `suspend fun` has no
+    // CoroutineScope/CoroutineContext receiver for that property to bind to, which is
+    // exactly the "None of the following candidates is applicable" compile error this
+    // was rewritten to fix.
+    private suspend fun CoroutineScope.connectLoop() {
         var attempt = 0
         while (isActive && wantRunning.get()) {
             attempt++
