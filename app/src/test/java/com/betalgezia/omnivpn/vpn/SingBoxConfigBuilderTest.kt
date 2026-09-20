@@ -44,8 +44,10 @@ class SingBoxConfigBuilderTest {
             .map { outbounds.getJSONObject(it) }
             .first { it.getString("tag") == "direct" }
         assertEquals("dns-local", direct.getString("domain_resolver"))
-        assertEquals("hijack-dns", config.getJSONObject("route").getJSONArray("rules")
-            .getJSONObject(0).getString("action"))
+        val rules = config.getJSONObject("route").getJSONArray("rules")
+        assertEquals("sniff", rules.getJSONObject(0).getString("action"))
+        assertEquals("dns", rules.getJSONObject(1).getString("protocol"))
+        assertEquals("hijack-dns", rules.getJSONObject(1).getString("action"))
     }
 
     @Test fun vlessBuildsTunAndDns() {
