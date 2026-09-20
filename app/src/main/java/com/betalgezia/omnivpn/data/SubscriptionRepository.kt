@@ -66,11 +66,13 @@ class SubscriptionRepository @Inject constructor(
             // subscription), an HTML error/login page (wrong URL, needs auth, blocked by a
             // WAF), vs. content ConfigParser genuinely fails to recognize (new format, or a
             // parser bug) - those need very different fixes.
-            android.util.Log.w(
-                TAG,
-                "refresh: parse returned no nodes; body length=${body.length}, " +
-                    "startsWith=${body.trimStart().take(80).replace(Regex("[\\r\\n]"), " ")}"
-            )
+            runCatching {
+                android.util.Log.w(
+                    TAG,
+                    "refresh: parse returned no nodes; body length=${body.length}, " +
+                        "startsWith=${body.trimStart().take(80).replace(Regex("[\\r\\n]"), " ")}"
+                )
+            }
         }
         require(parsed.isNotEmpty()) { "Subscription returned no supported nodes" }
         database.withTransaction {

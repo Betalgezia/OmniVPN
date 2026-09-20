@@ -11,32 +11,65 @@ import java.nio.charset.StandardCharsets
 object SubscriptionParser {
     fun parse(input: String): List<Node> {
         if (input.length > MAX_URI_LIST_CHARS) return emptyList()
-        return input.lineSequence()
+        var candidateLines = 0
+        var firstFailure: Throwable? = null
+        val result = input.lineSequence()
         .map(String::trim)
         .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith(";") }
         .flatMap { line ->
+            candidateLines++
             if (line.length > MAX_URI_CHARS_PER_LINE) {
                 emptyList()
             } else {
-                runCatching { parseUri(line) }.getOrNull()?.let(::listOf) ?: emptyList()
+                runCatching { parseUri(line) }
+                    .onFailure { if (firstFailure == null) firstFailure = it }
+                    .getOrNull()?.let(::listOf) ?: emptyList()
             }
         }
         .toList()
+        if (result.isEmpty() && candidateLines > 0) {
+            // Never log the line/URI itself - it carries live UUIDs/passwords. Counts and the
+            // first exception's type/message are enough to tell "every line failed to parse"
+            // (e.g. the URISyntaxException fixed below, from an un-percent-encoded remark)
+            // apart from "this wasn't a URI list at all".
+            runCatching {
+                android.util.Log.w(
+                    TAG,
+                    "parse: $candidateLines candidate line(s), 0 parsed nodes" +
+                        (firstFailure?.let { "; first failure: ${it::class.simpleName}: ${it.message}" } ?: "")
+                )
+            }
+        }
+        return result
     }
 
     private fun parseUri(value: String): Node? {
         val normalized = value.trim()
-        val uri = runCatching { URI(encodePlus(normalized)) }.getOrNull() ?: return null
+        // Split the remark (#...) off BEFORE handing anything to java.net.URI. URI's constructor
+        // is strict (RFC 3986) and throws URISyntaxException on an unescaped space, emoji, or
+        // other raw Unicode - and free VLESS/Trojan/Hysteria2 subscription generators very
+        // commonly put a human-readable, NOT percent-encoded remark there (a flag emoji plus a
+        // country name is typical, e.g. "#🇹🇷 Turkey"). Left as-is, one
+        // badly-encoded remark silently drops just that node (parse()'s runCatching swallows the
+        // exception); a whole subscription generated the same way silently drops every node,
+        // which is exactly the "Subscription returned no supported nodes" symptom - confirmed via
+        // the length/prefix logging added to SubscriptionRepository.refresh(), which showed a
+        // legitimate base64-encoded vless:// list, not an empty or garbled response.
+        val hashIndex = normalized.indexOf('#')
+        val uriPart = if (hashIndex >= 0) normalized.substring(0, hashIndex) else normalized
+        val rawRemark = if (hashIndex >= 0) normalized.substring(hashIndex + 1) else null
+        val uri = runCatching { URI(encodePlus(uriPart)) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase() ?: return null
+        val remark = rawRemark?.let(::decode)?.takeIf { it.isNotBlank() }
         return when (scheme) {
-            "vless" -> parseVless(uri)
-            "trojan" -> parseTrojan(uri)
-            "hysteria2", "hy2" -> parseHysteria2(uri)
+            "vless" -> parseVless(uri, remark)
+            "trojan" -> parseTrojan(uri, remark)
+            "hysteria2", "hy2" -> parseHysteria2(uri, remark)
             else -> null
         }
     }
 
-    private fun parseVless(uri: URI): Node? {
+    private fun parseVless(uri: URI, remark: String?): Node? {
         val server = uri.host?.takeIf { it.isNotBlank() } ?: return null
         val port = if (uri.port == -1) 443 else uri.port.takeIf { it in 1..65535 } ?: return null
         val uuid = decode(uri.rawUserInfo).substringBefore(":").takeIf { it.isNotBlank() } ?: return null
@@ -72,10 +105,10 @@ object SubscriptionParser {
                 // "transport" should be written here.
                 transport?.let { put("transport", it) }
             }
-        return node(fragment(uri, "$server:$port"), Protocol.VLESS, server, port, uuid = uuid, raw = raw.toString())
+        return node(remark ?: "$server:$port", Protocol.VLESS, server, port, uuid = uuid, raw = raw.toString())
     }
 
-    private fun parseTrojan(uri: URI): Node? {
+    private fun parseTrojan(uri: URI, remark: String?): Node? {
         val server = uri.host?.takeIf { it.isNotBlank() } ?: return null
         val port = if (uri.port == -1) 443 else uri.port.takeIf { it in 1..65535 } ?: return null
         val password = decode(uri.rawUserInfo).takeIf { it.isNotBlank() } ?: return null
@@ -95,10 +128,10 @@ object SubscriptionParser {
                 // transport kind - don't set it from the transport type here.
                 transport?.let { put("transport", it) }
             }
-        return node(fragment(uri, "$server:$port"), Protocol.TROJAN, server, port, password = password, raw = raw.toString())
+        return node(remark ?: "$server:$port", Protocol.TROJAN, server, port, password = password, raw = raw.toString())
     }
 
-    private fun parseHysteria2(uri: URI): Node? {
+    private fun parseHysteria2(uri: URI, remark: String?): Node? {
         val server = uri.host?.takeIf { it.isNotBlank() } ?: return null
         val port = if (uri.port == -1) 443 else uri.port.takeIf { it in 1..65535 } ?: return null
         val password = decode(uri.rawUserInfo).takeIf { it.isNotBlank() } ?: return null
@@ -116,7 +149,7 @@ object SubscriptionParser {
                 parseMbps(query["down"])?.let { put("down_mbps", it) }
                 buildHysteriaObfs(query)?.let { put("obfs", it) }
             }
-        return node(fragment(uri, "$server:$port"), Protocol.HYSTERIA2, server, port, password = password, raw = raw.toString())
+        return node(remark ?: "$server:$port", Protocol.HYSTERIA2, server, port, password = password, raw = raw.toString())
     }
 
     private fun buildTls(query: Map<String, String>, server: String, defaultEnabled: Boolean, defaultFingerprint: String): JSONObject? {
@@ -212,8 +245,6 @@ object SubscriptionParser {
         return current
     }
 
-    private fun fragment(uri: URI, fallback: String): String = decode(uri.rawFragment).takeIf { it.isNotBlank() } ?: fallback
-
     private fun parseMbps(value: String?): Int? {
         val raw = value?.trim()?.lowercase() ?: return null
         val number = raw.removeSuffix("mbps").removeSuffix("mb/s").trim().toDoubleOrNull() ?: return null
@@ -247,6 +278,7 @@ object SubscriptionParser {
     private fun node(name: String, protocol: Protocol, server: String, port: Int, uuid: String? = null, password: String? = null, raw: String): Node =
         Node(name = name, protocol = protocol, server = server, port = port, uuid = uuid, password = password, rawConfig = raw)
 
+    private const val TAG = "SubscriptionParser"
     private const val MAX_URI_LIST_CHARS = 64 * 1024
     private const val MAX_URI_CHARS_PER_LINE = 64 * 1024
     private val VALID_PACKET_ENCODINGS = setOf("xudp")

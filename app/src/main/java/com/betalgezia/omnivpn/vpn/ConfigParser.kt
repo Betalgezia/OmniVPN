@@ -509,7 +509,19 @@ object ConfigParser {
             runCatching { Base64Compat.decodeUrl(compact) }.getOrElse { return trimmed }
         }
         val decoded = bytes.toString(StandardCharsets.UTF_8)
-        return if (decoded.contains("://") || decoded.trimStart().startsWith("{") || decoded.contains("proxies:")) decoded else trimmed
+        // Whitelist mirrors the formats parse() itself recognizes below (URI list, sing-box
+        // JSON object OR array, Mihomo/other YAML, WireGuard INI) - a decoded body in any of
+        // those shapes should be used; anything else (decode "succeeded" on the wrong bytes, or
+        // this wasn't base64 to begin with) falls back to the original text untouched.
+        val decodedTrimmed = decoded.trimStart()
+        val looksLikeConfig = decoded.contains("://") ||
+            decodedTrimmed.startsWith("{") ||
+            decodedTrimmed.startsWith("[") ||
+            decoded.contains("proxies:") ||
+            decoded.contains("outbounds:") ||
+            decoded.contains("endpoints:") ||
+            decoded.lineSequence().any { it.trim().equals("[Interface]", ignoreCase = true) }
+        return if (looksLikeConfig) decoded else trimmed
     }
 
     private fun name(raw: Map<*, *>, server: String, port: Int): String = string(raw, "name", "remark", "tag")?.takeIf { it.isNotBlank() } ?: "$server:$port"

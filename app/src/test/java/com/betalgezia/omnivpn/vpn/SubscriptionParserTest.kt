@@ -168,4 +168,26 @@ class SubscriptionParserTest {
         assertEquals("salamander", raw.getJSONObject("obfs").getString("type"))
         assertTrue(raw.getJSONObject("tls").getBoolean("insecure"))
     }
+
+    @Test
+    fun parsesUriWithUnEncodedEmojiAndSpacesInRemark() {
+        // java.net.URI's constructor is strict (RFC 3986) and throws URISyntaxException on a
+        // raw, un-percent-encoded space or emoji anywhere in the string it's given - including
+        // the fragment. Free subscription generators routinely emit remarks like this without
+        // encoding them. Before the fix, feeding the WHOLE line (remark included) to URI() meant
+        // a node like this failed to parse at all (silently, via parse()'s runCatching), and a
+        // subscription made up entirely of such lines came back with zero nodes even though the
+        // config values themselves were perfectly valid - this reproduces that real-world case.
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=cdn.example.com#🇹🇷 Turkey - Fast"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals(Protocol.VLESS, node.protocol)
+        assertEquals("🇹🇷 Turkey - Fast", node.name)
+    }
+
+    @Test
+    fun fallsBackToHostPortNameWhenRemarkIsBlank() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals("edge.example.com:443", node.name)
+    }
 }

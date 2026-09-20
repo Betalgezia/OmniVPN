@@ -408,4 +408,24 @@ class ConfigParserTest {
         assertNotNull(peer.getJSONArray("reserved"))
         assertEquals(255, peer.getJSONArray("reserved").getInt(2))
     }
+
+    @Test
+    fun parsesBase64EncodedSubscriptionWithUnEncodedRemarks() {
+        // Reproduces a real subscription that came back with 0 nodes (SubscriptionRepository's
+        // "Subscription returned no supported nodes"): the response body is the whole vless://
+        // list, base64-encoded, and each line's remark (flag emoji + country name) isn't
+        // percent-encoded - which used to make java.net.URI throw for every single line (see
+        // SubscriptionParserTest#parsesUriWithUnEncodedEmojiAndSpacesInRemark). This goes through
+        // ConfigParser.parse(), the actual entry point SubscriptionRepository.refresh() calls, to
+        // cover decodeBase64IfNeeded's own sanity check as well as the URI fix.
+        val list = listOf(
+            "vless://00000000-0000-0000-0000-000000000001@edge1.example.com:443?security=tls&sni=cdn.example.com#🇹🇷 Turkey",
+            "vless://00000000-0000-0000-0000-000000000002@edge2.example.com:443?security=tls&sni=cdn.example.com#🇸🇪 Sweden"
+        ).joinToString("\n")
+        val body = java.util.Base64.getEncoder().encodeToString(list.toByteArray(Charsets.UTF_8))
+        val nodes = ConfigParser.parse(body)
+        assertEquals(2, nodes.size)
+        assertEquals("🇹🇷 Turkey", nodes[0].name)
+        assertEquals("🇸🇪 Sweden", nodes[1].name)
+    }
 }
