@@ -61,7 +61,7 @@ object SingBoxConfigBuilder {
             put("fdfe:dcba:9876::2")
         })
         .put("auto_route", true)
-        .put("strict_route", true)
+        .put("strict_route", false)
 
     private fun buildVless(node: Node): JSONObject {
         require(node.uuid.orEmpty().isNotBlank()) { "VLESS UUID is required" }
