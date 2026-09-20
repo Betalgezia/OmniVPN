@@ -16,12 +16,11 @@ object SingBoxConfigBuilder {
 
         val root = JSONObject()
             .put("log", JSONObject().put("level", "info"))
-            .put("dns", buildDns(proxyTag))
+            .put("dns", buildDns())
             .put("route", route.put("rules", JSONArray().put(
                 JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
-                    .put("action", "resolve")
-                    .put("server", REMOTE_DNS_TAG)
+                    .put("action", "hijack-dns")
             )))
             .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {
@@ -84,7 +83,7 @@ object SingBoxConfigBuilder {
 
     private fun buildHysteria2(node: Node): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Hysteria2 password is required" }
-        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "obfs", "up_mbps", "down_mbps", "hop_interval", "hop_interval_max", "bbr_profile", "brutal_debug", "disable_chrome_parrot", "domain_resolver"))
+        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"))
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -110,7 +109,7 @@ object SingBoxConfigBuilder {
 
         val endpoint = JSONObject()
         copyAllowed(source, endpoint, AWG_ENDPOINT_FIELDS)
-        endpoint.put("type", "wireguard").put("tag", AWG_TAG)
+        endpoint.put("type", "wireguard").put("tag", AWG_TAG).put("detour", DIRECT_TAG)
 
         if (node.privateKey.orEmpty().isNotBlank()) endpoint.put("private_key", node.privateKey)
         normalizeAwgNumericParameters(endpoint)
@@ -139,6 +138,7 @@ object SingBoxConfigBuilder {
             for (i in 0 until 3) require(reserved.optInt(i, -1) in 0..255) { "WireGuard peer reserved byte is invalid" }
         }
     }
+
     private fun normalizeAwgNumericParameters(target: JSONObject) {
         for (key in AWG_NUMERIC_FIELDS) {
             if (!target.has(key) || target.isNull(key)) continue
@@ -184,6 +184,7 @@ object SingBoxConfigBuilder {
             outbound.remove("packet_encoding")
         }
     }
+
     private fun copyAllowed(source: JSONObject, target: JSONObject, allowedFields: Set<String>) {
         for (key in allowedFields) if (source.has(key) && !source.isNull(key)) target.put(key, source.get(key))
     }
@@ -200,21 +201,17 @@ object SingBoxConfigBuilder {
         return obj
     }
 
-    private fun buildDns(proxyTag: String): JSONObject = JSONObject()
+    private fun buildDns(): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
-            put(JSONObject().put("type", "https").put("tag", REMOTE_DNS_TAG)
-                .put("server", "1.1.1.1").put("server_port", 443).put("path", "/dns-query")
-                .put("tls", JSONObject().put("enabled", true).put("server_name", "cloudflare-dns.com"))
-                .put("detour", DIRECT_TAG))
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
         .put("rules", JSONArray().put(JSONObject()
             .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
             .put("action", "route")
-            .put("server", FAKE_IP_DNS_TAG)))
-        .put("final", REMOTE_DNS_TAG)
+            .put("server", LOCAL_DNS_TAG)))
+        .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         .put("reverse_mapping", true)
 
@@ -227,14 +224,14 @@ object SingBoxConfigBuilder {
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
     private const val LOCAL_DNS_TAG = "dns-local"
-    private const val REMOTE_DNS_TAG = "dns-remote"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
 
     private val AWG_ENDPOINT_FIELDS = setOf(
         "system", "name", "mtu", "address", "private_key", "listen_port", "workers",
         "udp_timeout", "udp_mapping", "udp_filtering", "udp_nat_max", "peers",
         "jc", "jmin", "jmax", "s1", "s2", "s3", "s4",
-        "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"
+        "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5",
+        "detour"
     )
     private val AWG_NUMERIC_FIELDS = setOf("jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4")
     private const val UINT32_MAX = 4_294_967_295L
