@@ -56,7 +56,13 @@ class AndroidLocalDnsResolver(
                 }
                 val callback = object : DnsResolver.Callback<ByteArray> {
                     override fun onAnswer(answer: ByteArray, rcode: Int) {
-                        if (rcode == 0) ctx.rawSuccess(answer) else ctx.errorCode(rcode)
+                        if (rcode == 0) {
+                            android.util.Log.d(TAG, "exchange: success bytes=${answer.size} network=$network")
+                            ctx.rawSuccess(answer)
+                        } else {
+                            android.util.Log.d(TAG, "exchange: rcode=$rcode network=$network")
+                            ctx.errorCode(rcode)
+                        }
                         complete()
                     }
                     override fun onError(error: DnsResolver.DnsException) {
@@ -101,8 +107,12 @@ class AndroidLocalDnsResolver(
                         override fun onAnswer(answer: Collection<InetAddress>, rcode: Int) {
                             if (rcode == 0) {
                                 val values = answer.mapNotNull { it.hostAddress }.joinToString("\n")
-                                if (values.isNotBlank()) ctx.success(values) else ctx.errorCode(RCODE_NXDOMAIN)
+                                if (values.isNotBlank()) {
+                                    android.util.Log.d(TAG, "lookup: success domain=$domain addresses=$values network=$network")
+                                    ctx.success(values)
+                                } else ctx.errorCode(RCODE_NXDOMAIN)
                             } else {
+                                android.util.Log.d(TAG, "lookup: rcode=$rcode domain=$domain network=$network")
                                 ctx.errorCode(rcode)
                             }
                             complete()
