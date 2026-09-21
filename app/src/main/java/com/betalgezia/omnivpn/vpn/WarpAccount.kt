@@ -27,6 +27,18 @@ data class WarpAccount(
             .put("port", parts.second)
             .put("public_key", peerPublicKey)
             .put("allowed_ips", JSONArray().apply { put("0.0.0.0/0"); put("::/0") })
+            // Standard WireGuard hygiene for any peer that might sit behind
+            // NAT - unset before. Not expected to fix DPI blocking by
+            // itself, but on 2026-09-21 the junk-packet obfuscation above
+            // got the very first handshake through (logcat: "received
+            // handshake response"), and the tunnel then went quiet and
+            // re-handshook every ~15-20s afterward ("stopped hearing back
+            // after 15 seconds") - a periodic keepalive is a legitimate,
+            // low-risk mitigation for exactly that pattern regardless of
+            // whether the cause turns out to be NAT-mapping expiry or
+            // something upstream, so it stays even if it isn't the whole
+            // fix.
+            .put("persistent_keepalive_interval", 25)
         reservedBytes()?.let { bytes ->
             peer.put("reserved", JSONArray().apply { bytes.forEach { put(it) } })
         }

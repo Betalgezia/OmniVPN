@@ -124,10 +124,10 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun startWarp() {
+    fun startWarp(endpointOverride: String? = null) {
         viewModelScope.launch {
             _busy.value = true
-            vpnController.startWarp().onFailure {
+            vpnController.startWarp(endpoint = endpointOverride?.trim()?.takeIf { it.isNotEmpty() }).onFailure {
                 android.util.Log.e(TAG, "startWarp: failed", it)
                 _message.value = it.message ?: "WARP registration failed"
             }

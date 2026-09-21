@@ -69,6 +69,13 @@ class MainActivity : ComponentActivity() {
         var input by remember { mutableStateOf("") }
         var pendingNode by remember { mutableStateOf<Node?>(null) }
         var pendingWarp by remember { mutableStateOf(false) }
+        // Cloudflare WARP's usual anycast IP can itself end up blocked
+        // independently of protocol-level DPI (reported by other
+        // AmneziaWG+WARP users under the same kind of blocking); read
+        // directly by the permission-launcher callback below, which fires
+        // later, so whatever is typed here at "Get WARP" time is what's
+        // used even if permission had to be requested first.
+        var warpEndpointInput by remember { mutableStateOf("") }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -97,7 +104,7 @@ class MainActivity : ComponentActivity() {
                     }
                     warp -> {
                         android.util.Log.i(TAG, "VPN permission granted -> starting WARP flow")
-                        viewModel.startWarp()
+                        viewModel.startWarp(warpEndpointInput)
                     }
                     else -> {
                         android.util.Log.w(TAG, "VPN permission result received without pending action")
@@ -162,23 +169,33 @@ class MainActivity : ComponentActivity() {
                         enabled = !busy,
                         modifier = Modifier.weight(1f)
                     ) { Text("File") }
-                    OutlinedButton(
-                        enabled = !busy && canStartVpn,
-                        onClick = {
-                            android.util.Log.i(TAG, "Get WARP clicked")
-                            val intent = viewModel.prepareVpn()
-                            if (intent != null) {
-                                android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
-                                pendingWarp = true
-                                permissionLauncher.launch(intent)
-                            } else {
-                                android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
-                                viewModel.startWarp()
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Get WARP") }
                 }
+
+                OutlinedTextField(
+                    value = warpEndpointInput,
+                    onValueChange = { warpEndpointInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("WARP endpoint override (optional)") },
+                    placeholder = { Text("162.159.192.1:2408") }
+                )
+
+                OutlinedButton(
+                    enabled = !busy && canStartVpn,
+                    onClick = {
+                        android.util.Log.i(TAG, "Get WARP clicked, endpointOverride=${warpEndpointInput.isNotBlank()}")
+                        val intent = viewModel.prepareVpn()
+                        if (intent != null) {
+                            android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
+                            pendingWarp = true
+                            permissionLauncher.launch(intent)
+                        } else {
+                            android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
+                            viewModel.startWarp(warpEndpointInput)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Get WARP") }
 
                 if (busy) CircularProgressIndicator()
                 message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
