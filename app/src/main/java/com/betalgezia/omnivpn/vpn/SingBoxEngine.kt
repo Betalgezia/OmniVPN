@@ -37,11 +37,21 @@ class SingBoxEngine @Inject constructor(
         config: String,
         platformInterface: PlatformInterface,
         handler: CommandServerHandler,
+        // false for a liveness-probe run (see NodeHealthChecker): that config never
+        // establishes a tunnel and has nothing to do with the user's actual VPN
+        // state, so it must never touch VpnEventBus. Getting this wrong was a real
+        // bug: emitting Connected here and then stop(emitDisconnected = false)
+        // left vpnState stuck at CONNECTED after a probe, with nothing left to ever
+        // emit Disconnected - Connect/Test stayed disabled until the user pressed
+        // Disconnect by hand, which happened to go through the real stop() path.
+        emitEvents: Boolean = true,
+        // Kept as the last parameter (not emitEvents) so existing call sites' trailing
+        // lambda syntax for shouldStart keeps compiling unchanged.
         shouldStart: () -> Boolean = { true }
     ) {
         lifecycleMutex.withLock {
-            android.util.Log.i(TAG, "start: begin, configChars=${config.length}")
-            eventBus.emit(VpnEvent.Connecting)
+            android.util.Log.i(TAG, "start: begin, configChars=${config.length}, emitEvents=$emitEvents")
+            if (emitEvents) eventBus.emit(VpnEvent.Connecting)
             var connected = false
             withContext(Dispatchers.IO) {
                 android.util.Log.i(TAG, "start: Libbox.checkConfig() begin")
@@ -100,11 +110,11 @@ class SingBoxEngine @Inject constructor(
                     throw t
                 }
             }
-            if (connected) {
+            if (connected && emitEvents) {
                 android.util.Log.i(TAG, "start: emitting Connected")
                 eventBus.emit(VpnEvent.Connected)
             } else {
-                android.util.Log.i(TAG, "start: not connected")
+                android.util.Log.i(TAG, "start: not connected or events suppressed")
             }
         }
     }

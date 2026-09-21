@@ -67,6 +67,7 @@ class NodeHealthChecker @Inject constructor(
 
         probeMutex.withLock {
             val probe = SingBoxConfigBuilder.buildProbeConfig(testable)
+            android.util.Log.i(TAG, "checkAll: nodes=${testable.size} tags=${probe.tagsByNodeId} buildErrors=${probe.buildErrors}")
             for (node in testable) {
                 probe.buildErrors[node.id]?.let { onResult(node, NodeHealth.Unreachable(it)) }
             }
@@ -84,7 +85,9 @@ class NodeHealthChecker @Inject constructor(
 
             runCatching {
                 OmniVpnApplication.libboxReady.await()
-                engine.start(probe.json, ProbePlatformInterface(context), ProbeCommandServerHandler())
+                // emitEvents=false: this never establishes a tunnel and has nothing
+                // to do with the user's real VPN state (see SingBoxEngine.start doc).
+                engine.start(probe.json, ProbePlatformInterface(context), ProbeCommandServerHandler(), emitEvents = false)
             }.onFailure { t ->
                 android.util.Log.e(TAG, "checkAll: probe engine failed to start", t)
                 for (node in testable) {
@@ -118,16 +121,41 @@ class NodeHealthChecker @Inject constructor(
         return result
     }
 
-    private suspend fun runUrlTest(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth =
-        runCatching { withContext(Dispatchers.IO) { client.urlTestOutbound(tag, TEST_URL, timeoutMs) } }
-            .fold(
-                onSuccess = { result ->
-                    val error = result.error
-                    if (!error.isNullOrBlank()) NodeHealth.Unreachable(error)
-                    else NodeHealth.Reachable(result.delay.toLong())
-                },
-                onFailure = { NodeHealth.Unreachable(it.message ?: "Test failed") }
-            )
+    // The native timeoutMs param is trusted to bound urlTestOutbound on its own, but
+    // this adds a hard client-side ceiling too (timeoutMs + a grace window) so a
+    // native call that doesn't honor it can't hang the whole batch indefinitely -
+    // if it fires, that's reported as Unreachable, never silently ignored.
+    //
+    // Both `error` non-blank AND `delay <= 0` are treated as failure, not just
+    // `error`: URLTestOutboundResult's exact semantics for a failed test aren't
+    // documented in this AAR, so this doesn't assume a "success" reading (positive
+    // delay, blank error) is the only way sing-box could signal a timeout/failure.
+    private suspend fun runUrlTest(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth {
+        val watchdogMs = (timeoutMs + WATCHDOG_GRACE_MS).toLong()
+        val outcome = withTimeoutOrNull(watchdogMs) {
+            runCatching { withContext(Dispatchers.IO) { client.urlTestOutbound(tag, TEST_URL, timeoutMs) } }
+        }
+        if (outcome == null) {
+            android.util.Log.w(TAG, "runUrlTest: tag=$tag watchdog fired after ${watchdogMs}ms")
+            return NodeHealth.Unreachable("Timed out")
+        }
+        return outcome.fold(
+            onSuccess = { result ->
+                val error = result.error
+                val delay = result.delay
+                android.util.Log.d(TAG, "runUrlTest: tag=$tag delay=$delay error=${error.orEmpty()}")
+                if (!error.isNullOrBlank() || delay <= 0) {
+                    NodeHealth.Unreachable(error?.takeIf { it.isNotBlank() } ?: "Test failed (delay=$delay)")
+                } else {
+                    NodeHealth.Reachable(delay.toLong())
+                }
+            },
+            onFailure = {
+                android.util.Log.w(TAG, "runUrlTest: tag=$tag threw", it)
+                NodeHealth.Unreachable(it.message ?: "Test failed")
+            }
+        )
+    }
 
     private suspend fun connectCommandClient(): CommandClient {
         val ready = CompletableDeferred<Unit>()
@@ -167,6 +195,7 @@ class NodeHealthChecker @Inject constructor(
         const val TAG = "NodeHealthChecker"
         const val DEFAULT_TIMEOUT_MS = 5000
         const val CONNECT_TIMEOUT_MS = 3000L
+        const val WATCHDOG_GRACE_MS = 1500
         // Same default sing-box GUI clients use for outbound latency/availability
         // testing: small, globally anycast, no TLS-handshake surprises.
         const val TEST_URL = "https://www.gstatic.com/generate_204"
