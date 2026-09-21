@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Card
@@ -27,6 +28,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -193,19 +195,25 @@ class MainActivity : ComponentActivity() {
                     items(nodes, key = { it.id }) { node ->
                         NodeCard(
                             node = node,
-                            enabled = !busy && canStartVpn
-                        ) {
-                            android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
-                            val intent = viewModel.prepareVpn()
-                            if (intent != null) {
-                                android.util.Log.i(TAG, "Connect: launching VPN permission activity")
-                                pendingNode = node
-                                permissionLauncher.launch(intent)
-                            } else {
-                                android.util.Log.i(TAG, "Connect: VPN permission already granted")
-                                viewModel.connect(node)
+                            enabled = !busy && canStartVpn,
+                            deleteEnabled = !busy,
+                            onConnect = {
+                                android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
+                                val intent = viewModel.prepareVpn()
+                                if (intent != null) {
+                                    android.util.Log.i(TAG, "Connect: launching VPN permission activity")
+                                    pendingNode = node
+                                    permissionLauncher.launch(intent)
+                                } else {
+                                    android.util.Log.i(TAG, "Connect: VPN permission already granted")
+                                    viewModel.connect(node)
+                                }
+                            },
+                            onDelete = {
+                                android.util.Log.i(TAG, "Delete clicked: node=${node.name}")
+                                viewModel.deleteNode(node)
                             }
-                        }
+                        )
                     }
                 }
             }
@@ -238,15 +246,39 @@ private fun SubscriptionRow(
 }
 
 @androidx.compose.runtime.Composable
-private fun NodeCard(node: Node, enabled: Boolean, onConnect: () -> Unit) {
+private fun NodeCard(
+    node: Node,
+    enabled: Boolean,
+    deleteEnabled: Boolean,
+    onConnect: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var confirmDelete by remember { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(node.name, style = MaterialTheme.typography.titleMedium)
                 Text("${node.protocol} • ${node.server}:${node.port}")
             }
+            OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled) { Text("Delete") }
             Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
         }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Remove server?") },
+            text = { Text("\"${node.name}\" will be removed from your server list.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete()
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 private fun MainActivity.readImportedFile(uri: Uri, onResult: (Result<String>) -> Unit) {

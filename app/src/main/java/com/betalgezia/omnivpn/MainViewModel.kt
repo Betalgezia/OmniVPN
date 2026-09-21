@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.betalgezia.omnivpn.data.NodeImportService
 import com.betalgezia.omnivpn.data.NodeRepository
 import com.betalgezia.omnivpn.data.SubscriptionRepository
+import com.betalgezia.omnivpn.data.hasDomainWireguardEndpoint
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.VpnController
@@ -62,22 +63,25 @@ class MainViewModel @Inject constructor(
     fun import(text: String) {
         val value = text.trim()
         if (value.isEmpty()) return
+        val isSubscriptionUrl = value.startsWith("https://", ignoreCase = true)
         viewModelScope.launch {
             _busy.value = true
             runCatching {
-                if (value.startsWith("https://", ignoreCase = true)) {
+                if (isSubscriptionUrl) {
                     val id = subscriptionRepository.add("Subscription", value)
-                    subscriptionRepository.refresh(Subscription(id=id, name="Subscription", url=value, enabled=true))
+                    val nodes = subscriptionRepository.refresh(Subscription(id=id, name="Subscription", url=value, enabled=true))
+                    hasDomainWireguardEndpoint(nodes)
                 } else {
-                    nodeImportService.importText(value)
+                    nodeImportService.importText(value).domainWireguardEndpoint
                 }
-            }.onSuccess {
-                _message.value = if (value.startsWith("https://", ignoreCase = true)) "Subscription added and synced" else "Configuration imported"
+            }.onSuccess { domainWarning ->
+                val base = if (isSubscriptionUrl) "Subscription added and synced" else "Configuration imported"
+                _message.value = if (domainWarning) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
             }.onFailure {
                 // Logged explicitly: SubscriptionRepository/NodeImportService never call
                 // android.util.Log themselves, so without this line an import/subscription
                 // failure was visible only as a short-lived toast and left nothing in logcat.
-                android.util.Log.e(TAG, "import: failed for ${if (value.startsWith("https://", ignoreCase = true)) "subscription url" else "pasted config"}", it)
+                android.util.Log.e(TAG, "import: failed for ${if (isSubscriptionUrl) "subscription url" else "pasted config"}", it)
                 _message.value = it.message ?: "Import failed"
             }
             _busy.value = false
@@ -88,7 +92,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _busy.value = true
             runCatching { subscriptionRepository.refresh(subscription) }
-                .onSuccess { _message.value = "Updated ${it.size} nodes" }
+                .onSuccess { nodes ->
+                    val base = "Updated ${nodes.size} nodes"
+                    _message.value = if (hasDomainWireguardEndpoint(nodes)) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
+                }
                 .onFailure {
                     android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
                     _message.value = it.message ?: "Refresh failed"
@@ -106,6 +113,17 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun deleteNode(node: Node) {
+        viewModelScope.launch {
+            runCatching { nodeRepository.delete(node) }
+                .onSuccess { _message.value = "Removed ${node.name}" }
+                .onFailure {
+                    android.util.Log.e(TAG, "deleteNode: failed for node id=${node.id}", it)
+                    _message.value = it.message ?: "Unable to remove server"
+                }
+        }
+    }
+
     fun startWarp() {
         viewModelScope.launch {
             _busy.value = true
@@ -120,5 +138,15 @@ class MainViewModel @Inject constructor(
 
     private companion object {
         private const val TAG = "MainViewModel"
+
+        // Shown after import/refresh when an AmneziaWG/WireGuard peer's
+        // endpoint is a domain name rather than a literal IP - see
+        // ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT for
+        // the confirmed sing-box-lx bug this warns about.
+        private const val DOMAIN_ENDPOINT_WARNING =
+            "Warning: this server's endpoint is a domain name, not an IP address. " +
+                "A known sing-box bug can prevent the WireGuard handshake from " +
+                "completing on some networks. If it won't connect, try editing the " +
+                "config to use a literal IP instead."
     }
 }
