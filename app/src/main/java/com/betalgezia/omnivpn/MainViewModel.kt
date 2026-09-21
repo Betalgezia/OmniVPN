@@ -11,6 +11,7 @@ import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
+import com.betalgezia.omnivpn.vpn.WarpAccount
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,11 +128,19 @@ class MainViewModel @Inject constructor(
     fun startWarp(endpointOverride: String? = null) {
         viewModelScope.launch {
             _busy.value = true
-            vpnController.startWarp(endpoint = endpointOverride?.trim()?.takeIf { it.isNotEmpty() }).onFailure {
+            // The override was easy to lose track of - no visible confirmation
+            // of which endpoint actually got used, so it was unclear from the
+            // UI alone whether a typed-in override took effect (see the
+            // September 2026 endpoint-rotation debugging session). Echo it
+            // back in the result message instead of just "WARP registered".
+            val normalizedEndpoint = endpointOverride?.trim()?.takeIf { it.isNotEmpty() }
+            vpnController.startWarp(endpoint = normalizedEndpoint).onFailure {
                 android.util.Log.e(TAG, "startWarp: failed", it)
                 _message.value = it.message ?: "WARP registration failed"
             }
-                .onSuccess { _message.value = "WARP registered" }
+                .onSuccess {
+                    _message.value = "WARP registered (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
+                }
             _busy.value = false
         }
     }
