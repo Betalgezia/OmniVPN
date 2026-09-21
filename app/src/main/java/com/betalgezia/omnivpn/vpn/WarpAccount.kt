@@ -1,5 +1,6 @@
 package com.betalgezia.omnivpn.vpn
 
+import com.betalgezia.omnivpn.data.model.AwgParameters
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import org.json.JSONArray
@@ -47,7 +48,8 @@ data class WarpAccount(
             server = parts.first,
             port = parts.second,
             privateKey = privateKey,
-            rawConfig = toSingBoxEndpoint()
+            rawConfig = toSingBoxEndpoint(),
+            awg = DPI_JUNK_OBFUSCATION
         )
     }
 
@@ -90,6 +92,45 @@ data class WarpAccount(
         // end-to-end: sites load). 162.159.192.1 is the address every one of
         // our captures already resolved "engage.cloudflareclient.com" to.
         const val DEFAULT_ENDPOINT = "162.159.192.1:2408"
+
+        // Added after the literal-IP fix above still didn't make "Get WARP"
+        // connect: a from-scratch registration (cachedAccount=false, brand
+        // new keys/reserved bytes) produced the *exact same* failure on both
+        // WiFi and mobile data - "sending handshake initiation" ->
+        // "did not complete after 5 seconds, retrying (try 2)", forever,
+        // never a single "handshake complete" - confirmed via matched
+        // logcat captures on both networks (September 2026). That rules out
+        // a stale/cached account and a single bad network; the same
+        // symptom on two unrelated networks with a fresh registration
+        // points at protocol-level DPI blocking, not an app bug. Multiple
+        // independent Russian sources (ntc.party forum threads, a
+        // Cloudflare-WARP-through-Amnezia writeup - see the September 2026
+        // debugging session) describe exactly this: Roskomnadzor's DPI has
+        // fingerprinted and dropped Cloudflare WARP's plain WireGuard
+        // handshake since 2022, intensifying October 2024, regardless of
+        // which literal IP/domain the peer resolves to.
+        //
+        // The reported community workaround - still used against
+        // Cloudflare's real, unmodified WARP servers, no server-side
+        // AmneziaWG support needed - is AmneziaWG's junk-packet obfuscation
+        // (Jc/Jmin/Jmax): a handful of random-sized garbage UDP packets
+        // sent to the same peer just *before* the real handshake, meant to
+        // break DPI's flow-start pattern matching. h1/h2/h3/h4 are set here
+        // to 1/2/3/4 - not scrambled values, but WireGuard's own standard
+        // message-type bytes (handshake-init/response/cookie/data) - so
+        // this is a deliberate no-op for the header: every real packet we
+        // send stays byte-identical to plain WireGuard, which is required
+        // since Cloudflare's server only understands plain WireGuard and
+        // would silently drop anything else. s1-s4 are left at 0 (no
+        // padding) for the same reason. Only the junk packets are new; the
+        // real handshake sent afterward is unchanged.
+        //
+        // Values match a config independently reported to work for this
+        // exact Cloudflare-WARP-via-Russian-DPI case, not a custom guess -
+        // if a network turns out to still block this, the next thing to
+        // try is rotating away from this literal IP (Cloudflare has other
+        // WARP anycast addresses) rather than tuning these numbers further.
+        private val DPI_JUNK_OBFUSCATION = AwgParameters(jc = 4, jmin = 40, jmax = 70, h1 = 1, h2 = 2, h3 = 3, h4 = 4)
 
         fun fromJson(value: String): WarpAccount {
             val j = JSONObject(value)

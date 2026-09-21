@@ -43,4 +43,32 @@ class WarpAccountTest {
         assertEquals(255, reserved.getInt(2))
         assertEquals(2, peer.getJSONArray("allowed_ips").length())
     }
+
+    @Test
+    fun toNodeAppliesJunkPacketObfuscationWithStandardHeaderBytes() {
+        // Regression guard: after the literal-IP fix, "Get WARP" still timed
+        // out identically on WiFi and mobile data with a from-scratch
+        // registration - pointing at DPI fingerprinting the plain WireGuard
+        // handshake rather than an app bug (see the comment on
+        // WarpAccount.DPI_JUNK_OBFUSCATION). The node built for WARP must
+        // carry junk-packet params (jc/jmin/jmax > 0), and h1-h4 must stay
+        // WireGuard's own standard message-type bytes (1,2,3,4) - not
+        // scrambled - since Cloudflare's server only understands plain
+        // WireGuard and would silently drop a mangled header.
+        val account = WarpAccount(
+            privateKey = "private", peerPublicKey = "peer",
+            clientV4 = "172.16.0.2", clientV6 = "2606:4700:4700::1001",
+            clientId = null, accountId = "account", deviceId = "device", token = "token",
+            license = null, warpPlus = false, endpoint = WarpAccount.DEFAULT_ENDPOINT,
+            createdAt = "2026-09-21T00:00:00Z"
+        )
+        val awg = account.toNode().awg
+        requireNotNull(awg)
+        assertTrue(awg.jc > 0 && awg.jmin > 0 && awg.jmax > 0)
+        assertEquals(1L, awg.h1)
+        assertEquals(2L, awg.h2)
+        assertEquals(3L, awg.h3)
+        assertEquals(4L, awg.h4)
+        assertEquals(0, awg.s1 + awg.s2 + awg.s3 + awg.s4)
+    }
 }
