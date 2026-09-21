@@ -51,7 +51,9 @@ class WarpAccountTest {
         // registration - pointing at DPI fingerprinting the plain WireGuard
         // handshake rather than an app bug (see the comment on
         // WarpAccount.DPI_JUNK_OBFUSCATION). The node built for WARP must
-        // carry junk-packet params (jc/jmin/jmax > 0), and h1-h4 must stay
+        // carry junk-packet params (jc/jmin/jmax > 0) and a non-blank i1
+        // decoy packet - the combination confirmed on-device to survive
+        // past the handshake instead of dying ~15s in - and h1-h4 must stay
         // WireGuard's own standard message-type bytes (1,2,3,4) - not
         // scrambled - since Cloudflare's server only understands plain
         // WireGuard and would silently drop a mangled header.
@@ -70,5 +72,6 @@ class WarpAccountTest {
         assertEquals(3L, awg.h3)
         assertEquals(4L, awg.h4)
         assertEquals(0, awg.s1 + awg.s2 + awg.s3 + awg.s4)
+        assertTrue(!awg.i1.isNullOrBlank())
     }
 }
