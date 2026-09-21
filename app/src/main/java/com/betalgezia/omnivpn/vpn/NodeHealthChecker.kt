@@ -10,6 +10,7 @@ import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.DnsQuery
+import io.nekohasekai.libbox.HTTPHeaders
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.OutboundGroupIterator
@@ -37,9 +38,11 @@ sealed interface NodeHealth {
  * SingBoxConfigBuilder.buildProbeConfig) rather than a bare socket connect: a raw TCP
  * check only proves *something* answers on that port, which is exactly what made the
  * previous version of this class unreliable - a proxy with a dead/misconfigured
- * handshake still passes a TCP connect. CommandClient.urlTestOutbound() instead makes
- * a real HTTP request through the node's own outbound/endpoint, so it fails the same
- * way an actual connection attempt would.
+ * handshake still passes a TCP connect. CommandClient.getURLViaOutbound() instead
+ * makes a real HTTP request through the node's own outbound/endpoint and checks the
+ * actual response, so it fails the same way an actual connection attempt would - see
+ * runUrlTest's doc for why even that isn't quite as simple as "did a response come
+ * back" once Reality-fronted servers are in the mix.
  *
  * This app's sing-box engine is a single, process-global instance (SingBoxEngine),
  * the same one the real VPN connection uses - there is no way to run a probe and a
@@ -121,19 +124,30 @@ class NodeHealthChecker @Inject constructor(
         return result
     }
 
-    // The native timeoutMs param is trusted to bound urlTestOutbound on its own, but
-    // this adds a hard client-side ceiling too (timeoutMs + a grace window) so a
-    // native call that doesn't honor it can't hang the whole batch indefinitely -
-    // if it fires, that's reported as Unreachable, never silently ignored.
-    //
-    // Both `error` non-blank AND `delay <= 0` are treated as failure, not just
-    // `error`: URLTestOutboundResult's exact semantics for a failed test aren't
-    // documented in this AAR, so this doesn't assume a "success" reading (positive
-    // delay, blank error) is the only way sing-box could signal a timeout/failure.
+    // Was CommandClient.urlTestOutbound() - dropped after confirming on-device (see
+    // PR discussion) that it reports a VLESS+Reality server as reachable even when
+    // it's genuinely dead. Reality's whole design is to be indistinguishable from an
+    // innocuous "camouflage" site (here play-apps-features.googleusercontent.com, a
+    // real Google domain) to anyone without the right key/short_id: with the wrong
+    // credentials, the TLS handshake still completes perfectly against that
+    // camouflage site, so any check that only asks "did an HTTP response come back"
+    // (which is what urlTestOutbound appears to do - it never surfaced an error for
+    // this server) reports success regardless of whether the real proxy ever ran at
+    // all. getURLViaOutbound() exposes the actual HTTP status/body instead of just a
+    // latency number, so this can demand the *specific* response TEST_URL is defined
+    // to give (a bare "204 No Content", nothing else) - a Reality camouflage site
+    // has no reason to ever produce that exact response, so this closes the gap
+    // urlTestOutbound had. Confirmed >0 args are (tag, url, timeoutMs, maxBytes,
+    // headers): only doc for this call is the AAR's method signature, so both ints
+    // are sized generously enough that a swapped reading of the two is still sane.
     private suspend fun runUrlTest(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth {
         val watchdogMs = (timeoutMs + WATCHDOG_GRACE_MS).toLong()
         val outcome = withTimeoutOrNull(watchdogMs) {
-            runCatching { withContext(Dispatchers.IO) { client.urlTestOutbound(tag, TEST_URL, timeoutMs) } }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client.getURLViaOutbound(tag, TEST_URL, timeoutMs, MAX_RESPONSE_BYTES, HTTPHeaders())
+                }
+            }
         }
         if (outcome == null) {
             android.util.Log.w(TAG, "runUrlTest: tag=$tag watchdog fired after ${watchdogMs}ms")
@@ -141,13 +155,18 @@ class NodeHealthChecker @Inject constructor(
         }
         return outcome.fold(
             onSuccess = { result ->
-                val error = result.error
-                val delay = result.delay
-                android.util.Log.d(TAG, "runUrlTest: tag=$tag delay=$delay error=${error.orEmpty()}")
-                if (!error.isNullOrBlank() || delay <= 0) {
-                    NodeHealth.Unreachable(error?.takeIf { it.isNotBlank() } ?: "Test failed (delay=$delay)")
+                val status = result.status()
+                val elapsed = result.elapsedMs()
+                val content = result.content().orEmpty()
+                android.util.Log.d(
+                    TAG,
+                    "runUrlTest: tag=$tag status=$status elapsedMs=$elapsed contentLen=${content.length} " +
+                        "remoteAddr=${result.remoteAddr()}"
+                )
+                if (status == EXPECTED_STATUS && content.isEmpty()) {
+                    NodeHealth.Reachable(elapsed.toLong())
                 } else {
-                    NodeHealth.Reachable(delay.toLong())
+                    NodeHealth.Unreachable("Unexpected response (HTTP $status)")
                 }
             },
             onFailure = {
@@ -196,8 +215,12 @@ class NodeHealthChecker @Inject constructor(
         const val DEFAULT_TIMEOUT_MS = 5000
         const val CONNECT_TIMEOUT_MS = 3000L
         const val WATCHDOG_GRACE_MS = 1500
-        // Same default sing-box GUI clients use for outbound latency/availability
-        // testing: small, globally anycast, no TLS-handshake surprises.
+        const val MAX_RESPONSE_BYTES = 8192
+        // generate_204 is defined to answer with exactly this status and an empty
+        // body - nothing else, ever - which is what makes it useful here: it's a
+        // response shape a Reality camouflage site (or anything else that isn't
+        // the real destination) has no legitimate reason to reproduce.
+        const val EXPECTED_STATUS = 204
         const val TEST_URL = "https://www.gstatic.com/generate_204"
     }
 }
