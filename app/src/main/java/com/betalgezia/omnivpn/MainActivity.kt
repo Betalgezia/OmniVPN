@@ -10,12 +10,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -71,6 +73,13 @@ class MainActivity : ComponentActivity() {
             vpnState == VpnState.ERROR ||
             vpnState == VpnState.REVOKED
         var input by remember { mutableStateOf("") }
+        // Collapsed by default: the add-server and WARP controls are used
+        // occasionally, but were previously always-expanded and pushed the
+        // server list (the thing actually looked at most often) off the
+        // bottom of the screen with only a sliver of the first card visible.
+        var addServerExpanded by remember { mutableStateOf(false) }
+        var warpExpanded by remember { mutableStateOf(false) }
+        var subscriptionsExpanded by remember { mutableStateOf(false) }
         var pendingNode by remember { mutableStateOf<Node?>(null) }
         var pendingWarp by remember { mutableStateOf(false) }
         // Carries the "Reset WARP account" intent through the VPN-permission
@@ -150,73 +159,90 @@ class MainActivity : ComponentActivity() {
         }
         Scaffold(topBar = { TopAppBar(title = { Text("OmniVPN") }) }) { padding ->
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("VPN: ${vpnState.name}", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("VPN: ${vpnState.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    if (busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) {
+                        OutlinedButton(onClick = viewModel::stop) { Text("Disconnect") }
+                    }
+                }
+                message?.let { Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
 
-                if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) {
-                    OutlinedButton(onClick = viewModel::stop, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+                CollapsibleSection(
+                    title = "Add server",
+                    expanded = addServerExpanded,
+                    onToggle = { addServerExpanded = !addServerExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        label = { Text("Subscription URL or config") },
+                        placeholder = { Text("https://… / vless://… / JSON / YAML") }
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { viewModel.import(input) }, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
+                        OutlinedButton(
+                            onClick = {
+                                fileLauncher.launch(
+                                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                        type = "*/*"
+                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                )
+                            },
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("File") }
+                    }
                 }
 
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                    label = { Text("Subscription URL or config") },
-                    placeholder = { Text("https://… / vless://… / JSON / YAML") }
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(onClick = { viewModel.import(input) }, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
-                    OutlinedButton(
-                        onClick = {
-                            fileLauncher.launch(
-                                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                                    type = "*/*"
-                                    addCategory(Intent.CATEGORY_OPENABLE)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                CollapsibleSection(
+                    title = "Cloudflare WARP",
+                    expanded = warpExpanded,
+                    onToggle = { warpExpanded = !warpExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = warpEndpointInput,
+                        onValueChange = { warpEndpointInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("WARP endpoint override (optional)") },
+                        placeholder = { Text("162.159.192.1:2408") }
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            enabled = !busy && canStartVpn,
+                            onClick = {
+                                android.util.Log.i(TAG, "Get WARP clicked, endpointOverride=${warpEndpointInput.isNotBlank()}")
+                                val intent = viewModel.prepareVpn()
+                                if (intent != null) {
+                                    android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
+                                    pendingWarp = true
+                                    pendingWarpForceNew = false
+                                    permissionLauncher.launch(intent)
+                                } else {
+                                    android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
+                                    viewModel.startWarp(warpEndpointInput)
                                 }
-                            )
-                        },
-                        enabled = !busy,
-                        modifier = Modifier.weight(1f)
-                    ) { Text("File") }
-                }
-
-                OutlinedTextField(
-                    value = warpEndpointInput,
-                    onValueChange = { warpEndpointInput = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("WARP endpoint override (optional)") },
-                    placeholder = { Text("162.159.192.1:2408") }
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        enabled = !busy && canStartVpn,
-                        onClick = {
-                            android.util.Log.i(TAG, "Get WARP clicked, endpointOverride=${warpEndpointInput.isNotBlank()}")
-                            val intent = viewModel.prepareVpn()
-                            if (intent != null) {
-                                android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
-                                pendingWarp = true
-                                pendingWarpForceNew = false
-                                permissionLauncher.launch(intent)
-                            } else {
-                                android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
-                                viewModel.startWarp(warpEndpointInput)
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Get WARP") }
-                    OutlinedButton(
-                        enabled = !busy && canStartVpn,
-                        onClick = { confirmResetWarp = true },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Reset WARP") }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Get WARP") }
+                        OutlinedButton(
+                            enabled = !busy && canStartVpn,
+                            onClick = { confirmResetWarp = true },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Reset WARP") }
+                    }
                 }
 
                 if (confirmResetWarp) {
@@ -253,35 +279,45 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (busy) CircularProgressIndicator()
-                message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-
                 if (subscriptions.isNotEmpty()) {
-                    Text("Subscriptions", style = MaterialTheme.typography.titleLarge)
-                    subscriptions.forEach { subscription ->
-                        SubscriptionRow(
-                            subscription,
-                            viewModel,
-                            enabled = !busy,
-                            testEnabled = !busy && canStartVpn,
-                            onTestAll = { viewModel.checkSubscriptionNodes(subscription) }
-                        )
+                    CollapsibleSection(
+                        title = "Subscriptions (${subscriptions.size})",
+                        expanded = subscriptionsExpanded,
+                        onToggle = { subscriptionsExpanded = !subscriptionsExpanded }
+                    ) {
+                        subscriptions.forEach { subscription ->
+                            SubscriptionRow(
+                                subscription,
+                                viewModel,
+                                enabled = !busy,
+                                testEnabled = !busy && canStartVpn,
+                                onTestAll = { viewModel.checkSubscriptionNodes(subscription) }
+                            )
+                        }
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Text("Servers", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "Servers (${nodes.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (!canStartVpn) {
+                        Text(
+                            "Disconnect to test",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     OutlinedButton(
                         enabled = !busy && canStartVpn && nodes.isNotEmpty(),
                         onClick = { viewModel.checkAllNodes() }
                     ) { Text("Check all") }
-                }
-                if (!canStartVpn) {
-                    Text(
-                        "Disconnect the VPN to test servers",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(nodes, key = { it.id }) { node ->
@@ -311,6 +347,33 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+}
+
+// Plain text disclosure triangle rather than Icons.Default.ExpandMore/Less: pulling
+// in the material-icons artifact for one glyph isn't worth a new dependency.
+@androidx.compose.runtime.Composable
+private fun CollapsibleSection(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @androidx.compose.runtime.Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(if (expanded) "▾" else "▸", style = MaterialTheme.typography.titleMedium)
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        }
+        if (expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
         }
     }
 }
@@ -357,22 +420,25 @@ private fun NodeCard(
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(node.name, style = MaterialTheme.typography.titleMedium)
-                    Text("${node.protocol} • ${node.server}:${node.port}")
-                    NodeHealthLabel(health)
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(node.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+            Text(
+                "${node.protocol} • ${node.server}:${node.port}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+            NodeHealthLabel(health)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                if (node.protocol != Protocol.WARP) {
+                    OutlinedButton(
+                        onClick = onTest,
+                        enabled = enabled && health != NodeHealth.Checking,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Test") }
                 }
-                OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled) { Text("Delete") }
-                Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
-            }
-            if (node.protocol != Protocol.WARP) {
-                OutlinedButton(
-                    onClick = onTest,
-                    enabled = enabled && health != NodeHealth.Checking,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Test") }
+                OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled, modifier = Modifier.weight(1f)) { Text("Delete") }
+                Button(onClick = onConnect, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Connect") }
             }
         }
     }
