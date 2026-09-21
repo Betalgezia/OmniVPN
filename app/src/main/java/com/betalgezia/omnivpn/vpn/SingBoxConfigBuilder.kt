@@ -256,11 +256,18 @@ object SingBoxConfigBuilder {
         // domain-based blocking, the resulting behavior) was visible to the
         // WiFi ISP outside the tunnel while unblocked domains resolved fine
         // either way, so the leak was invisible for them.
+        // "final" (the default/fallback server) must stay a real resolver -
+        // libbox rejects a config where the default server is the fakeip
+        // server itself ("initialize DNS server[1]: default server cannot be
+        // fakeip", confirmed on-device). fakeip only kicks in through the
+        // rule below, for the A/AAAA queries the tun's hijack-dns actually
+        // needs faked; anything else (e.g. the DNS server's own bootstrap)
+        // still falls through to dns-local.
         .put("rules", JSONArray().put(JSONObject()
             .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
             .put("action", "route")
             .put("server", FAKE_IP_DNS_TAG)))
-        .put("final", FAKE_IP_DNS_TAG)
+        .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         .put("reverse_mapping", true)
 
