@@ -5,6 +5,18 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Result of [SingBoxConfigBuilder.buildProbeConfig]: [json] is the sing-box config to
+ * run (null when every node failed to build), [tagsByNodeId] maps each successfully
+ * included node's id to its outbound/endpoint tag in that config, and [buildErrors]
+ * holds a reason string for every node id that was left out instead.
+ */
+data class ProbeConfig(
+    val json: String?,
+    val tagsByNodeId: Map<Long, String>,
+    val buildErrors: Map<Long, String>
+)
+
 object SingBoxConfigBuilder {
     fun build(node: Node): String {
         val endpointMode = node.protocol == Protocol.AMNEZIAWG
@@ -52,10 +64,61 @@ object SingBoxConfigBuilder {
         return root.toString()
     }
 
-    private fun buildProxyOutbound(node: Node): JSONObject = when (node.protocol) {
-        Protocol.VLESS -> buildVless(node)
-        Protocol.TROJAN -> buildTrojan(node)
-        Protocol.HYSTERIA2 -> buildHysteria2(node)
+    /**
+     * A liveness-probe config testing [nodes] as extra, otherwise-unused outbounds/
+     * endpoints - no inbounds, no tun, no fakeip. Meant to run through
+     * [SingBoxEngine] while nothing else is connected (see NodeHealthChecker) and be
+     * queried with CommandClient.urlTestOutbound(tag, url, timeout), which makes an
+     * actual HTTP request through the named outbound - unlike a bare TCP connect,
+     * this fails for a node whose port is open but whose proxy handshake doesn't
+     * actually work (wrong credentials, broken TLS, etc).
+     *
+     * A node that fails to build its own outbound/endpoint (e.g. missing required
+     * field) is reported in [ProbeConfig.buildErrors] and left out of [ProbeConfig.json]
+     * instead of aborting the whole batch - matches build()'s per-field validation,
+     * just scoped so one bad node doesn't block testing the rest.
+     */
+    fun buildProbeConfig(nodes: List<Node>): ProbeConfig {
+        val tags = mutableMapOf<Long, String>()
+        val errors = mutableMapOf<Long, String>()
+        val outbounds = JSONArray()
+        val endpoints = JSONArray()
+        for (node in nodes) {
+            if (node.protocol == Protocol.WARP) continue
+            val tag = "probe-${node.id}"
+            runCatching {
+                if (node.protocol == Protocol.AMNEZIAWG) {
+                    endpoints.put(buildAmneziaWgEndpoint(node, tag))
+                } else {
+                    outbounds.put(buildProxyOutbound(node, tag))
+                }
+            }.onSuccess {
+                tags[node.id] = tag
+            }.onFailure {
+                errors[node.id] = it.message ?: "Invalid configuration"
+            }
+        }
+        if (tags.isEmpty()) return ProbeConfig(null, emptyMap(), errors)
+
+        outbounds.put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
+        val root = JSONObject()
+            .put("log", JSONObject().put("disabled", true))
+            .put("dns", buildProbeDns())
+            .put("route", JSONObject().put("default_domain_resolver", LOCAL_DNS_TAG))
+            .put("outbounds", outbounds)
+        if (endpoints.length() > 0) root.put("endpoints", endpoints)
+        return ProbeConfig(root.toString(), tags, errors)
+    }
+
+    private fun buildProbeDns(): JSONObject = JSONObject()
+        .put("servers", JSONArray().put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG)))
+        .put("final", LOCAL_DNS_TAG)
+        .put("strategy", "prefer_ipv4")
+
+    private fun buildProxyOutbound(node: Node, tag: String = PROXY_TAG): JSONObject = when (node.protocol) {
+        Protocol.VLESS -> buildVless(node, tag)
+        Protocol.TROJAN -> buildTrojan(node, tag)
+        Protocol.HYSTERIA2 -> buildHysteria2(node, tag)
         else -> error("Protocol ${node.protocol} is not a proxy outbound")
     }
 
@@ -91,9 +154,9 @@ object SingBoxConfigBuilder {
         // fixes blocked resources, it confirms this is a Private DNS leak.
         .put("strict_route", true)
 
-    private fun buildVless(node: Node): JSONObject {
+    private fun buildVless(node: Node, tag: String = PROXY_TAG): JSONObject {
         require(node.uuid.orEmpty().isNotBlank()) { "VLESS UUID is required" }
-        return baseOutbound(node, "vless", setOf("uuid", "flow", "encryption", "network", "tls", "transport", "packet_encoding", "multiplex", "domain_resolver"))
+        return baseOutbound(node, "vless", setOf("uuid", "flow", "encryption", "network", "tls", "transport", "packet_encoding", "multiplex", "domain_resolver"), tag)
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -102,9 +165,9 @@ object SingBoxConfigBuilder {
             }
     }
 
-    private fun buildTrojan(node: Node): JSONObject {
+    private fun buildTrojan(node: Node, tag: String = PROXY_TAG): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Trojan password is required" }
-        return baseOutbound(node, "trojan", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"))
+        return baseOutbound(node, "trojan", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"), tag)
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -113,9 +176,9 @@ object SingBoxConfigBuilder {
             }
     }
 
-    private fun buildHysteria2(node: Node): JSONObject {
+    private fun buildHysteria2(node: Node, tag: String = PROXY_TAG): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Hysteria2 password is required" }
-        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"))
+        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"), tag)
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
@@ -124,24 +187,24 @@ object SingBoxConfigBuilder {
             }
     }
 
-    private fun baseOutbound(node: Node, type: String, allowedFields: Set<String>): JSONObject {
+    private fun baseOutbound(node: Node, type: String, allowedFields: Set<String>, tag: String = PROXY_TAG): JSONObject {
         val outbound = JSONObject()
         parseRawObject(node.rawConfig)?.let { source ->
             require(source.optString("type", type) == type) { "Imported outbound type does not match ${node.protocol}" }
             copyAllowed(source, outbound, allowedFields)
         }
-        outbound.put("type", type).put("tag", PROXY_TAG)
+        outbound.put("type", type).put("tag", tag)
         if (type == "vless") sanitizeVless(outbound)
         return outbound
     }
 
-    private fun buildAmneziaWgEndpoint(node: Node): JSONObject {
+    private fun buildAmneziaWgEndpoint(node: Node, tag: String = AWG_TAG): JSONObject {
         val source = parseRawObject(node.rawConfig) ?: error("AmneziaWG requires a wireguard endpoint configuration")
         require(source.optString("type") == "wireguard") { "AmneziaWG raw configuration must have type=wireguard" }
 
         val endpoint = JSONObject()
         copyAllowed(source, endpoint, AWG_ENDPOINT_FIELDS)
-        endpoint.put("type", "wireguard").put("tag", AWG_TAG).put("detour", DIRECT_TAG)
+        endpoint.put("type", "wireguard").put("tag", tag).put("detour", DIRECT_TAG)
 
         if (node.privateKey.orEmpty().isNotBlank()) endpoint.put("private_key", node.privateKey)
         normalizeAwgNumericParameters(endpoint)

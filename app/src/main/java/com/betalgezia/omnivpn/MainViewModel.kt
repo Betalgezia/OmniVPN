@@ -8,6 +8,7 @@ import com.betalgezia.omnivpn.data.NodeRepository
 import com.betalgezia.omnivpn.data.SubscriptionRepository
 import com.betalgezia.omnivpn.data.hasDomainWireguardEndpoint
 import com.betalgezia.omnivpn.data.model.Node
+import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
@@ -134,23 +135,29 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun checkNode(node: Node) {
-        if (node.id == 0L) return
-        viewModelScope.launch {
-            _nodeHealth.update { it + (node.id to NodeHealth.Checking) }
-            val result = nodeHealthChecker.check(node)
-            _nodeHealth.update { it + (node.id to result) }
-        }
-    }
+    fun checkNode(node: Node) = checkNodes(listOf(node))
 
     fun checkNodes(targets: List<Node>) {
-        val ids = targets.mapNotNull { it.id.takeIf { id -> id != 0L } }
-        if (ids.isEmpty()) return
+        // Testing runs a real (if TUN-less) sing-box session on the same engine the
+        // actual VPN connection uses - see NodeHealthChecker. They can't run at once.
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before testing servers"
+            return
+        }
+        val testable = targets.filter { it.id != 0L && it.protocol != Protocol.WARP }
+        if (testable.isEmpty()) return
         viewModelScope.launch {
-            _nodeHealth.update { current -> current + ids.associateWith { NodeHealth.Checking } }
-            nodeHealthChecker.checkAll(targets.filter { it.id != 0L }) { node, health ->
-                _nodeHealth.update { it + (node.id to health) }
+            _busy.value = true
+            _nodeHealth.update { current -> current + testable.associate { it.id to NodeHealth.Checking } }
+            runCatching {
+                nodeHealthChecker.checkAll(testable) { node, health ->
+                    _nodeHealth.update { it + (node.id to health) }
+                }
+            }.onFailure {
+                android.util.Log.e(TAG, "checkNodes: failed", it)
+                _message.value = it.message ?: "Server test failed"
             }
+            _busy.value = false
         }
     }
 
@@ -158,6 +165,11 @@ class MainViewModel @Inject constructor(
 
     fun checkSubscriptionNodes(subscription: Subscription) =
         checkNodes(nodes.value.filter { it.sourceId == subscription.id })
+
+    private fun canTestNow(): Boolean = when (vpnState.value) {
+        VpnState.DISCONNECTED, VpnState.ERROR, VpnState.REVOKED -> true
+        else -> false
+    }
 
     fun startWarp(endpointOverride: String? = null, forceNew: Boolean = false) {
         viewModelScope.launch {

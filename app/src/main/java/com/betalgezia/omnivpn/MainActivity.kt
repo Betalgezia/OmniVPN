@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.betalgezia.omnivpn.data.model.Node
+import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.VpnState
@@ -262,6 +263,7 @@ class MainActivity : ComponentActivity() {
                             subscription,
                             viewModel,
                             enabled = !busy,
+                            testEnabled = !busy && canStartVpn,
                             onTestAll = { viewModel.checkSubscriptionNodes(subscription) }
                         )
                     }
@@ -270,9 +272,16 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Text("Servers", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                     OutlinedButton(
-                        enabled = !busy && nodes.isNotEmpty(),
+                        enabled = !busy && canStartVpn && nodes.isNotEmpty(),
                         onClick = { viewModel.checkAllNodes() }
                     ) { Text("Check all") }
+                }
+                if (!canStartVpn) {
+                    Text(
+                        "Disconnect the VPN to test servers",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(nodes, key = { it.id }) { node ->
@@ -311,6 +320,7 @@ private fun SubscriptionRow(
     subscription: Subscription,
     viewModel: MainViewModel,
     enabled: Boolean,
+    testEnabled: Boolean,
     onTestAll: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -324,7 +334,7 @@ private fun SubscriptionRow(
                 ) { Text("Refresh") }
                 OutlinedButton(
                     onClick = onTestAll,
-                    enabled = enabled
+                    enabled = testEnabled
                 ) { Text("Test all") }
                 OutlinedButton(
                     onClick = { viewModel.delete(subscription) },
@@ -357,11 +367,13 @@ private fun NodeCard(
                 OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled) { Text("Delete") }
                 Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
             }
-            OutlinedButton(
-                onClick = onTest,
-                enabled = health != NodeHealth.Checking,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Test") }
+            if (node.protocol != Protocol.WARP) {
+                OutlinedButton(
+                    onClick = onTest,
+                    enabled = enabled && health != NodeHealth.Checking,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Test") }
+            }
         }
     }
     if (confirmDelete) {
@@ -388,7 +400,6 @@ private fun NodeHealthLabel(health: NodeHealth) {
         is NodeHealth.Unknown -> return
         is NodeHealth.Checking -> "Testing…" to MaterialTheme.colorScheme.onSurfaceVariant
         is NodeHealth.Reachable -> "● ${health.latencyMs} ms" to Color(0xFF2E7D32)
-        is NodeHealth.NoResponse -> "No reply (normal for UDP protocols)" to MaterialTheme.colorScheme.onSurfaceVariant
         is NodeHealth.Unreachable -> "● Unreachable: ${health.reason}" to MaterialTheme.colorScheme.error
     }
     Text(text, color = color, style = MaterialTheme.typography.bodySmall)
