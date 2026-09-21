@@ -544,6 +544,27 @@ object ConfigParser {
         return raw.substringBeforeLast(':').takeIf { it.isNotBlank() } ?: raw.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * True if [host] is a literal IPv4 or IPv6 address rather than a DNS
+     * hostname. [host] is expected to already be bracket-stripped, the way
+     * [normalizeEndpointHost] returns it (used to build [Node.server] for
+     * wireguard/awg entries).
+     *
+     * Used to warn on import when an AmneziaWG/WireGuard peer's endpoint is
+     * a hostname: sing-box-lx has a confirmed bug where such a peer gets its
+     * UDP socket recreated on every handshake retry and the handshake never
+     * completes (same underlying library and bug as
+     * WarpAccount.DEFAULT_ENDPOINT - see the writeup on that constant for
+     * the tcpdump/logcat evidence). A literal-IP peer never hits that
+     * resolver code path at all.
+     */
+    fun isLiteralIpHost(host: String): Boolean {
+        val h = host.trim()
+        if (h.isEmpty()) return false
+        if (':' in h) return h.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' }
+        return h.all { it.isDigit() || it == '.' }
+    }
+
     private fun endpointPort(value: String, fallback: Int): Int = value.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 } ?: fallback
     private fun isTrue(value: Any?): Boolean = when (value) { is Boolean -> value; else -> value?.toString()?.lowercase() in setOf("true", "1", "yes") }
     private fun isFalse(value: Any?): Boolean = when (value) { is Boolean -> !value; else -> value?.toString()?.lowercase() in setOf("false", "0", "no") }

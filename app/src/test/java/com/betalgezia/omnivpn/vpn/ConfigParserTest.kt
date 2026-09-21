@@ -147,6 +147,43 @@ class ConfigParserTest {
     }
 
     @Test
+    fun parsesAmneziaWireguardConfWithDomainEndpoint() {
+        // Regression guard for the import-time warning: a domain-name peer
+        // endpoint (as opposed to a literal IP) hits a confirmed sing-box-lx
+        // bug where the handshake never completes - see
+        // ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT.
+        // Node.server must keep carrying the raw hostname unresolved so the
+        // import layer can detect and warn about it.
+        val conf = """
+            [Interface]
+            PrivateKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+            Address = 10.0.0.2/32
+
+            [Peer]
+            PublicKey = AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
+            Endpoint = engage.cloudflareclient.com:2408
+            AllowedIPs = 0.0.0.0/0, ::/0
+        """.trimIndent()
+
+        val node = ConfigParser.parse(conf).single()
+        assertEquals(Protocol.AMNEZIAWG, node.protocol)
+        assertEquals("engage.cloudflareclient.com", node.server)
+        assertEquals(2408, node.port)
+        assertFalse(ConfigParser.isLiteralIpHost(node.server))
+    }
+
+    @Test
+    fun isLiteralIpHostDistinguishesIpsFromHostnames() {
+        assertEquals(true, ConfigParser.isLiteralIpHost("198.51.100.10"))
+        assertEquals(true, ConfigParser.isLiteralIpHost("162.159.192.1"))
+        assertEquals(true, ConfigParser.isLiteralIpHost("2606:4700:d0::a29f:c001"))
+        assertEquals(true, ConfigParser.isLiteralIpHost("::1"))
+        assertFalse(ConfigParser.isLiteralIpHost("engage.cloudflareclient.com"))
+        assertFalse(ConfigParser.isLiteralIpHost("vpn.example.org"))
+        assertFalse(ConfigParser.isLiteralIpHost(""))
+    }
+
+    @Test
     fun preservesFullMihomoXHttpOptions() {
         val yaml = """
             proxies:
