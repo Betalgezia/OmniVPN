@@ -91,7 +91,15 @@ class VpnController @Inject constructor(
         }
 
         val normalizedEndpoint = endpoint?.trim().takeUnless { it.isNullOrEmpty() }
-        val effectiveEndpoint = normalizedEndpoint ?: account.endpoint
+        // Self-heal accounts cached before DEFAULT_ENDPOINT switched from a
+        // domain name to a literal IP (see WarpAccount.DEFAULT_ENDPOINT) - a
+        // domain-name peer hits a confirmed sing-box-lx bug where the UDP
+        // socket gets recreated every handshake retry and the handshake
+        // never completes. Never overrides an endpoint the caller explicitly
+        // asked for, even if it's a hostname.
+        val effectiveEndpoint = normalizedEndpoint
+            ?: account.endpoint.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
+            ?: WarpAccount.DEFAULT_ENDPOINT
         account = account.copy(endpoint = effectiveEndpoint)
         storage.set(account)
         android.util.Log.d(tag, "startWarp: account cached, starting VPN")

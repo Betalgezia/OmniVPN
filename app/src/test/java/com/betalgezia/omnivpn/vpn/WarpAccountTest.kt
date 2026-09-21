@@ -3,8 +3,27 @@ package com.betalgezia.omnivpn.vpn
 import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WarpAccountTest {
+    @Test
+    fun defaultEndpointIsALiteralIp() {
+        // Regression guard: a domain-name WireGuard/AmneziaWG peer hits a
+        // confirmed sing-box-lx bug (UDP socket recreated on every handshake
+        // retry, handshake never completes) - see the comment on
+        // WarpAccount.DEFAULT_ENDPOINT. This must stay a literal IP.
+        assertTrue(WarpAccount.isLiteralIpEndpoint(WarpAccount.DEFAULT_ENDPOINT))
+    }
+
+    @Test
+    fun isLiteralIpEndpointDistinguishesHostFromIp() {
+        assertTrue(WarpAccount.isLiteralIpEndpoint("162.159.192.1:2408"))
+        assertTrue(WarpAccount.isLiteralIpEndpoint("[2606:4700:d0::a29f:c001]:2408"))
+        assertFalse(WarpAccount.isLiteralIpEndpoint("engage.cloudflareclient.com:2408"))
+        assertFalse(WarpAccount.isLiteralIpEndpoint("not a valid endpoint"))
+    }
+
     @Test
     fun clientIdBecomesThreePeerReservedBytes() {
         val clientId = "AX//"

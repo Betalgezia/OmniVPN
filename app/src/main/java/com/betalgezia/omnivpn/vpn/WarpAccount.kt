@@ -73,7 +73,23 @@ data class WarpAccount(
         .toString()
 
     companion object {
-        const val DEFAULT_ENDPOINT = "engage.cloudflareclient.com:2408"
+        // Was "engage.cloudflareclient.com:2408". sing-box (and every sing-box-lx
+        // build we've tested: v1.14.1-lx.3, v1.14.0-lx.34/35) recreates a
+        // domain-name WireGuard/AmneziaWG peer's UDP socket on every handshake
+        // retry instead of reusing it - confirmed on-device via matched
+        // router tcpdump + phone logcat: with the domain endpoint, every ~5s
+        // retry used a brand-new source port and the read goroutine died
+        // within single-digit ms with "use of closed network connection",
+        // even though Cloudflare's server answered every handshake correctly.
+        // The underlying sing-box regression (SagerNet/sing-box#3486 /
+        // #4366 - FQDN peer endpoint refresh tied to handshake retry) isn't
+        // in any release we can build against yet. A literal IP peer never
+        // takes that resolver code path at all: same device, same network,
+        // same minute, switching just this string to a literal IP produced
+        // zero closed-socket errors and a working tunnel (confirmed
+        // end-to-end: sites load). 162.159.192.1 is the address every one of
+        // our captures already resolved "engage.cloudflareclient.com" to.
+        const val DEFAULT_ENDPOINT = "162.159.192.1:2408"
 
         fun fromJson(value: String): WarpAccount {
             val j = JSONObject(value)
@@ -91,6 +107,23 @@ data class WarpAccount(
                 endpoint = j.optString("endpoint", DEFAULT_ENDPOINT),
                 createdAt = j.getString("createdAt")
             )
+        }
+
+        /**
+         * True if [endpoint]'s host is a literal IP (v4 or v6), not a hostname.
+         * Used to self-heal accounts cached before [DEFAULT_ENDPOINT] switched
+         * from a domain to a literal IP - see the comment on that constant.
+         * The `[host]:port` bracket form (see [splitEndpoint]) is only ever
+         * used for an IPv6 literal here, so its presence alone is decisive -
+         * an IPv6 host's hex digits (a-f) would otherwise be indistinguishable
+         * from a hostname. Unbracketed, only an IPv4 dotted-decimal host
+         * qualifies; a DNS hostname can never be all digits and dots.
+         */
+        fun isLiteralIpEndpoint(endpoint: String): Boolean {
+            val raw = endpoint.trim()
+            if (raw.startsWith("[")) return runCatching { splitEndpoint(raw) }.isSuccess
+            val host = runCatching { splitEndpoint(raw).first }.getOrNull() ?: return false
+            return host.isNotEmpty() && host.all { it.isDigit() || it == '.' }
         }
 
         private fun splitEndpoint(value: String): Pair<String, Int> {
