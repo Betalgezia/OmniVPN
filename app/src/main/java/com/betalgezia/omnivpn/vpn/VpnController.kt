@@ -34,6 +34,7 @@ class VpnController @Inject constructor(
             SingBoxConfigBuilder.build(node)
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
+        android.util.Log.d(tag, "start(node): full config=$config")
         startConfig(config).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit

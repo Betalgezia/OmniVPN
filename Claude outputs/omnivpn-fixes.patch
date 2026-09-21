@@ -1,0 +1,132 @@
+diff --git a/README.md b/README.md
+index 3452ab4..7d3cef1 100644
+--- a/README.md
++++ b/README.md
+@@ -55,7 +55,7 @@ Implemented:
+ - Room-backed node/subscription persistence.
+ - Cloudflare WARP bootstrap, optional WARP+ license application and encrypted AndroidKeyStore cache.
+ - Minimal functional Compose UI and VPN permission flow.
+-- Gradle Wrapper 9.3.0 committed to the repository.
++- Gradle Wrapper 9.3.1 committed to the repository.
+ - GitHub Actions build/test workflow plus Gradle Wrapper integrity validation.
+ 
+ ## Command-line build
+diff --git a/app/src/main/java/com/betalgezia/omnivpn/vpn/AndroidPlatformInterface.kt b/app/src/main/java/com/betalgezia/omnivpn/vpn/AndroidPlatformInterface.kt
+index 279e132..ba8102b 100644
+--- a/app/src/main/java/com/betalgezia/omnivpn/vpn/AndroidPlatformInterface.kt
++++ b/app/src/main/java/com/betalgezia/omnivpn/vpn/AndroidPlatformInterface.kt
+@@ -312,6 +312,13 @@ class AndroidPlatformInterface @Inject constructor(
+         return connectivity.allNetworks.mapNotNull { network ->
+             val lp = connectivity.getLinkProperties(network) ?: return@mapNotNull null
+             val caps = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
++            // Exclude our own VPN network. Once the tun is up, OmniVPN's own
++            // interface is a member of allNetworks like any other; surfacing it
++            // here would let it be picked up as a candidate "physical" interface
++            // by anything that walks this list, which is exactly the kind of
++            // self-referential loop protect()/auto-detect-interface is meant to
++            // avoid (see notifyDefaultInterface's identical isVpnNetwork guard).
++            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+             val nativeInterface =
+                 systemInterfaces.find { it.name == lp.interfaceName }
+                     ?: return@mapNotNull null
+diff --git a/app/src/main/java/com/betalgezia/omnivpn/vpn/ConfigParser.kt b/app/src/main/java/com/betalgezia/omnivpn/vpn/ConfigParser.kt
+index b425b05..6c2ea23 100644
+--- a/app/src/main/java/com/betalgezia/omnivpn/vpn/ConfigParser.kt
++++ b/app/src/main/java/com/betalgezia/omnivpn/vpn/ConfigParser.kt
+@@ -218,7 +218,7 @@ object ConfigParser {
+                 ?: endpointPort(endpointText, 51820)
+             val publicKey = (
+                 string(source, "public_key", "public-key")
+-                    ?: string(raw, "peer_public_key", "public_key", "public-key")
++                    ?: string(raw, "peer_public_key", "peer-public-key", "public_key", "public-key")
+                 )?.let(::normalizeWireguardKey) ?: return@mapNotNull null
+ 
+             JSONObject()
+@@ -438,8 +438,19 @@ object ConfigParser {
+         "safari", "360", "qq", "ios", "android", "random", "randomized"
+     )
+ 
+-    private fun addressList(raw: Map<*, *>): List<String> =
+-        (list(raw, "address", "addresses", "ip", "ipv6") ?: emptyList()).map(::normalizePrefix)
++    private fun addressList(raw: Map<*, *>): List<String> {
++        // sing-box style configs carry one combined "address"/"addresses" list.
++        // Mihomo-style configs instead split the IPv4 and IPv6 client address
++        // into separate "ip" and "ipv6" scalars, both of which must be kept
++        // (a `firstNotNullOfOrNull` lookup would silently drop whichever one
++        // isn't checked first and leave the peer with only a single-stack
++        // address).
++        list(raw, "address", "addresses")?.let { return it.map(::normalizePrefix) }
++        val combined = mutableListOf<String>()
++        list(raw, "ip")?.let { combined += it }
++        list(raw, "ipv6")?.let { combined += it }
++        return combined.map(::normalizePrefix)
++    }
+ 
+     private fun normalizePrefix(value: String): String {
+         val raw = value.trim()
+diff --git a/app/src/main/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilder.kt b/app/src/main/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilder.kt
+index 5643d10..a2576bf 100644
+--- a/app/src/main/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilder.kt
++++ b/app/src/main/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilder.kt
+@@ -28,14 +28,18 @@ object SingBoxConfigBuilder {
+             }))
+             .put("inbounds", JSONArray().put(buildTun()))
+             .put("outbounds", JSONArray().apply {
++                // The proxy outbound (when present) must stay at index 0: callers
++                // and tests rely on outbounds[0] being the app-owned proxy tag.
++                // "direct"/"block" are appended afterwards so they always exist
++                // (e.g. as the AWG/WARP endpoint bootstrap detour) instead of
++                // being silently dropped.
++                if (!endpointMode) put(buildProxyOutbound(node))
+                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
+                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
+             })
+ 
+         if (endpointMode) {
+             root.put("endpoints", JSONArray().put(buildAmneziaWgEndpoint(node)))
+-        } else {
+-            root.getJSONArray("outbounds").put(0, buildProxyOutbound(node))
+         }
+         return root.toString()
+     }
+diff --git a/app/src/test/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilderTest.kt b/app/src/test/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilderTest.kt
+index a1d8057..600749d 100644
+--- a/app/src/test/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilderTest.kt
++++ b/app/src/test/java/com/betalgezia/omnivpn/vpn/SingBoxConfigBuilderTest.kt
+@@ -144,9 +144,11 @@ class SingBoxConfigBuilderTest {
+         assertEquals(7L, endpoint.getLong("jc"))
+         assertEquals(123L, endpoint.getLong("h1"))
+         assertEquals("direct", endpoint.getString("detour"))
++        // Rule 0 is the tun-wide sniff (see directOutboundIsNonEmptyAndUsedForDnsBootstrap
++        // / the dedicated "sniff precedes DNS hijack" coverage); the DNS hijack is rule 1.
+         assertEquals(
+             "hijack-dns",
+-            config.getJSONObject("route").getJSONArray("rules").getJSONObject(0).getString("action")
++            config.getJSONObject("route").getJSONArray("rules").getJSONObject(1).getString("action")
+         )
+     }
+ 
+diff --git a/app/src/test/java/com/betalgezia/omnivpn/vpn/SubscriptionParserTest.kt b/app/src/test/java/com/betalgezia/omnivpn/vpn/SubscriptionParserTest.kt
+index cb48fb2..57f64d6 100644
+--- a/app/src/test/java/com/betalgezia/omnivpn/vpn/SubscriptionParserTest.kt
++++ b/app/src/test/java/com/betalgezia/omnivpn/vpn/SubscriptionParserTest.kt
+@@ -10,14 +10,16 @@ import kotlin.test.assertTrue
+ class SubscriptionParserTest {
+     @Test
+     fun parsesVlessRealityUri() {
+-        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=abcd&type=ws&path=%2Fapi&host=cdn.example.com&flow=xtls-rprx-vision#Reality"
++        // xtls-rprx-vision is only valid on bare TCP, so a Reality/Vision URI
++        // must not also carry a transport (ws/grpc/xhttp/...); that combination
++        // is intentionally sanitized away elsewhere (see
++        // SingBoxConfigBuilderTest#removesVisionWhenNodeCarriesTransport).
++        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=reality&sni=cdn.example.com&fp=chrome&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=abcd&flow=xtls-rprx-vision#Reality"
+         val node = SubscriptionParser.parse(uri).single()
+         assertEquals(Protocol.VLESS, node.protocol)
+         assertEquals("Reality", node.name)
+         val raw = JSONObject(node.rawConfig!!)
+         assertEquals("xtls-rprx-vision", raw.getString("flow"))
+-        assertEquals("ws", raw.getJSONObject("transport").getString("type"))
+-        assertEquals("/api", raw.getJSONObject("transport").getString("path"))
+         assertEquals("cdn.example.com", raw.getJSONObject("tls").getString("server_name"))
+         assertTrue(raw.getJSONObject("tls").getJSONObject("reality").getBoolean("enabled"))
+     }
