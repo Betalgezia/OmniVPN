@@ -8,4 +8,7 @@ captures/
 .externalNativeBuild/
 .cxx/
 app/libs/*.aar
+app/libs/*.aar.bak
 app/libs/.libbox.version
+*.log
+*.bundle
