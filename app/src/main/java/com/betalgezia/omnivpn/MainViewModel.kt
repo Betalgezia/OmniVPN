@@ -9,6 +9,8 @@ import com.betalgezia.omnivpn.data.SubscriptionRepository
 import com.betalgezia.omnivpn.data.hasDomainWireguardEndpoint
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
+import com.betalgezia.omnivpn.vpn.NodeHealth
+import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.WarpAccount
@@ -19,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 @HiltViewModel
@@ -26,7 +29,8 @@ class MainViewModel @Inject constructor(
     private val nodeRepository: NodeRepository,
     private val nodeImportService: NodeImportService,
     private val subscriptionRepository: SubscriptionRepository,
-    private val vpnController: VpnController
+    private val vpnController: VpnController,
+    private val nodeHealthChecker: NodeHealthChecker
 ) : ViewModel() {
 
     init {
@@ -43,6 +47,8 @@ class MainViewModel @Inject constructor(
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+    private val _nodeHealth = MutableStateFlow<Map<Long, NodeHealth>>(emptyMap())
+    val nodeHealth: StateFlow<Map<Long, NodeHealth>> = _nodeHealth.asStateFlow()
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
@@ -117,13 +123,41 @@ class MainViewModel @Inject constructor(
     fun deleteNode(node: Node) {
         viewModelScope.launch {
             runCatching { nodeRepository.delete(node) }
-                .onSuccess { _message.value = "Removed ${node.name}" }
+                .onSuccess {
+                    _nodeHealth.update { it - node.id }
+                    _message.value = "Removed ${node.name}"
+                }
                 .onFailure {
                     android.util.Log.e(TAG, "deleteNode: failed for node id=${node.id}", it)
                     _message.value = it.message ?: "Unable to remove server"
                 }
         }
     }
+
+    fun checkNode(node: Node) {
+        if (node.id == 0L) return
+        viewModelScope.launch {
+            _nodeHealth.update { it + (node.id to NodeHealth.Checking) }
+            val result = nodeHealthChecker.check(node)
+            _nodeHealth.update { it + (node.id to result) }
+        }
+    }
+
+    fun checkNodes(targets: List<Node>) {
+        val ids = targets.mapNotNull { it.id.takeIf { id -> id != 0L } }
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            _nodeHealth.update { current -> current + ids.associateWith { NodeHealth.Checking } }
+            nodeHealthChecker.checkAll(targets.filter { it.id != 0L }) { node, health ->
+                _nodeHealth.update { it + (node.id to health) }
+            }
+        }
+    }
+
+    fun checkAllNodes() = checkNodes(nodes.value)
+
+    fun checkSubscriptionNodes(subscription: Subscription) =
+        checkNodes(nodes.value.filter { it.sourceId == subscription.id })
 
     fun startWarp(endpointOverride: String? = null, forceNew: Boolean = false) {
         viewModelScope.launch {
