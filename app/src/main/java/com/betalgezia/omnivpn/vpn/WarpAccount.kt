@@ -26,7 +26,8 @@ data class WarpAccount(
             .put("address", parts.first)
             .put("port", parts.second)
             .put("public_key", peerPublicKey)
-            .put("allowed_ips", JSONArray().apply { put("0.0.0.0/0"); put("::/0") })
+            // IPv4 only - see the comment below on why IPv6 is left out too.
+            .put("allowed_ips", JSONArray().apply { put("0.0.0.0/0") })
             // Standard WireGuard hygiene for any peer that might sit behind
             // NAT - unset before. Not expected to fix DPI blocking by
             // itself, but on 2026-09-21 the junk-packet obfuscation above
@@ -39,14 +40,32 @@ data class WarpAccount(
             // something upstream, so it stays even if it isn't the whole
             // fix.
             .put("persistent_keepalive_interval", 25)
-        reservedBytes()?.let { bytes ->
-            peer.put("reserved", JSONArray().apply { bytes.forEach { put(it) } })
-        }
+        // reserved intentionally NOT applied here anymore. Was: derived
+        // from this account's own client_id (see reservedBytes()) and
+        // included whenever present. Adopting jc=3/jmin=64/jmax=128 + the
+        // i1 decoy packet (matching a manually-imported config confirmed
+        // end-to-end working - see the comment on DPI_JUNK_OBFUSCATION)
+        // was NOT enough on its own: same device/network, same jc/jmin/
+        // jmax/i1/h1-h4, tried on two different literal IPs, both died at
+        // the same ~15s mark the old obfuscation did too - confirmed via
+        // matched logcat (September 2026). The one structural difference
+        // left between this endpoint and the config that actually stayed
+        // up for 30+ seconds was reserved (present here, absent there) and
+        // IPv6 (present here, absent there - see the allowed_ips/address
+        // changes in this method). reserved only affects Cloudflare's own
+        // internal routing to a specific registered device/account - it's
+        // not part of what authenticates the tunnel (the WireGuard keypair
+        // and registration are), so dropping it shouldn't break a
+        // consumer WARP connection's basic function. If a future test
+        // (once this is confirmed working) isolates which of reserved vs.
+        // IPv6 actually mattered, the other one can come back.
         return JSONObject()
             .put("type", "wireguard")
             .put("tag", "warp")
             .put("mtu", 1280)
-            .put("address", JSONArray().apply { put(normalizeAddress(clientV4, 32)); put(normalizeAddress(clientV6, 128)) })
+            // IPv4 only for the same reason allowed_ips above is IPv4
+            // only - see the comment above.
+            .put("address", JSONArray().apply { put(normalizeAddress(clientV4, 32)) })
             .put("private_key", privateKey)
             .put("peers", JSONArray().put(peer))
             .toString()
@@ -63,12 +82,6 @@ data class WarpAccount(
             rawConfig = toSingBoxEndpoint(),
             awg = DPI_JUNK_OBFUSCATION
         )
-    }
-
-    private fun reservedBytes(): List<Int>? {
-        val raw = clientId ?: return null
-        val bytes = runCatching { Base64Compat.decode(raw) }.getOrNull() ?: return null
-        return bytes.takeIf { it.size == 3 }?.map { it.toInt() and 0xff }
     }
 
     fun toJson(): String = JSONObject()

@@ -25,23 +25,30 @@ class WarpAccountTest {
     }
 
     @Test
-    fun clientIdBecomesThreePeerReservedBytes() {
+    fun endpointOmitsReservedAndIsIpv4Only() {
+        // Was: clientId became a 3-byte peer "reserved" field, and both
+        // IPv4/IPv6 were included. Changed after jc=3/jmin=64/jmax=128 + an
+        // i1 decoy packet alone (matching a manually-imported config
+        // confirmed working end-to-end) still wasn't enough on its own -
+        // two literal IPs both died at the same ~15s mark the old
+        // obfuscation did, with reserved+IPv6 present. The config that
+        // actually stayed up had neither. See the comment on
+        // toSingBoxEndpoint() for the full account; a present clientId
+        // must no longer surface as "reserved" here.
         val clientId = "AX//"
         val account = WarpAccount(
             privateKey = "private", peerPublicKey = "peer",
             clientV4 = "172.16.0.2", clientV6 = "2606:4700:4700::1001",
             clientId = clientId, accountId = "account", deviceId = "device", token = "token",
-            license = null, warpPlus = false, endpoint = "engage.cloudflareclient.com:2408",
-            createdAt = "2026-09-18T00:00:00Z"
+            license = null, warpPlus = false, endpoint = WarpAccount.DEFAULT_ENDPOINT,
+            createdAt = "2026-09-21T00:00:00Z"
         )
         val endpoint = JSONObject(account.toSingBoxEndpoint())
+        assertEquals(1, endpoint.getJSONArray("address").length())
         val peer = endpoint.getJSONArray("peers").getJSONObject(0)
-        val reserved = peer.getJSONArray("reserved")
-        assertEquals(3, reserved.length())
-        assertEquals(1, reserved.getInt(0))
-        assertEquals(127, reserved.getInt(1))
-        assertEquals(255, reserved.getInt(2))
-        assertEquals(2, peer.getJSONArray("allowed_ips").length())
+        assertFalse(peer.has("reserved"))
+        assertEquals(1, peer.getJSONArray("allowed_ips").length())
+        assertEquals("0.0.0.0/0", peer.getJSONArray("allowed_ips").getString(0))
     }
 
     @Test
