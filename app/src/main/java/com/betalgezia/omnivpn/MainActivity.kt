@@ -69,6 +69,14 @@ class MainActivity : ComponentActivity() {
         var input by remember { mutableStateOf("") }
         var pendingNode by remember { mutableStateOf<Node?>(null) }
         var pendingWarp by remember { mutableStateOf(false) }
+        // Carries the "Reset WARP account" intent through the VPN-permission
+        // detour below: forceNew=true discards the cached account and
+        // registers a brand new one with Cloudflare (VpnController.startWarp)
+        // instead of the normal "Get WARP" behaviour of reusing whatever is
+        // cached. Kept separate from pendingWarp so a plain "Get WARP" click
+        // never accidentally forces a new registration.
+        var pendingWarpForceNew by remember { mutableStateOf(false) }
+        var confirmResetWarp by remember { mutableStateOf(false) }
         // Cloudflare WARP's usual anycast IP can itself end up blocked
         // independently of protocol-level DPI (reported by other
         // AmneziaWG+WARP users under the same kind of blocking); read
@@ -82,12 +90,14 @@ class MainActivity : ComponentActivity() {
         ) { result ->
             val node = pendingNode
             val warp = pendingWarp
+            val warpForceNew = pendingWarpForceNew
             pendingNode = null
             pendingWarp = false
+            pendingWarpForceNew = false
             android.util.Log.i(
                 TAG,
                 "VPN permission result: code=${result.resultCode}, dataPresent=${result.data != null}, " +
-                    "pendingNode=${node?.name}, pendingWarp=${warp}"
+                    "pendingNode=${node?.name}, pendingWarp=${warp}, pendingWarpForceNew=${warpForceNew}"
             )
             try {
                 if (result.resultCode != RESULT_OK) {
@@ -103,8 +113,8 @@ class MainActivity : ComponentActivity() {
                         viewModel.connect(node)
                     }
                     warp -> {
-                        android.util.Log.i(TAG, "VPN permission granted -> starting WARP flow")
-                        viewModel.startWarp(warpEndpointInput)
+                        android.util.Log.i(TAG, "VPN permission granted -> starting WARP flow, forceNew=${warpForceNew}")
+                        viewModel.startWarp(warpEndpointInput, forceNew = warpForceNew)
                     }
                     else -> {
                         android.util.Log.w(TAG, "VPN permission result received without pending action")
@@ -180,22 +190,64 @@ class MainActivity : ComponentActivity() {
                     placeholder = { Text("162.159.192.1:2408") }
                 )
 
-                OutlinedButton(
-                    enabled = !busy && canStartVpn,
-                    onClick = {
-                        android.util.Log.i(TAG, "Get WARP clicked, endpointOverride=${warpEndpointInput.isNotBlank()}")
-                        val intent = viewModel.prepareVpn()
-                        if (intent != null) {
-                            android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
-                            pendingWarp = true
-                            permissionLauncher.launch(intent)
-                        } else {
-                            android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
-                            viewModel.startWarp(warpEndpointInput)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        enabled = !busy && canStartVpn,
+                        onClick = {
+                            android.util.Log.i(TAG, "Get WARP clicked, endpointOverride=${warpEndpointInput.isNotBlank()}")
+                            val intent = viewModel.prepareVpn()
+                            if (intent != null) {
+                                android.util.Log.i(TAG, "Get WARP: launching VPN permission activity")
+                                pendingWarp = true
+                                pendingWarpForceNew = false
+                                permissionLauncher.launch(intent)
+                            } else {
+                                android.util.Log.i(TAG, "Get WARP: VPN permission already granted")
+                                viewModel.startWarp(warpEndpointInput)
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Get WARP") }
+                    OutlinedButton(
+                        enabled = !busy && canStartVpn,
+                        onClick = { confirmResetWarp = true },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Reset WARP") }
+                }
+
+                if (confirmResetWarp) {
+                    AlertDialog(
+                        onDismissRequest = { confirmResetWarp = false },
+                        title = { Text("Reset WARP account?") },
+                        text = {
+                            Text(
+                                "This discards the saved WARP account and registers a brand " +
+                                    "new one with Cloudflare. Normal \"Get WARP\" clicks always " +
+                                    "reuse the same saved account, so only do this if WARP stops " +
+                                    "connecting and a fresh registration might help."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmResetWarp = false
+                                android.util.Log.i(TAG, "Reset WARP confirmed, endpointOverride=${warpEndpointInput.isNotBlank()}")
+                                val intent = viewModel.prepareVpn()
+                                if (intent != null) {
+                                    android.util.Log.i(TAG, "Reset WARP: launching VPN permission activity")
+                                    pendingWarp = true
+                                    pendingWarpForceNew = true
+                                    permissionLauncher.launch(intent)
+                                } else {
+                                    android.util.Log.i(TAG, "Reset WARP: VPN permission already granted")
+                                    viewModel.startWarp(warpEndpointInput, forceNew = true)
+                                }
+                            }) { Text("Reset") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmResetWarp = false }) { Text("Cancel") }
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Get WARP") }
+                    )
+                }
 
                 if (busy) CircularProgressIndicator()
                 message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }

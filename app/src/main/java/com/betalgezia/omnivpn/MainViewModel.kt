@@ -125,7 +125,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun startWarp(endpointOverride: String? = null) {
+    fun startWarp(endpointOverride: String? = null, forceNew: Boolean = false) {
         viewModelScope.launch {
             _busy.value = true
             // The override was easy to lose track of - no visible confirmation
@@ -134,12 +134,19 @@ class MainViewModel @Inject constructor(
             // September 2026 endpoint-rotation debugging session). Echo it
             // back in the result message instead of just "WARP registered".
             val normalizedEndpoint = endpointOverride?.trim()?.takeIf { it.isNotEmpty() }
-            vpnController.startWarp(endpoint = normalizedEndpoint).onFailure {
-                android.util.Log.e(TAG, "startWarp: failed", it)
+            // forceNew discards the cached account and registers a fresh one
+            // with Cloudflare - see VpnController.startWarp. Surfaced from the
+            // UI as a "Reset WARP account" action for the case where the
+            // saved account/keys stop working server-side; normal "Get WARP"
+            // clicks always reuse the cached account instead of gambling on a
+            // new one each time.
+            vpnController.startWarp(endpoint = normalizedEndpoint, forceNew = forceNew).onFailure {
+                android.util.Log.e(TAG, "startWarp: failed (forceNew=$forceNew)", it)
                 _message.value = it.message ?: "WARP registration failed"
             }
                 .onSuccess {
-                    _message.value = "WARP registered (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
+                    val prefix = if (forceNew) "New WARP account registered" else "WARP registered"
+                    _message.value = "$prefix (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
                 }
             _busy.value = false
         }
