@@ -60,9 +60,16 @@ class NodeHealthChecker @Inject constructor(
 ) {
     private val probeMutex = Mutex()
 
+    /**
+     * @param stopOnFirstReachable stop as soon as one node passes, leaving the rest
+     * unreported. For picking *a* working candidate out of an ordered list (see
+     * WarpEndpointScanner) rather than grading every node, which is the difference
+     * between one probe and a dozen timeouts.
+     */
     suspend fun checkAll(
         nodes: List<Node>,
         timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        stopOnFirstReachable: Boolean = false,
         onResult: suspend (Node, NodeHealth) -> Unit
     ) {
         val testable = nodes.filter { it.protocol != Protocol.WARP }
@@ -106,7 +113,9 @@ class NodeHealthChecker @Inject constructor(
                 try {
                     for (node in testable) {
                         val tag = tags[node.id] ?: continue
-                        onResult(node, runUrlTest(client, tag, timeoutMs))
+                        val health = runUrlTest(client, tag, timeoutMs)
+                        onResult(node, health)
+                        if (stopOnFirstReachable && health is NodeHealth.Reachable) break
                     }
                 } finally {
                     runCatching { client.disconnect() }

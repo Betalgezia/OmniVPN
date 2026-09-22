@@ -36,7 +36,7 @@ object SingBoxConfigBuilder {
             // decision on the OmniVpnService "[libbox] ..." channel, which is what we
             // actually need to see. Safe to turn back down to "info" once resolved.
             .put("log", JSONObject().put("level", "debug"))
-            .put("dns", buildDns())
+            .put("dns", buildDns(proxyTag))
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
@@ -162,6 +162,7 @@ object SingBoxConfigBuilder {
                 put("server_port", node.port.requirePort())
                 put("uuid", node.uuid)
                 if (!has("tls") && !has("transport")) put("network", "tcp")
+                enforceBrowserTlsFingerprint(this)
             }
     }
 
@@ -173,6 +174,7 @@ object SingBoxConfigBuilder {
                 put("server_port", node.port.requirePort())
                 put("password", node.password)
                 if (!has("tls")) put("tls", JSONObject().put("enabled", true).put("server_name", node.server))
+                enforceBrowserTlsFingerprint(this)
             }
     }
 
@@ -268,6 +270,34 @@ object SingBoxConfigBuilder {
             .forEach { (key, value) -> if (!value.isNullOrBlank()) target.put(key, value) }
     }
 
+    /**
+     * Makes sure a TCP-TLS outbound presents a browser's TLS ClientHello (uTLS)
+     * rather than Go's.
+     *
+     * Without this, an imported Trojan/VLESS node that didn't specify a
+     * fingerprint handshakes with crypto/tls' own ClientHello, whose JA3/JA4 is
+     * both distinctive and well-published - it marks the connection as "not a
+     * browser" on the very first packet, before any of the protocol's own
+     * obfuscation gets a chance to matter. Reality already requires uTLS; this
+     * extends the same treatment to plain-TLS nodes.
+     *
+     * Deliberately not applied to Hysteria2: it is QUIC, where sing-box uses its
+     * own TLS stack and uTLS does not apply.
+     */
+    private fun enforceBrowserTlsFingerprint(outbound: JSONObject) {
+        val tls = outbound.optJSONObject("tls") ?: return
+        if (!tls.optBoolean("enabled", false)) return
+        val utls = tls.optJSONObject("utls")
+        if (utls == null) {
+            tls.put("utls", JSONObject().put("enabled", true).put("fingerprint", DEFAULT_TLS_FINGERPRINT))
+            return
+        }
+        utls.put("enabled", true)
+        if (utls.optString("fingerprint").lowercase().trim() !in TLS_FINGERPRINTS) {
+            utls.put("fingerprint", DEFAULT_TLS_FINGERPRINT)
+        }
+    }
+
     private fun sanitizeVless(outbound: JSONObject) {
         val flow = outbound.optString("flow")
         val hasTransportObject = outbound.optJSONObject("transport") != null
@@ -296,9 +326,16 @@ object SingBoxConfigBuilder {
         return obj
     }
 
-    private fun buildDns(): JSONObject = JSONObject()
+    private fun buildDns(proxyTag: String): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
+            // DoH reached *through* the tunnel (detour), for the queries fakeip
+            // can't answer - see the HTTPS/SVCB rule below. Addressed by literal
+            // IP on purpose: no name to resolve means no bootstrap cycle with
+            // the proxy's own domain, and Cloudflare's certificate carries the
+            // IP in its SAN list so validation still passes.
+            put(JSONObject().put("type", "https").put("tag", REMOTE_DNS_TAG)
+                .put("server", REMOTE_DNS_ADDRESS).put("detour", proxyTag))
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
@@ -326,10 +363,27 @@ object SingBoxConfigBuilder {
         // rule below, for the A/AAAA queries the tun's hijack-dns actually
         // needs faked; anything else (e.g. the DNS server's own bootstrap)
         // still falls through to dns-local.
-        .put("rules", JSONArray().put(JSONObject()
-            .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
-            .put("action", "route")
-            .put("server", FAKE_IP_DNS_TAG)))
+        .put("rules", JSONArray().apply {
+            put(JSONObject()
+                .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
+                .put("action", "route")
+                .put("server", FAKE_IP_DNS_TAG))
+            // Everything fakeip doesn't answer used to fall through to
+            // "final" = dns-local, which resolves on the physical interface,
+            // outside the tunnel (see the note above). HTTPS/SVCB (type 65) is
+            // the one that actually matters: Chrome and the Android resolver
+            // query it for virtually every connection, so a DPI box on the
+            // path got a plaintext list of every domain visited - and got to
+            // answer it. Those go through the tunnel now. Deliberately not
+            // made the default for *all* leftover query types: if this DoH
+            // server is unreachable through a given proxy, only HTTPS/SVCB
+            // fails and clients fall back to plain A/AAAA (fakeip, which never
+            // leaves the device) instead of DNS breaking entirely.
+            put(JSONObject()
+                .put("query_type", JSONArray().apply { put("HTTPS"); put("SVCB") })
+                .put("action", "route")
+                .put("server", REMOTE_DNS_TAG))
+        })
         .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         .put("reverse_mapping", true)
@@ -344,6 +398,17 @@ object SingBoxConfigBuilder {
     private const val BLOCK_TAG = "block"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
+    private const val REMOTE_DNS_TAG = "dns-remote"
+    private const val REMOTE_DNS_ADDRESS = "1.1.1.1"
+
+    private const val DEFAULT_TLS_FINGERPRINT = "chrome"
+    // Kept in step with ConfigParser.VALID_FINGERPRINTS: a fingerprint that
+    // survived import must not be second-guessed and downgraded here.
+    private val TLS_FINGERPRINTS = setOf(
+        "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
+        "chrome_pq", "chrome_pq_psk", "chrome", "firefox", "edge",
+        "safari", "360", "qq", "ios", "android", "random", "randomized"
+    )
 
     private val AWG_ENDPOINT_FIELDS = setOf(
         "system", "name", "mtu", "address", "private_key", "listen_port", "workers",

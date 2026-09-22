@@ -15,6 +15,7 @@ import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.WarpAccount
+import com.betalgezia.omnivpn.vpn.WarpEndpointScanner
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +32,8 @@ class MainViewModel @Inject constructor(
     private val nodeImportService: NodeImportService,
     private val subscriptionRepository: SubscriptionRepository,
     private val vpnController: VpnController,
-    private val nodeHealthChecker: NodeHealthChecker
+    private val nodeHealthChecker: NodeHealthChecker,
+    private val warpEndpointScanner: WarpEndpointScanner
 ) : ViewModel() {
 
     init {
@@ -165,6 +167,32 @@ class MainViewModel @Inject constructor(
 
     fun checkSubscriptionNodes(subscription: Subscription) =
         checkNodes(nodes.value.filter { it.sourceId == subscription.id })
+
+    /**
+     * Tries WARP's anycast endpoints until one actually carries traffic and saves
+     * it - the endpoint that works is network-dependent and changes, and typing
+     * candidates into the override field by hand was the only way to find one.
+     */
+    fun findWarpEndpoint() {
+        // Same single-engine constraint as the server test - see NodeHealthChecker.
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before searching for a WARP endpoint"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            _message.value = "Trying WARP endpoints…"
+            warpEndpointScanner.findWorkingEndpoint()
+                .onSuccess {
+                    _message.value = "WARP endpoint ${it.endpoint} works (${it.latencyMs} ms) and is now saved"
+                }
+                .onFailure {
+                    android.util.Log.e(TAG, "findWarpEndpoint: failed", it)
+                    _message.value = it.message ?: "No working WARP endpoint found"
+                }
+            _busy.value = false
+        }
+    }
 
     private fun canTestNow(): Boolean = when (vpnState.value) {
         VpnState.DISCONNECTED, VpnState.ERROR, VpnState.REVOKED -> true

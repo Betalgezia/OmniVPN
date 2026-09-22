@@ -156,6 +156,66 @@ class SingBoxConfigBuilderTest {
         assertFailsWith<IllegalArgumentException> { SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=70000, uuid="00000000-0000-0000-0000-000000000003")) }
     }
 
+    @Test fun httpsQueriesResolveThroughTheTunnelNotTheLocalResolver() {
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
+        val dns = config.getJSONObject("dns")
+
+        val remote = (0 until dns.getJSONArray("servers").length())
+            .map { dns.getJSONArray("servers").getJSONObject(it) }
+            .first { it.getString("tag") == "dns-remote" }
+        assertEquals("https", remote.getString("type"))
+        // Literal IP: a hostname here would need resolving before the tunnel
+        // it is reached through can come up.
+        assertEquals("1.1.1.1", remote.getString("server"))
+        assertEquals("proxy", remote.getString("detour"))
+
+        val rules = (0 until dns.getJSONArray("rules").length()).map { dns.getJSONArray("rules").getJSONObject(it) }
+        val httpsRule = rules.first { it.getJSONArray("query_type").toString().contains("HTTPS") }
+        assertEquals("dns-remote", httpsRule.getString("server"))
+        // A/AAAA must stay on fakeip - it answers on-device and never leaks.
+        val addressRule = rules.first { it.getJSONArray("query_type").toString().contains("\"A\"") }
+        assertEquals("dns-fakeip", addressRule.getString("server"))
+    }
+
+    @Test fun amneziaWgDnsIsReachedThroughTheEndpointNotTheProxyTag() {
+        val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
+            .put("private_key","base64-private")
+            .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
+                .put("public_key","base64-public").put("allowed_ips", JSONArray().put("0.0.0.0/0"))))
+            .toString()
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="awg", protocol=Protocol.AMNEZIAWG, server="203.0.113.10", port=51820, privateKey="base64-private", rawConfig=raw)))
+        val remote = (0 until config.getJSONObject("dns").getJSONArray("servers").length())
+            .map { config.getJSONObject("dns").getJSONArray("servers").getJSONObject(it) }
+            .first { it.getString("tag") == "dns-remote" }
+        assertEquals("awg", remote.getString("detour"))
+    }
+
+    @Test fun trojanWithoutAFingerprintStillHandshakesAsABrowser() {
+        // Regression guard: this used to fall through to Go's own ClientHello,
+        // whose JA3/JA4 identifies the connection as non-browser immediately.
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="t", protocol=Protocol.TROJAN, server="example.com", port=443, password="secret")))
+        val utls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls").getJSONObject("utls")
+        assertTrue(utls.getBoolean("enabled"))
+        assertEquals("chrome", utls.getString("fingerprint"))
+    }
+
+    @Test fun anImportedFingerprintIsKeptRatherThanOverridden() {
+        val raw = JSONObject().put("type","vless").put("server","raw.example").put("server_port",443)
+            .put("uuid","raw-uuid")
+            .put("tls", JSONObject().put("enabled", true).put("server_name","example.com")
+                .put("utls", JSONObject().put("enabled", true).put("fingerprint","firefox")))
+            .toString()
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="v", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000009", rawConfig=raw)))
+        val utls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls").getJSONObject("utls")
+        assertEquals("firefox", utls.getString("fingerprint"))
+    }
+
+    @Test fun hysteria2IsLeftAloneBecauseUtlsDoesNotApplyToQuic() {
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="h", protocol=Protocol.HYSTERIA2, server="example.com", port=443, password="secret")))
+        val tls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls")
+        assertFalse(tls.has("utls"))
+    }
+
     @Test fun probeConfigHasNoTunAndUniqueTagsPerNode() {
         val vless = Node(id=1, name="a", protocol=Protocol.VLESS, server="one.example", port=443, uuid="00000000-0000-0000-0000-000000000001")
         val trojan = Node(id=2, name="b", protocol=Protocol.TROJAN, server="two.example", port=443, password="secret")

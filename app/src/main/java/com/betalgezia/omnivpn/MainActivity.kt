@@ -243,6 +243,11 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f)
                         ) { Text("Reset WARP") }
                     }
+                    OutlinedButton(
+                        enabled = !busy && canStartVpn,
+                        onClick = { viewModel.findWarpEndpoint() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Find working endpoint") }
                 }
 
                 if (confirmResetWarp) {
