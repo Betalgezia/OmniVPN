@@ -2,7 +2,10 @@
 <resources>
     <style name="Theme.OmniVPN" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
+    <!-- android:windowLightStatusBar is intentionally left unset here - status
+         bar icon contrast now follows the actual Compose theme (light/dark) via
+         OmniVpnTheme's WindowCompat call, since this app's dark theme needs
+         light icons while a hardcoded value here can't tell the two apart. -->
 </resources>

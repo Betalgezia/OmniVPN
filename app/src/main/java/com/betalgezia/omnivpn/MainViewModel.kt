@@ -29,6 +29,19 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/**
+ * What the active VPN connection is, if any - tracked separately from
+ * [VpnState] because that only reports whether a tunnel is up, not which
+ * server it goes to. Every path that can bring a tunnel up (connect(),
+ * connectFastest(), startWarp()) updates this, so the hero connect button
+ * always has a name to show once VpnState reports CONNECTING/CONNECTED.
+ */
+sealed interface ActiveConnection {
+    data object None : ActiveConnection
+    data class Server(val node: Node) : ActiveConnection
+    data object Warp : ActiveConnection
+}
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val nodeRepository: NodeRepository,
@@ -56,6 +69,15 @@ class MainViewModel @Inject constructor(
     private val _nodeHealth = MutableStateFlow<Map<Long, NodeHealth>>(emptyMap())
     val nodeHealth: StateFlow<Map<Long, NodeHealth>> = _nodeHealth.asStateFlow()
 
+    private val _activeConnection = MutableStateFlow<ActiveConnection>(ActiveConnection.None)
+    val activeConnection: StateFlow<ActiveConnection> = _activeConnection.asStateFlow()
+
+    // True only while connectFastest() is probing - distinct from _busy (which
+    // is also true during a manual "Check all"/WARP endpoint search) so the
+    // hero button can show "Searching…" only for its own action.
+    private val _searchingFastest = MutableStateFlow(false)
+    val searchingFastest: StateFlow<Boolean> = _searchingFastest.asStateFlow()
+
     // Server tests and the WARP endpoint search share this: both drive the one
     // sing-box engine, so they can never overlap anyway, and both can run long
     // enough that the user needs a way out.
@@ -76,12 +98,17 @@ class MainViewModel @Inject constructor(
             vpnController.start(node).onFailure {
                 android.util.Log.e(TAG, "connect: failed", it)
                 _message.value = it.message ?: "Unable to start VPN"
+            }.onSuccess {
+                _activeConnection.value = ActiveConnection.Server(node)
             }
             _busy.value = false
         }
     }
 
-    fun stop() { vpnController.stop() }
+    fun stop() {
+        vpnController.stop()
+        _activeConnection.value = ActiveConnection.None
+    }
 
     fun import(text: String) {
         val value = text.trim()
@@ -198,6 +225,68 @@ class MainViewModel @Inject constructor(
         checkNodes(nodes.value.filter { it.sourceId == subscription.id })
 
     /**
+     * Tests every server across every subscription and manually-added config,
+     * then connects to whichever one answers fastest - the hero "Connect"
+     * button's one-tap promise. Shares testJob with checkNodes()/
+     * findWarpEndpoint() since all three drive the same single sing-box probe
+     * engine (see NodeHealthChecker) and can never run at once; canTestNow()
+     * applies here for the same reason.
+     */
+    fun connectFastest() {
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before searching for the fastest server"
+            return
+        }
+        val candidates = nodes.value.filter { it.id != 0L && it.protocol != Protocol.WARP }
+        if (candidates.isEmpty()) {
+            _message.value = "No servers yet - add a subscription or import a config first"
+            return
+        }
+        testJob?.cancel()
+        testJob = viewModelScope.launch {
+            _busy.value = true
+            _searchingFastest.value = true
+            _nodeHealth.update { current -> current + candidates.associate { it.id to NodeHealth.Checking } }
+            try {
+                // checkAll() serialises onResult even when probes run in parallel
+                // (see NodeHealthChecker.probeInParallel), so plain vars here -
+                // without a Mutex of their own - are safe to mutate from it.
+                var best: Node? = null
+                var bestLatencyMs = Long.MAX_VALUE
+                nodeHealthChecker.checkAll(candidates, mode = _testMode.value) { node, health ->
+                    _nodeHealth.update { it + (node.id to health) }
+                    if (health is NodeHealth.Reachable && health.latencyMs < bestLatencyMs) {
+                        best = node
+                        bestLatencyMs = health.latencyMs
+                    }
+                }
+                val winner = best
+                if (winner == null) {
+                    _message.value = "No reachable servers found"
+                } else {
+                    vpnController.start(winner).onFailure {
+                        android.util.Log.e(TAG, "connectFastest: connect failed", it)
+                        _message.value = it.message ?: "Unable to start VPN"
+                    }.onSuccess {
+                        _activeConnection.value = ActiveConnection.Server(winner)
+                        _message.value = "Connected to ${winner.name} (${bestLatencyMs} ms)"
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                _message.value = "Search cancelled"
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(TAG, "connectFastest: failed", t)
+                _message.value = t.message ?: "Search failed"
+            } finally {
+                _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
+                _searchingFastest.value = false
+                _busy.value = false
+            }
+        }
+    }
+
+    /**
      * Tries WARP's anycast endpoints until one actually carries traffic and saves
      * it - the endpoint that works is network-dependent and changes, and typing
      * candidates into the override field by hand was the only way to find one.
@@ -255,6 +344,7 @@ class MainViewModel @Inject constructor(
                 _message.value = it.message ?: "WARP registration failed"
             }
                 .onSuccess {
+                    _activeConnection.value = ActiveConnection.Warp
                     val prefix = if (forceNew) "New WARP account registered" else "WARP registered"
                     _message.value = "$prefix (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
                 }
