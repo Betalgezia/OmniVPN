@@ -12,11 +12,15 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
+import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.WarpAccount
+import com.betalgezia.omnivpn.vpn.WarpEndpointScanner
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,7 +35,8 @@ class MainViewModel @Inject constructor(
     private val nodeImportService: NodeImportService,
     private val subscriptionRepository: SubscriptionRepository,
     private val vpnController: VpnController,
-    private val nodeHealthChecker: NodeHealthChecker
+    private val nodeHealthChecker: NodeHealthChecker,
+    private val warpEndpointScanner: WarpEndpointScanner
 ) : ViewModel() {
 
     init {
@@ -50,6 +55,16 @@ class MainViewModel @Inject constructor(
     val message: StateFlow<String?> = _message.asStateFlow()
     private val _nodeHealth = MutableStateFlow<Map<Long, NodeHealth>>(emptyMap())
     val nodeHealth: StateFlow<Map<Long, NodeHealth>> = _nodeHealth.asStateFlow()
+
+    // Server tests and the WARP endpoint search share this: both drive the one
+    // sing-box engine, so they can never overlap anyway, and both can run long
+    // enough that the user needs a way out.
+    private var testJob: Job? = null
+
+    private val _testMode = MutableStateFlow(TestMode.FULL)
+    val testMode: StateFlow<TestMode> = _testMode.asStateFlow()
+
+    fun setTestMode(mode: TestMode) { _testMode.value = mode }
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
@@ -146,25 +161,74 @@ class MainViewModel @Inject constructor(
         }
         val testable = targets.filter { it.id != 0L && it.protocol != Protocol.WARP }
         if (testable.isEmpty()) return
-        viewModelScope.launch {
+        testJob?.cancel()
+        testJob = viewModelScope.launch {
             _busy.value = true
             _nodeHealth.update { current -> current + testable.associate { it.id to NodeHealth.Checking } }
-            runCatching {
-                nodeHealthChecker.checkAll(testable) { node, health ->
+            try {
+                nodeHealthChecker.checkAll(testable, mode = _testMode.value) { node, health ->
                     _nodeHealth.update { it + (node.id to health) }
                 }
-            }.onFailure {
-                android.util.Log.e(TAG, "checkNodes: failed", it)
-                _message.value = it.message ?: "Server test failed"
+            } catch (cancelled: CancellationException) {
+                _message.value = "Test cancelled"
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(TAG, "checkNodes: failed", t)
+                _message.value = t.message ?: "Server test failed"
+            } finally {
+                // Cancelling leaves nodes mid-probe: drop their "Testing…" label
+                // instead of stranding it, and clear busy here rather than after
+                // the call, which a cancellation would skip straight past and
+                // leave the whole UI disabled.
+                _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
+                _busy.value = false
             }
-            _busy.value = false
         }
+    }
+
+    /** Stops an in-flight server test or WARP endpoint search. */
+    fun cancelTests() {
+        testJob?.cancel()
+        testJob = null
     }
 
     fun checkAllNodes() = checkNodes(nodes.value)
 
     fun checkSubscriptionNodes(subscription: Subscription) =
         checkNodes(nodes.value.filter { it.sourceId == subscription.id })
+
+    /**
+     * Tries WARP's anycast endpoints until one actually carries traffic and saves
+     * it - the endpoint that works is network-dependent and changes, and typing
+     * candidates into the override field by hand was the only way to find one.
+     */
+    fun findWarpEndpoint() {
+        // Same single-engine constraint as the server test - see NodeHealthChecker.
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before searching for a WARP endpoint"
+            return
+        }
+        testJob?.cancel()
+        testJob = viewModelScope.launch {
+            _busy.value = true
+            _message.value = "Trying WARP endpoints…"
+            try {
+                warpEndpointScanner.findWorkingEndpoint()
+                    .onSuccess {
+                        _message.value = "WARP endpoint ${it.endpoint} works (${it.latencyMs} ms) and is now saved"
+                    }
+                    .onFailure {
+                        android.util.Log.e(TAG, "findWarpEndpoint: failed", it)
+                        _message.value = it.message ?: "No working WARP endpoint found"
+                    }
+            } catch (cancelled: CancellationException) {
+                _message.value = "Endpoint search cancelled"
+                throw cancelled
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
 
     private fun canTestNow(): Boolean = when (vpnState.value) {
         VpnState.DISCONNECTED, VpnState.ERROR, VpnState.REVOKED -> true
