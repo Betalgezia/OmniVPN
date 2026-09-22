@@ -14,7 +14,15 @@ import org.json.JSONObject
 data class ProbeConfig(
     val json: String?,
     val tagsByNodeId: Map<Long, String>,
-    val buildErrors: Map<Long, String>
+    val buildErrors: Map<Long, String>,
+    /**
+     * Tag of an outbound that cannot possibly work (it dials a closed port on
+     * loopback). Probing it is how the caller checks its own instrument: if a
+     * request through *this* comes back successful, then the probe never went
+     * through the named outbound at all, and every other verdict in the batch is
+     * measuring the phone's own connection rather than the server.
+     */
+    val sentinelTag: String
 )
 
 object SingBoxConfigBuilder {
@@ -36,7 +44,7 @@ object SingBoxConfigBuilder {
             // decision on the OmniVpnService "[libbox] ..." channel, which is what we
             // actually need to see. Safe to turn back down to "info" once resolved.
             .put("log", JSONObject().put("level", "debug"))
-            .put("dns", buildDns(proxyTag))
+            .put("dns", buildDns())
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
@@ -98,8 +106,15 @@ object SingBoxConfigBuilder {
                 errors[node.id] = it.message ?: "Invalid configuration"
             }
         }
-        if (tags.isEmpty()) return ProbeConfig(null, emptyMap(), errors)
+        if (tags.isEmpty()) return ProbeConfig(null, emptyMap(), errors, SENTINEL_TAG)
 
+        // Control outbound - see ProbeConfig.sentinelTag. A closed port on
+        // loopback refuses instantly, so checking it costs nothing.
+        outbounds.put(JSONObject()
+            .put("type", "vless").put("tag", SENTINEL_TAG)
+            .put("server", "127.0.0.1").put("server_port", 1)
+            .put("uuid", "00000000-0000-0000-0000-000000000000")
+            .put("network", "tcp"))
         outbounds.put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
         val root = JSONObject()
             .put("log", JSONObject().put("disabled", true))
@@ -107,7 +122,7 @@ object SingBoxConfigBuilder {
             .put("route", JSONObject().put("default_domain_resolver", LOCAL_DNS_TAG))
             .put("outbounds", outbounds)
         if (endpoints.length() > 0) root.put("endpoints", endpoints)
-        return ProbeConfig(root.toString(), tags, errors)
+        return ProbeConfig(root.toString(), tags, errors, SENTINEL_TAG)
     }
 
     private fun buildProbeDns(): JSONObject = JSONObject()
@@ -326,16 +341,9 @@ object SingBoxConfigBuilder {
         return obj
     }
 
-    private fun buildDns(proxyTag: String): JSONObject = JSONObject()
+    private fun buildDns(): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
-            // DoH reached *through* the tunnel (detour), for the queries fakeip
-            // can't answer - see the HTTPS/SVCB rule below. Addressed by literal
-            // IP on purpose: no name to resolve means no bootstrap cycle with
-            // the proxy's own domain, and Cloudflare's certificate carries the
-            // IP in its SAN list so validation still passes.
-            put(JSONObject().put("type", "https").put("tag", REMOTE_DNS_TAG)
-                .put("server", REMOTE_DNS_ADDRESS).put("detour", proxyTag))
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
@@ -368,21 +376,24 @@ object SingBoxConfigBuilder {
                 .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
                 .put("action", "route")
                 .put("server", FAKE_IP_DNS_TAG))
-            // Everything fakeip doesn't answer used to fall through to
-            // "final" = dns-local, which resolves on the physical interface,
-            // outside the tunnel (see the note above). HTTPS/SVCB (type 65) is
-            // the one that actually matters: Chrome and the Android resolver
-            // query it for virtually every connection, so a DPI box on the
-            // path got a plaintext list of every domain visited - and got to
-            // answer it. Those go through the tunnel now. Deliberately not
-            // made the default for *all* leftover query types: if this DoH
-            // server is unreachable through a given proxy, only HTTPS/SVCB
-            // fails and clients fall back to plain A/AAAA (fakeip, which never
-            // leaves the device) instead of DNS breaking entirely.
+            // HTTPS/SVCB (type 65) used to fall through to "final" = dns-local,
+            // which resolves on the physical interface, outside the tunnel (see
+            // the note above) - and Chrome and the Android resolver query it for
+            // virtually every connection, so a DPI box on the path got a
+            // plaintext list of every domain visited, and got to answer it.
+            //
+            // Refused rather than forwarded over DoH-through-the-tunnel, which
+            // was the first attempt here: a client that gets no HTTPS record
+            // immediately falls back to plain A/AAAA (fakeip, answered on-device,
+            // never leaves it), whereas a forwarded query stalls for the full DNS
+            // timeout whenever that resolver isn't reachable through the proxy in
+            // use - which showed up as pages hanging. Refusing closes the same
+            // leak without ever being able to stall. The cost is ECH, which needs
+            // the HTTPS record; fakeip plus TLS sniffing covers the routing that
+            // record would otherwise inform.
             put(JSONObject()
                 .put("query_type", JSONArray().apply { put("HTTPS"); put("SVCB") })
-                .put("action", "route")
-                .put("server", REMOTE_DNS_TAG))
+                .put("action", "reject"))
         })
         .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
@@ -396,10 +407,9 @@ object SingBoxConfigBuilder {
     private const val AWG_TAG = "awg"
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
+    private const val SENTINEL_TAG = "probe-sentinel"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
-    private const val REMOTE_DNS_TAG = "dns-remote"
-    private const val REMOTE_DNS_ADDRESS = "1.1.1.1"
 
     private const val DEFAULT_TLS_FINGERPRINT = "chrome"
     // Kept in step with ConfigParser.VALID_FINGERPRINTS: a fingerprint that

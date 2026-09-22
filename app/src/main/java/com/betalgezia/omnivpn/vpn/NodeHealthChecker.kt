@@ -34,6 +34,23 @@ sealed interface NodeHealth {
     data class Unreachable(val reason: String) : NodeHealth
 }
 
+enum class TestMode {
+    /**
+     * Opens a socket to the server and nothing more. Seconds for a whole list,
+     * and a failure here is conclusive - nothing is listening, so the server is
+     * definitely unusable. A pass is *not* conclusive: it only shows the port
+     * answers, not that the proxy behind it works.
+     */
+    QUICK,
+
+    /**
+     * Fetches a URL through the node's own outbound in the real core, so a
+     * broken handshake or wrong credentials fail the way they would in use.
+     * Slow, and it pays a cold handshake per node, so its timings run high.
+     */
+    FULL
+}
+
 /**
  * Liveness probe for server [Node]s, run through the real sing-box core (see
  * SingBoxConfigBuilder.buildProbeConfig) rather than a bare socket connect: a raw TCP
@@ -71,10 +88,20 @@ class NodeHealthChecker @Inject constructor(
         nodes: List<Node>,
         timeoutMs: Int = DEFAULT_TIMEOUT_MS,
         stopOnFirstReachable: Boolean = false,
+        mode: TestMode = TestMode.FULL,
         onResult: suspend (Node, NodeHealth) -> Unit
     ) {
         val testable = nodes.filter { it.protocol != Protocol.WARP }
         if (testable.isEmpty()) return
+
+        if (mode == TestMode.QUICK) {
+            for (node in testable) {
+                val health = quickCheck(node)
+                onResult(node, health)
+                if (stopOnFirstReachable && health is NodeHealth.Reachable) break
+            }
+            return
+        }
 
         probeMutex.withLock {
             val probe = SingBoxConfigBuilder.buildProbeConfig(testable)
@@ -112,6 +139,15 @@ class NodeHealthChecker @Inject constructor(
             try {
                 val client = connectCommandClient()
                 try {
+                    // Check the instrument before trusting it - see
+                    // ProbeConfig.sentinelTag. Costs one refused connection.
+                    val sentinel = probeOnce(client, probe.sentinelTag, SENTINEL_TIMEOUT_MS)
+                    if (sentinel is ProbeOutcome.Reached) {
+                        error(
+                            "Test aborted: a request through a deliberately dead outbound succeeded, " +
+                                "so probes are not going through the servers at all"
+                        )
+                    }
                     for (node in testable) {
                         val tag = tags[node.id] ?: continue
                         val health = runUrlTestWithRetry(client, tag, timeoutMs)
@@ -133,6 +169,50 @@ class NodeHealthChecker @Inject constructor(
                         .onFailure { android.util.Log.w(TAG, "checkAll: engine.stop failed", it) }
                 }
             }
+        }
+    }
+
+    /**
+     * Socket-level reachability, no core involved. TCP protocols get a connect;
+     * UDP ones (Hysteria2, AmneziaWG) get a connected-socket probe where only an
+     * ICMP port-unreachable is conclusive - those protocols drop unsolicited
+     * packets by design, so silence proves nothing and is reported as reachable.
+     */
+    private suspend fun quickCheck(node: Node): NodeHealth = withContext(Dispatchers.IO) {
+        val host = node.server.trim()
+        val port = node.port
+        if (host.isEmpty() || port !in 1..65535) {
+            return@withContext NodeHealth.Unreachable("Invalid server address")
+        }
+        val start = System.nanoTime()
+        fun elapsed() = (System.nanoTime() - start) / 1_000_000
+        try {
+            when (node.protocol) {
+                Protocol.VLESS, Protocol.TROJAN -> {
+                    java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), QUICK_TIMEOUT_MS) }
+                    NodeHealth.Reachable(elapsed())
+                }
+                else -> {
+                    java.net.DatagramSocket().use { socket ->
+                        socket.connect(java.net.InetSocketAddress(host, port))
+                        socket.soTimeout = QUICK_TIMEOUT_MS
+                        val probe = ByteArray(1)
+                        socket.send(java.net.DatagramPacket(probe, probe.size))
+                        runCatching { socket.receive(java.net.DatagramPacket(ByteArray(64), 64)) }
+                    }
+                    NodeHealth.Reachable(elapsed())
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            NodeHealth.Unreachable("Timed out")
+        } catch (e: java.net.PortUnreachableException) {
+            NodeHealth.Unreachable("Port unreachable")
+        } catch (e: java.net.ConnectException) {
+            NodeHealth.Unreachable("Connection refused")
+        } catch (e: java.net.UnknownHostException) {
+            NodeHealth.Unreachable("Unknown host")
+        } catch (e: java.io.IOException) {
+            NodeHealth.Unreachable(e.message ?: "Unreachable")
         }
     }
 
@@ -175,10 +255,10 @@ class NodeHealthChecker @Inject constructor(
      * repeating it just makes scanning a list of dead servers slower.
      */
     private suspend fun runUrlTestWithRetry(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth {
-        val first = probe(client, tag, timeoutMs)
+        val first = probeOnce(client, tag, timeoutMs)
         if (first !is ProbeOutcome.TimedOut) return first.toHealth()
         android.util.Log.i(TAG, "runUrlTest: tag=$tag timed out at ${timeoutMs}ms, retrying at ${RETRY_TIMEOUT_MS}ms")
-        return probe(client, tag, RETRY_TIMEOUT_MS).toHealth()
+        return probeOnce(client, tag, RETRY_TIMEOUT_MS).toHealth()
     }
 
     private sealed interface ProbeOutcome {
@@ -193,7 +273,7 @@ class NodeHealthChecker @Inject constructor(
         }
     }
 
-    private suspend fun probe(client: CommandClient, tag: String, timeoutMs: Int): ProbeOutcome {
+    private suspend fun probeOnce(client: CommandClient, tag: String, timeoutMs: Int): ProbeOutcome {
         val watchdogMs = (timeoutMs + WATCHDOG_GRACE_MS).toLong()
         val outcome = withTimeoutOrNull(watchdogMs) {
             runCatching {
@@ -279,6 +359,8 @@ class NodeHealthChecker @Inject constructor(
         // successes already reached 4149ms - see runUrlTestWithRetry).
         const val DEFAULT_TIMEOUT_MS = 6000
         const val RETRY_TIMEOUT_MS = 15000
+        const val QUICK_TIMEOUT_MS = 3000
+        const val SENTINEL_TIMEOUT_MS = 4000
         const val CONNECT_TIMEOUT_MS = 3000L
         const val WATCHDOG_GRACE_MS = 1500
         const val MAX_RESPONSE_BYTES = 8192

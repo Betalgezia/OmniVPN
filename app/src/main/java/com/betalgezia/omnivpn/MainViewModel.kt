@@ -12,6 +12,7 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
+import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.WarpAccount
@@ -59,6 +60,11 @@ class MainViewModel @Inject constructor(
     // sing-box engine, so they can never overlap anyway, and both can run long
     // enough that the user needs a way out.
     private var testJob: Job? = null
+
+    private val _testMode = MutableStateFlow(TestMode.FULL)
+    val testMode: StateFlow<TestMode> = _testMode.asStateFlow()
+
+    fun setTestMode(mode: TestMode) { _testMode.value = mode }
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
@@ -160,7 +166,7 @@ class MainViewModel @Inject constructor(
             _busy.value = true
             _nodeHealth.update { current -> current + testable.associate { it.id to NodeHealth.Checking } }
             try {
-                nodeHealthChecker.checkAll(testable) { node, health ->
+                nodeHealthChecker.checkAll(testable, mode = _testMode.value) { node, health ->
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
