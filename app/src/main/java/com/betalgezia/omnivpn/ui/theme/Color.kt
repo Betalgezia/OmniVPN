@@ -23,6 +23,18 @@ val StatusWarningDark = Color(0xFFFFB84D)
 val StatusErrorLight = Color(0xFFD03A2E)
 val StatusErrorDark = Color(0xFFFF6B5E)
 
+// One distinct hue per protocol, for the server list's protocol badge - the
+// point is to be able to tell VLESS/TROJAN/HYSTERIA2/AMNEZIAWG apart at a
+// glance in a scrolling list, not to carry any other meaning.
+val ProtocolVlessLight = Color(0xFF3355CC)
+val ProtocolVlessDark = Color(0xFF7C9EFF)
+val ProtocolTrojanLight = Color(0xFFA6318F)
+val ProtocolTrojanDark = Color(0xFFE88AE0)
+val ProtocolHysteria2Light = Color(0xFF9A6400)
+val ProtocolHysteria2Dark = Color(0xFFFFC658)
+val ProtocolAmneziaWgLight = Color(0xFF157A5C)
+val ProtocolAmneziaWgDark = Color(0xFF6EE7B7)
+
 // Dark theme surfaces - a deep, slightly blue-tinted near-black rather than
 // pure black, so elevated cards/sheets still read as "lifted" against it.
 val BackgroundDark = Color(0xFF0A0E17)

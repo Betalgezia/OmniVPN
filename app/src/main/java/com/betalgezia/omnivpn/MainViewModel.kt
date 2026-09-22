@@ -225,21 +225,25 @@ class MainViewModel @Inject constructor(
         checkNodes(nodes.value.filter { it.sourceId == subscription.id })
 
     /**
-     * Tests every server across every subscription and manually-added config,
-     * then connects to whichever one answers fastest - the hero "Connect"
-     * button's one-tap promise. Shares testJob with checkNodes()/
-     * findWarpEndpoint() since all three drive the same single sing-box probe
-     * engine (see NodeHealthChecker) and can never run at once; canTestNow()
-     * applies here for the same reason.
+     * Tests every server that came from a subscription - never a manually
+     * pasted/imported config, never WARP, see the September 2026 redesign -
+     * then connects to whichever one answers fastest: the hero "Connect"
+     * button's one-tap promise. Always probes in TestMode.QUICK regardless of
+     * the _testMode toggle: that toggle is for the deliberate, thorough
+     * per-node "Test" tap, while this action's whole point is to be a fast
+     * default. Shares testJob with checkNodes()/findWarpEndpoint() since all
+     * three drive the same single sing-box probe engine (see
+     * NodeHealthChecker) and can never run at once; canTestNow() applies here
+     * for the same reason.
      */
     fun connectFastest() {
         if (!canTestNow()) {
             _message.value = "Disconnect the VPN before searching for the fastest server"
             return
         }
-        val candidates = nodes.value.filter { it.id != 0L && it.protocol != Protocol.WARP }
+        val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
         if (candidates.isEmpty()) {
-            _message.value = "No servers yet - add a subscription or import a config first"
+            _message.value = "No subscription servers yet - add a subscription first"
             return
         }
         testJob?.cancel()
@@ -253,7 +257,7 @@ class MainViewModel @Inject constructor(
                 // without a Mutex of their own - are safe to mutate from it.
                 var best: Node? = null
                 var bestLatencyMs = Long.MAX_VALUE
-                nodeHealthChecker.checkAll(candidates, mode = _testMode.value) { node, health ->
+                nodeHealthChecker.checkAll(candidates, mode = TestMode.QUICK) { node, health ->
                     _nodeHealth.update { it + (node.id to health) }
                     if (health is NodeHealth.Reachable && health.latencyMs < bestLatencyMs) {
                         best = node

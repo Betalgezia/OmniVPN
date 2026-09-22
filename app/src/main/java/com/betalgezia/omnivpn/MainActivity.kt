@@ -14,6 +14,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,12 +30,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -39,7 +45,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -68,7 +73,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.betalgezia.omnivpn.data.model.Node
@@ -76,12 +84,21 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.ui.theme.OmniVpnStatusColors
 import com.betalgezia.omnivpn.ui.theme.OmniVpnTheme
+import com.betalgezia.omnivpn.ui.theme.ProtocolAmneziaWgDark
+import com.betalgezia.omnivpn.ui.theme.ProtocolAmneziaWgLight
+import com.betalgezia.omnivpn.ui.theme.ProtocolHysteria2Dark
+import com.betalgezia.omnivpn.ui.theme.ProtocolHysteria2Light
+import com.betalgezia.omnivpn.ui.theme.ProtocolTrojanDark
+import com.betalgezia.omnivpn.ui.theme.ProtocolTrojanLight
+import com.betalgezia.omnivpn.ui.theme.ProtocolVlessDark
+import com.betalgezia.omnivpn.ui.theme.ProtocolVlessLight
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -103,10 +120,18 @@ class MainActivity : ComponentActivity() {
         val message by viewModel.message.collectAsStateWithLifecycle()
         val activeConnection by viewModel.activeConnection.collectAsStateWithLifecycle()
         val searchingFastest by viewModel.searchingFastest.collectAsStateWithLifecycle()
+        val nodeHealth by viewModel.nodeHealth.collectAsStateWithLifecycle()
         val canStartVpn = vpnState == VpnState.DISCONNECTED ||
             vpnState == VpnState.ERROR ||
             vpnState == VpnState.REVOKED
+        // The main screen only ever shows servers that came from a subscription
+        // - a manually pasted/imported config has sourceId == null and lives in
+        // the Settings sheet instead (see the September 2026 redesign). This is
+        // also exactly what connectFastest() scans, so what the hero button
+        // promises to search matches what's actually on screen.
+        val subscriptionNodes = nodes.filter { it.sourceId != null }
 
+        var subscriptionUrlInput by remember { mutableStateOf("") }
         var input by remember { mutableStateOf("") }
         // Cloudflare WARP's usual anycast IP can itself end up blocked
         // independently of protocol-level DPI (reported by other
@@ -116,12 +141,11 @@ class MainActivity : ComponentActivity() {
         // used even if permission had to be requested first.
         var warpEndpointInput by remember { mutableStateOf("") }
         var confirmResetWarp by remember { mutableStateOf(false) }
-        // Everything besides the hero button and the WARP pill - add server,
-        // WARP troubleshooting tools, subscriptions and the full server list -
-        // lives in this sheet instead of being permanently on screen. See the
-        // September 2026 redesign: the flat always-expanded layout pushed the
-        // one thing worth looking at most (the server list) off the bottom of
-        // the screen.
+        // Everything besides the hero button, the WARP pill and the
+        // subscription server list - importing a raw config/file, WARP
+        // troubleshooting tools, subscription management and configs
+        // imported outside a subscription - lives in this sheet instead of
+        // being permanently on screen.
         var sheetVisible by remember { mutableStateOf(false) }
 
         var pendingNode by remember { mutableStateOf<Node?>(null) }
@@ -204,6 +228,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Shared by the main screen's server list and the Settings sheet's
+        // imported-configs list, so the VPN-permission detour is only written
+        // once. afterLaunch runs regardless of whether permission had to be
+        // requested first - only the sheet needs it, to dismiss itself.
+        fun connectToNode(node: Node, afterLaunch: () -> Unit = {}) {
+            android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
+            val intent = viewModel.prepareVpn()
+            if (intent != null) {
+                pendingNode = node
+                permissionLauncher.launch(intent)
+            } else {
+                viewModel.connect(node)
+            }
+            afterLaunch()
+        }
+
         val snackbarHostState = remember { SnackbarHostState() }
         LaunchedEffect(message) {
             val text = message
@@ -243,12 +283,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val clipboardManager = LocalClipboardManager.current
+
         Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text("OmniVPN") },
                     actions = {
-                        TextButton(onClick = { sheetVisible = true }) { Text("Servers") }
+                        TextButton(onClick = { sheetVisible = true }) { Text("Settings") }
                     }
                 )
             },
@@ -258,10 +300,11 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                Spacer(Modifier.height(12.dp))
+
                 HeroConnectButton(
                     accent = hero.accent,
                     busy = hero.busy,
@@ -270,7 +313,7 @@ class MainActivity : ComponentActivity() {
                     onClick = onHeroClick
                 )
 
-                Spacer(Modifier.height(36.dp))
+                Spacer(Modifier.height(20.dp))
 
                 WarpPillButton(
                     enabled = !busy && canStartVpn,
@@ -278,14 +321,63 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
 
-                ServersSummaryRow(
-                    serverCount = nodes.size,
-                    subscriptionCount = subscriptions.size,
-                    onClick = { sheetVisible = true },
+                AddSubscriptionRow(
+                    value = subscriptionUrlInput,
+                    onValueChange = { subscriptionUrlInput = it },
+                    enabled = !busy,
+                    onAdd = {
+                        viewModel.import(subscriptionUrlInput)
+                        subscriptionUrlInput = ""
+                    },
+                    onPasteFromClipboard = {
+                        clipboardManager.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            subscriptionUrlInput = it
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(Modifier.height(18.dp))
+
+                Text(
+                    "Servers (${subscriptionNodes.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+                )
+
+                if (subscriptionNodes.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "No subscription servers yet.\nAdd a subscription above to see it here.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 20.dp)
+                    ) {
+                        items(subscriptionNodes, key = { it.id }) { node ->
+                            ServerRow(
+                                node = node,
+                                health = nodeHealth[node.id] ?: NodeHealth.Unknown,
+                                connectable = !busy && canStartVpn,
+                                onConnect = { connectToNode(node) },
+                                onTest = { viewModel.checkNode(node) },
+                                onDelete = { viewModel.deleteNode(node) }
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -324,17 +416,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onFindWarpEndpoint = { viewModel.findWarpEndpoint() },
                     onResetWarpRequested = { confirmResetWarp = true },
-                    onConnectNode = { node ->
-                        android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
-                        val intent = viewModel.prepareVpn()
-                        if (intent != null) {
-                            pendingNode = node
-                            permissionLauncher.launch(intent)
-                        } else {
-                            viewModel.connect(node)
-                        }
-                        sheetVisible = false
-                    }
+                    onConnectNode = { node -> connectToNode(node) { sheetVisible = false } }
                 )
             }
         }
@@ -375,12 +457,12 @@ class MainActivity : ComponentActivity() {
 
 /**
  * The single dominant control on the main screen: tap to connect to the
- * fastest reachable server (idle/error/revoked), tap to cancel (while
- * searching) or tap to disconnect (while connecting/connected) - see
+ * fastest reachable subscription server (idle/error/revoked), tap to cancel
+ * (while searching) or tap to disconnect (while connecting/connected) - see
  * heroPresentationFor for exactly which of those a given state maps to.
  * Colour and the pulsing glow are the only things that change between
- * states; the label underneath carries the rest so the button itself
- * never needs more than one glyph.
+ * states; the label underneath carries the rest so the button itself never
+ * needs more than one glyph.
  */
 @androidx.compose.runtime.Composable
 private fun HeroConnectButton(
@@ -412,14 +494,14 @@ private fun HeroConnectButton(
     )
 
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(224.dp)) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
             // Soft outer glow: a larger, low-alpha radial gradient behind the
             // real button, pulsing gently while busy. A layered gradient
             // rather than Modifier.shadow()'s colour params - it reads as a
             // bloom, not a drop shadow, and needs no colour-shadow API.
             Box(
                 modifier = Modifier
-                    .size(224.dp)
+                    .size(200.dp)
                     .scale(if (busy) pulse else 1f)
                     .clip(CircleShape)
                     .background(
@@ -434,20 +516,20 @@ private fun HeroConnectButton(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(184.dp)
+                    .size(156.dp)
                     .clip(CircleShape)
                     .background(accent.copy(alpha = 0.14f))
                     .border(3.dp, accent, CircleShape)
                     .clickable(onClick = onClick)
             ) {
                 if (busy) {
-                    CircularProgressIndicator(color = accent, strokeWidth = 3.dp, modifier = Modifier.size(48.dp))
+                    CircularProgressIndicator(color = accent, strokeWidth = 3.dp, modifier = Modifier.size(44.dp))
                 } else {
-                    PowerGlyph(color = accent, modifier = Modifier.size(64.dp))
+                    PowerGlyph(color = accent, modifier = Modifier.size(56.dp))
                 }
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(10.dp))
         Text(
             title,
             style = MaterialTheme.typography.headlineSmall,
@@ -455,7 +537,7 @@ private fun HeroConnectButton(
             textAlign = TextAlign.Center
         )
         if (subtitle != null) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
@@ -528,7 +610,7 @@ private fun heroPresentationFor(
         searching -> HeroPresentation(
             accent = primary,
             title = "Searching…",
-            subtitle = "Testing servers for the best connection",
+            subtitle = "Testing subscription servers",
             busy = true
         )
         vpnState == VpnState.CONNECTING -> HeroPresentation(
@@ -592,43 +674,238 @@ private fun WarpPillButton(
     }
 }
 
-/** Tappable at-a-glance summary; also opens the "everything else" sheet. */
+/**
+ * Compact "add a subscription" control, kept to the one thing the main
+ * screen wants: a subscription URL. Pasting a raw config or picking a file
+ * both moved to the Settings sheet (see SecondarySheetContent) - those are
+ * one-off/power-user actions, not the everyday "I got a new subscription
+ * link" case this is for.
+ */
 @androidx.compose.runtime.Composable
-private fun ServersSummaryRow(
-    serverCount: Int,
-    subscriptionCount: Int,
-    onClick: () -> Unit,
+private fun AddSubscriptionRow(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    onAdd: () -> Unit,
+    onPasteFromClipboard: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = modifier
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Servers & subscriptions", style = MaterialTheme.typography.titleSmall)
+    Column(modifier = modifier) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            enabled = enabled,
+            label = { Text("Subscription URL") },
+            trailingIcon = {
                 Text(
-                    "$serverCount servers · $subscriptionCount subscriptions",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    "Paste",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clickable(enabled = enabled, onClick = onPasteFromClipboard)
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
                 )
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onAdd,
+            enabled = enabled && value.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Add subscription") }
+    }
+}
+
+/**
+ * One distinct hue per protocol so the server list stays scannable at a
+ * glance - the badge is the point, not any deeper meaning behind the colour
+ * choice. WARP is included for completeness even though a subscription-
+ * sourced node can never actually carry it (see ConfigParser/
+ * SubscriptionParser - only WarpAccount.toNode() ever produces Protocol.WARP).
+ */
+@androidx.compose.runtime.Composable
+private fun protocolColor(protocol: Protocol): Color {
+    val dark = isSystemInDarkTheme()
+    return when (protocol) {
+        Protocol.VLESS -> if (dark) ProtocolVlessDark else ProtocolVlessLight
+        Protocol.TROJAN -> if (dark) ProtocolTrojanDark else ProtocolTrojanLight
+        Protocol.HYSTERIA2 -> if (dark) ProtocolHysteria2Dark else ProtocolHysteria2Light
+        Protocol.AMNEZIAWG -> if (dark) ProtocolAmneziaWgDark else ProtocolAmneziaWgLight
+        Protocol.WARP -> OmniVpnStatusColors.warp
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun ProtocolBadge(protocol: Protocol, modifier: Modifier = Modifier) {
+    val color = protocolColor(protocol)
+    Surface(shape = RoundedCornerShape(8.dp), color = color.copy(alpha = 0.16f), modifier = modifier) {
+        Text(
+            protocol.name,
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+/** Compact, tappable-to-retest health indicator used inside a ServerRow. */
+@androidx.compose.runtime.Composable
+private fun NodeHealthChip(health: NodeHealth, onTest: () -> Unit, modifier: Modifier = Modifier) {
+    when (health) {
+        is NodeHealth.Unknown -> Text(
+            "Test",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = modifier.clickable(onClick = onTest).padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+        is NodeHealth.Checking -> Box(modifier = modifier.padding(4.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        }
+        is NodeHealth.Reachable -> Text(
+            "${health.latencyMs} ms",
+            style = MaterialTheme.typography.labelSmall,
+            color = OmniVpnStatusColors.connected,
+            modifier = modifier.clickable(onClick = onTest).padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+        is NodeHealth.Unreachable -> Text(
+            "Offline",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = modifier.clickable(onClick = onTest).padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+/**
+ * Wraps [content] with a red "Delete" backdrop revealed by dragging it left,
+ * confirmed with the same AlertDialog pattern the app already used for
+ * destructive actions. A hand-rolled drag (Modifier.draggable +
+ * rememberDraggableState + the standalone animate()) rather than Material3's
+ * SwipeToDismissBox: that API's exact shape has shifted across Compose
+ * versions and this sticks to lower-level primitives that have been stable
+ * for a long time, which matters with no compiler available to check against.
+ */
+@androidx.compose.runtime.Composable
+private fun SwipeToDeleteRow(
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @androidx.compose.runtime.Composable () -> Unit
+) {
+    val density = LocalDensity.current
+    val maxSwipePx = remember(density) { with(density) { 120.dp.toPx() } }
+    val deleteThresholdPx = remember(density) { with(density) { 88.dp.toPx() } }
+    var offsetX by remember { mutableStateOf(0f) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    val draggableState = rememberDraggableState { delta ->
+        offsetX = (offsetX + delta).coerceIn(-maxSwipePx, 0f)
+    }
+
+    Box(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.errorContainer),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(
+                "Delete",
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(end = 28.dp)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), 0) }
+                .draggable(
+                    state = draggableState,
+                    orientation = Orientation.Horizontal,
+                    onDragStopped = {
+                        if (offsetX < -deleteThresholdPx) {
+                            confirmDelete = true
+                        }
+                        animate(offsetX, 0f, animationSpec = tween(200)) { value, _ -> offsetX = value }
+                    }
+                )
+        ) {
+            content()
+        }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Remove server?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete()
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             }
-            Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        )
+    }
+}
+
+/**
+ * One server: tap anywhere to connect (no separate Connect button), swipe
+ * left to delete (no separate Delete button) - see the September 2026
+ * redesign. Used for both the main screen's subscription list and the
+ * Settings sheet's imported-configs list, so both look and behave the same.
+ */
+@androidx.compose.runtime.Composable
+private fun ServerRow(
+    node: Node,
+    health: NodeHealth,
+    connectable: Boolean,
+    onConnect: () -> Unit,
+    onTest: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    SwipeToDeleteRow(onDelete = onDelete, modifier = modifier.fillMaxWidth()) {
+        Surface(
+            onClick = onConnect,
+            enabled = connectable,
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                ProtocolBadge(node.protocol)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(node.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(
+                        "${node.server}:${node.port}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                NodeHealthChip(health = health, onTest = onTest)
+            }
         }
     }
 }
 
 /**
- * Everything demoted off the main screen by the redesign: add server, WARP
- * troubleshooting tools, subscriptions and the full server list. Reads
- * straight from [viewModel] like SubscriptionRow/NodeCard already did rather
- * than having ~15 values threaded in from the caller; only the bits that
- * need the Activity's permission-launcher/file-picker are passed in.
+ * Everything demoted off the main screen by the redesign: importing a raw
+ * config/file, WARP troubleshooting tools, subscription management and
+ * configs imported outside a subscription. Reads straight from [viewModel]
+ * like SubscriptionRow already did rather than having a dozen values
+ * threaded in from the caller; only the bits that need the Activity's
+ * permission-launcher/file-picker/clipboard are passed in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @androidx.compose.runtime.Composable
@@ -654,8 +931,12 @@ private fun SecondarySheetContent(
     val canStartVpn = vpnState == VpnState.DISCONNECTED ||
         vpnState == VpnState.ERROR ||
         vpnState == VpnState.REVOKED
+    // Configs added by pasting text or picking a file rather than through a
+    // subscription - the main screen's list only shows subscription servers
+    // (sourceId != null), so these need a home too.
+    val importedNodes = nodes.filter { it.sourceId == null }
 
-    var addServerExpanded by remember { mutableStateOf(false) }
+    var importExpanded by remember { mutableStateOf(false) }
     var warpToolsExpanded by remember { mutableStateOf(false) }
 
     LazyColumn(
@@ -667,7 +948,7 @@ private fun SecondarySheetContent(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Text("Servers & subscriptions", style = MaterialTheme.typography.titleLarge)
+            Text("Settings", style = MaterialTheme.typography.titleLarge)
         }
 
         if (busy) {
@@ -688,17 +969,17 @@ private fun SecondarySheetContent(
 
         item {
             CollapsibleSection(
-                title = "Add server",
-                expanded = addServerExpanded,
-                onToggle = { addServerExpanded = !addServerExpanded }
+                title = "Import config or file",
+                expanded = importExpanded,
+                onToggle = { importExpanded = !importExpanded }
             ) {
                 OutlinedTextField(
                     value = input,
                     onValueChange = onInputChange,
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
-                    label = { Text("Subscription URL or config") },
-                    placeholder = { Text("https://… / vless://… / JSON / YAML") }
+                    label = { Text("Paste a config") },
+                    placeholder = { Text("vless://… / trojan://… / JSON / YAML") }
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(onClick = onImport, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
@@ -759,27 +1040,10 @@ private fun SecondarySheetContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    "Servers (${nodes.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedButton(
-                    enabled = !busy && canStartVpn && nodes.isNotEmpty(),
-                    onClick = { viewModel.checkAllNodes() }
-                ) { Text("Check all") }
-            }
-        }
-        item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
                     if (testMode == TestMode.QUICK) {
-                        "Quick test: port only - a pass doesn't prove the proxy works"
+                        "Manual test: port only - a pass doesn't prove the proxy works"
                     } else {
-                        "Full test: real request through the server - slow but honest"
+                        "Manual test: real request through the server - slow but honest"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -792,23 +1056,25 @@ private fun SecondarySheetContent(
             }
         }
 
-        if (nodes.isEmpty()) {
+        item {
+            Text("Imported configs (${importedNodes.size})", style = MaterialTheme.typography.titleMedium)
+        }
+        if (importedNodes.isEmpty()) {
             item {
                 Text(
-                    "No servers yet. Add a subscription or import a config above.",
+                    "Configs pasted or imported from a file (not part of a subscription) show up here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         } else {
-            items(nodes, key = { it.id }) { node ->
-                NodeCard(
+            items(importedNodes, key = { it.id }) { node ->
+                ServerRow(
                     node = node,
                     health = nodeHealth[node.id] ?: NodeHealth.Unknown,
-                    enabled = !busy && canStartVpn,
-                    deleteEnabled = !busy,
-                    onTest = { viewModel.checkNode(node) },
+                    connectable = !busy && canStartVpn,
                     onConnect = { onConnectNode(node) },
+                    onTest = { viewModel.checkNode(node) },
                     onDelete = { viewModel.deleteNode(node) }
                 )
             }
@@ -851,10 +1117,20 @@ private fun SubscriptionRow(
     testEnabled: Boolean,
     onTestAll: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(subscription.name, style = MaterialTheme.typography.titleMedium)
-            Text(subscription.url, maxLines = 1)
+            Text(
+                subscription.url,
+                maxLines = 1,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { viewModel.refresh(subscription) },
@@ -871,69 +1147,6 @@ private fun SubscriptionRow(
             }
         }
     }
-}
-
-@androidx.compose.runtime.Composable
-private fun NodeCard(
-    node: Node,
-    health: NodeHealth,
-    enabled: Boolean,
-    deleteEnabled: Boolean,
-    onTest: () -> Unit,
-    onConnect: () -> Unit,
-    onDelete: () -> Unit
-) {
-    var confirmDelete by remember { mutableStateOf(false) }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(node.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-            Text(
-                "${node.protocol} • ${node.server}:${node.port}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-            NodeHealthLabel(health)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                if (node.protocol != Protocol.WARP) {
-                    OutlinedButton(
-                        onClick = onTest,
-                        enabled = enabled && health != NodeHealth.Checking,
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Test") }
-                }
-                OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled, modifier = Modifier.weight(1f)) { Text("Delete") }
-                Button(onClick = onConnect, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Connect") }
-            }
-        }
-    }
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Remove server?") },
-            text = { Text("\"${node.name}\" will be removed from your server list.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDelete()
-                }) { Text("Remove") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
-            }
-        )
-    }
-}
-
-@androidx.compose.runtime.Composable
-private fun NodeHealthLabel(health: NodeHealth) {
-    val (text, color) = when (health) {
-        is NodeHealth.Unknown -> return
-        is NodeHealth.Checking -> "Testing…" to MaterialTheme.colorScheme.onSurfaceVariant
-        is NodeHealth.Reachable -> "● ${health.latencyMs} ms" to OmniVpnStatusColors.connected
-        is NodeHealth.Unreachable -> "● Unreachable: ${health.reason}" to MaterialTheme.colorScheme.error
-    }
-    Text(text, color = color, style = MaterialTheme.typography.bodySmall)
 }
 
 private fun MainActivity.readImportedFile(uri: Uri, onResult: (Result<String>) -> Unit) {
