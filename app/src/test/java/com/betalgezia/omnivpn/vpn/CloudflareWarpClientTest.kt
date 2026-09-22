@@ -47,12 +47,18 @@ class CloudflareWarpClientTest {
 
     @Test
     fun keepsCustomEndpointOverCloudflareResponse() {
+        // Must differ from WarpAccount.DEFAULT_ENDPOINT, or parseRegistration
+        // treats it as "no override requested" and takes Cloudflare's
+        // endpoint instead - which is exactly the behavior this test exists
+        // to rule out. (This literal used to be a safe choice, until
+        // DEFAULT_ENDPOINT itself became "162.159.192.1:2408" in e123adf.)
+        val customEndpoint = "203.0.113.5:2408"
         val account = CloudflareWarpClient().parseRegistration(
             response("engage.example.com:2408"),
             "private-key",
-            "162.159.192.1:2408"
+            customEndpoint
         )
-        assertEquals("162.159.192.1:2408", account.endpoint)
+        assertEquals(customEndpoint, account.endpoint)
     }
 
     @Test
