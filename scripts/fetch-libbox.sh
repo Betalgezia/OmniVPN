@@ -3,9 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VER="v1.14.1-lx.3"
+VER="v1.14.1-lx.8"
 AAR="libbox-${VER#v}.aar"
-EXPECTED_SHA="bc9d313b040931323a5754500e62f5cbe8f5cb09503c44118eef3d0c8cbe83fd"
+EXPECTED_SHA="beab998c9d0a46826db0d654b5315fa6a25d9e1cbf8cb10c547e757444c26d80"
 DEST="app/libs"
 BASE_URL="https://github.com/Leadaxe/sing-box-lx/releases/download/$VER"
 

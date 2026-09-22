@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-$Version = "v1.14.1-lx.3"
+$Version = "v1.14.1-lx.8"
 $AarName = "libbox-$($Version.TrimStart('v')).aar"
-$ExpectedSha = "bc9d313b040931323a5754500e62f5cbe8f5cb09503c44118eef3d0c8cbe83fd"
+$ExpectedSha = "beab998c9d0a46826db0d654b5315fa6a25d9e1cbf8cb10c547e757444c26d80"
 $Destination = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, "..", "app", "libs"))
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) ("omnivpn-libbox-" + [guid]::NewGuid().ToString("N"))
 $Url = "https://github.com/Leadaxe/sing-box-lx/releases/download/$Version/$AarName"
