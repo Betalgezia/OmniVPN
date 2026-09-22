@@ -21,6 +21,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -113,7 +114,7 @@ class NodeHealthChecker @Inject constructor(
                 try {
                     for (node in testable) {
                         val tag = tags[node.id] ?: continue
-                        val health = runUrlTest(client, tag, timeoutMs)
+                        val health = runUrlTestWithRetry(client, tag, timeoutMs)
                         onResult(node, health)
                         if (stopOnFirstReachable && health is NodeHealth.Reachable) break
                     }
@@ -121,8 +122,16 @@ class NodeHealthChecker @Inject constructor(
                     runCatching { client.disconnect() }
                 }
             } finally {
-                runCatching { engine.stop(emitDisconnected = false) }
-                    .onFailure { android.util.Log.w(TAG, "checkAll: engine.stop failed", it) }
+                // NonCancellable: a scan can run for minutes, so the caller's
+                // scope may well be cancelled part-way through (screen closed,
+                // ViewModel cleared). Stopping the engine is itself a suspending
+                // call, so without this it would be skipped the moment the scope
+                // dies - leaving the probe instance running and the next real
+                // connect failing with "sing-box is already running".
+                withContext(NonCancellable) {
+                    runCatching { engine.stop(emitDisconnected = false) }
+                        .onFailure { android.util.Log.w(TAG, "checkAll: engine.stop failed", it) }
+                }
             }
         }
     }
@@ -149,7 +158,42 @@ class NodeHealthChecker @Inject constructor(
     // urlTestOutbound had. Confirmed >0 args are (tag, url, timeoutMs, maxBytes,
     // headers): only doc for this call is the AAR's method signature, so both ints
     // are sized generously enough that a swapped reading of the two is still sane.
-    private suspend fun runUrlTest(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth {
+    /**
+     * One probe, then a second, more patient one if the first merely ran out of
+     * time.
+     *
+     * Measured on a real subscription: working servers answered in 261, 262, 278,
+     * 292, 295, 324, 406, 759, 761, 2204, 3243, 3905 and 4149 ms - a continuum
+     * that already reached within 850ms of the old flat 5s deadline - while 11 of
+     * 13 "dead" verdicts were `context deadline exceeded` rather than a real
+     * protocol failure. In other words the deadline, not the servers, decided a
+     * chunk of those results, and a server that was reported dead connected fine
+     * by hand moments later. A cold probe pays for the handshake to the proxy
+     * *and* the proxy's own connection out to the test URL, so seconds are normal.
+     *
+     * Only timeouts are retried: a refused connection or EOF is an answer, and
+     * repeating it just makes scanning a list of dead servers slower.
+     */
+    private suspend fun runUrlTestWithRetry(client: CommandClient, tag: String, timeoutMs: Int): NodeHealth {
+        val first = probe(client, tag, timeoutMs)
+        if (first !is ProbeOutcome.TimedOut) return first.toHealth()
+        android.util.Log.i(TAG, "runUrlTest: tag=$tag timed out at ${timeoutMs}ms, retrying at ${RETRY_TIMEOUT_MS}ms")
+        return probe(client, tag, RETRY_TIMEOUT_MS).toHealth()
+    }
+
+    private sealed interface ProbeOutcome {
+        data class Reached(val latencyMs: Long) : ProbeOutcome
+        data class TimedOut(val reason: String) : ProbeOutcome
+        data class Failed(val reason: String) : ProbeOutcome
+
+        fun toHealth(): NodeHealth = when (this) {
+            is Reached -> NodeHealth.Reachable(latencyMs)
+            is TimedOut -> NodeHealth.Unreachable(reason)
+            is Failed -> NodeHealth.Unreachable(reason)
+        }
+    }
+
+    private suspend fun probe(client: CommandClient, tag: String, timeoutMs: Int): ProbeOutcome {
         val watchdogMs = (timeoutMs + WATCHDOG_GRACE_MS).toLong()
         val outcome = withTimeoutOrNull(watchdogMs) {
             runCatching {
@@ -160,7 +204,7 @@ class NodeHealthChecker @Inject constructor(
         }
         if (outcome == null) {
             android.util.Log.w(TAG, "runUrlTest: tag=$tag watchdog fired after ${watchdogMs}ms")
-            return NodeHealth.Unreachable("Timed out")
+            return ProbeOutcome.TimedOut("Timed out")
         }
         return outcome.fold(
             onSuccess = { result ->
@@ -173,14 +217,23 @@ class NodeHealthChecker @Inject constructor(
                         "remoteAddr=${result.remoteAddr()}"
                 )
                 if (status == EXPECTED_STATUS && content.isEmpty()) {
-                    NodeHealth.Reachable(elapsed.toLong())
+                    ProbeOutcome.Reached(elapsed.toLong())
                 } else {
-                    NodeHealth.Unreachable("Unexpected response (HTTP $status)")
+                    ProbeOutcome.Failed("Unexpected response (HTTP $status)")
                 }
             },
-            onFailure = {
-                android.util.Log.w(TAG, "runUrlTest: tag=$tag threw", it)
-                NodeHealth.Unreachable(it.message ?: "Test failed")
+            onFailure = { error ->
+                android.util.Log.w(TAG, "runUrlTest: tag=$tag threw", error)
+                val reason = error.message ?: "Test failed"
+                // libbox surfaces the Go error verbatim; a deadline is the one
+                // worth a second, slower look (see runUrlTestWithRetry).
+                if (reason.contains("deadline exceeded", ignoreCase = true) ||
+                    reason.contains("timeout", ignoreCase = true)
+                ) {
+                    ProbeOutcome.TimedOut("Timed out")
+                } else {
+                    ProbeOutcome.Failed(reason)
+                }
             }
         )
     }
@@ -221,7 +274,11 @@ class NodeHealthChecker @Inject constructor(
 
     private companion object {
         const val TAG = "NodeHealthChecker"
-        const val DEFAULT_TIMEOUT_MS = 5000
+        // First pass stays short so a genuinely dead server is written off
+        // quickly; the retry is what gives a slow-but-alive one room (measured
+        // successes already reached 4149ms - see runUrlTestWithRetry).
+        const val DEFAULT_TIMEOUT_MS = 6000
+        const val RETRY_TIMEOUT_MS = 15000
         const val CONNECT_TIMEOUT_MS = 3000L
         const val WATCHDOG_GRACE_MS = 1500
         const val MAX_RESPONSE_BYTES = 8192

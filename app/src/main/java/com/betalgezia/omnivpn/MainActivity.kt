@@ -168,7 +168,13 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("VPN: ${vpnState.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    if (busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    if (busy) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        // Testing a long server list can run for minutes now that
+                        // timeouts get a second, slower attempt - there has to be
+                        // a way to stop without force-quitting the app.
+                        TextButton(onClick = { viewModel.cancelTests() }) { Text("Cancel") }
+                    }
                     if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) {
                         OutlinedButton(onClick = viewModel::stop) { Text("Disconnect") }
                     }
