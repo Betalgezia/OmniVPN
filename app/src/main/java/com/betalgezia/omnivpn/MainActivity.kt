@@ -36,10 +36,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.betalgezia.omnivpn.data.model.Node
+import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
+import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.VpnState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -59,6 +62,7 @@ class MainActivity : ComponentActivity() {
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(viewModel: MainViewModel = hiltViewModel()) {
         val nodes by viewModel.nodes.collectAsStateWithLifecycle()
+        val nodeHealth by viewModel.nodeHealth.collectAsStateWithLifecycle()
         val subscriptions by viewModel.subscriptions.collectAsState()
         val vpnState by viewModel.vpnState.collectAsState()
         val busy by viewModel.busy.collectAsState()
@@ -255,17 +259,38 @@ class MainActivity : ComponentActivity() {
                 if (subscriptions.isNotEmpty()) {
                     Text("Subscriptions", style = MaterialTheme.typography.titleLarge)
                     subscriptions.forEach { subscription ->
-                        SubscriptionRow(subscription, viewModel, enabled = !busy)
+                        SubscriptionRow(
+                            subscription,
+                            viewModel,
+                            enabled = !busy,
+                            testEnabled = !busy && canStartVpn,
+                            onTestAll = { viewModel.checkSubscriptionNodes(subscription) }
+                        )
                     }
                 }
 
-                Text("Servers", style = MaterialTheme.typography.titleLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("Servers", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                    OutlinedButton(
+                        enabled = !busy && canStartVpn && nodes.isNotEmpty(),
+                        onClick = { viewModel.checkAllNodes() }
+                    ) { Text("Check all") }
+                }
+                if (!canStartVpn) {
+                    Text(
+                        "Disconnect the VPN to test servers",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(nodes, key = { it.id }) { node ->
                         NodeCard(
                             node = node,
+                            health = nodeHealth[node.id] ?: NodeHealth.Unknown,
                             enabled = !busy && canStartVpn,
                             deleteEnabled = !busy,
+                            onTest = { viewModel.checkNode(node) },
                             onConnect = {
                                 android.util.Log.i(TAG, "Connect clicked: node=${node.name}")
                                 val intent = viewModel.prepareVpn()
@@ -294,7 +319,9 @@ class MainActivity : ComponentActivity() {
 private fun SubscriptionRow(
     subscription: Subscription,
     viewModel: MainViewModel,
-    enabled: Boolean
+    enabled: Boolean,
+    testEnabled: Boolean,
+    onTestAll: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -305,6 +332,10 @@ private fun SubscriptionRow(
                     onClick = { viewModel.refresh(subscription) },
                     enabled = enabled
                 ) { Text("Refresh") }
+                OutlinedButton(
+                    onClick = onTestAll,
+                    enabled = testEnabled
+                ) { Text("Test all") }
                 OutlinedButton(
                     onClick = { viewModel.delete(subscription) },
                     enabled = enabled
@@ -317,20 +348,32 @@ private fun SubscriptionRow(
 @androidx.compose.runtime.Composable
 private fun NodeCard(
     node: Node,
+    health: NodeHealth,
     enabled: Boolean,
     deleteEnabled: Boolean,
+    onTest: () -> Unit,
     onConnect: () -> Unit,
     onDelete: () -> Unit
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(node.name, style = MaterialTheme.typography.titleMedium)
-                Text("${node.protocol} • ${node.server}:${node.port}")
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(node.name, style = MaterialTheme.typography.titleMedium)
+                    Text("${node.protocol} • ${node.server}:${node.port}")
+                    NodeHealthLabel(health)
+                }
+                OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled) { Text("Delete") }
+                Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
             }
-            OutlinedButton(onClick = { confirmDelete = true }, enabled = deleteEnabled) { Text("Delete") }
-            Button(onClick = onConnect, enabled = enabled) { Text("Connect") }
+            if (node.protocol != Protocol.WARP) {
+                OutlinedButton(
+                    onClick = onTest,
+                    enabled = enabled && health != NodeHealth.Checking,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Test") }
+            }
         }
     }
     if (confirmDelete) {
@@ -350,6 +393,18 @@ private fun NodeCard(
         )
     }
 }
+
+@androidx.compose.runtime.Composable
+private fun NodeHealthLabel(health: NodeHealth) {
+    val (text, color) = when (health) {
+        is NodeHealth.Unknown -> return
+        is NodeHealth.Checking -> "Testing…" to MaterialTheme.colorScheme.onSurfaceVariant
+        is NodeHealth.Reachable -> "● ${health.latencyMs} ms" to Color(0xFF2E7D32)
+        is NodeHealth.Unreachable -> "● Unreachable: ${health.reason}" to MaterialTheme.colorScheme.error
+    }
+    Text(text, color = color, style = MaterialTheme.typography.bodySmall)
+}
+
 private fun MainActivity.readImportedFile(uri: Uri, onResult: (Result<String>) -> Unit) {
     lifecycleScope.launch(Dispatchers.IO) {
         val result = runCatching {

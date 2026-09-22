@@ -155,4 +155,62 @@ class SingBoxConfigBuilderTest {
     @Test fun invalidPortIsRejectedBeforeCore() {
         assertFailsWith<IllegalArgumentException> { SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=70000, uuid="00000000-0000-0000-0000-000000000003")) }
     }
+
+    @Test fun probeConfigHasNoTunAndUniqueTagsPerNode() {
+        val vless = Node(id=1, name="a", protocol=Protocol.VLESS, server="one.example", port=443, uuid="00000000-0000-0000-0000-000000000001")
+        val trojan = Node(id=2, name="b", protocol=Protocol.TROJAN, server="two.example", port=443, password="secret")
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(vless, trojan))
+
+        assertTrue(probe.buildErrors.isEmpty())
+        assertEquals(setOf(1L, 2L), probe.tagsByNodeId.keys)
+        assertEquals(2, probe.tagsByNodeId.values.toSet().size, "tags must be unique per node")
+
+        val config = JSONObject(requireNotNull(probe.json))
+        assertFalse(config.has("inbounds"))
+        assertFalse(config.has("tun"))
+        assertFalse(config.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
+        assertEquals("dns-local", config.getJSONObject("route").getString("default_domain_resolver"))
+        val outbounds = (0 until config.getJSONArray("outbounds").length())
+            .map { config.getJSONArray("outbounds").getJSONObject(it) }
+        assertTrue(outbounds.any { it.getString("tag") == "direct" })
+        assertTrue(outbounds.any { it.getString("tag") == probe.tagsByNodeId.getValue(1) })
+        assertTrue(outbounds.any { it.getString("tag") == probe.tagsByNodeId.getValue(2) })
+    }
+
+    @Test fun probeConfigSkipsWarpEntirely() {
+        val warp = Node(id=1, name="warp", protocol=Protocol.WARP, server="162.159.192.1", port=2408)
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(warp))
+
+        assertTrue(probe.tagsByNodeId.isEmpty())
+        assertTrue(probe.buildErrors.isEmpty())
+        assertEquals(null, probe.json)
+    }
+
+    @Test fun probeConfigReportsOneBadNodeWithoutDroppingTheRest() {
+        val broken = Node(id=1, name="broken", protocol=Protocol.VLESS, server="example.com", port=443, uuid="")
+        val ok = Node(id=2, name="ok", protocol=Protocol.TROJAN, server="two.example", port=443, password="secret")
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(broken, ok))
+
+        assertTrue(probe.buildErrors.containsKey(1))
+        assertEquals(setOf(2L), probe.tagsByNodeId.keys)
+        val config = JSONObject(requireNotNull(probe.json))
+        assertFalse(config.getJSONArray("outbounds").toString().contains("example.com"))
+    }
+
+    @Test fun probeConfigBuildsAwgEndpointWithDirectDetour() {
+        val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
+            .put("private_key","base64-private")
+            .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
+                .put("public_key","base64-public").put("allowed_ips", JSONArray().put("0.0.0.0/0"))))
+            .toString()
+        val awg = Node(id=5, name="awg", protocol=Protocol.AMNEZIAWG, server="203.0.113.10", port=51820, privateKey="base64-private", rawConfig=raw)
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(awg))
+
+        assertTrue(probe.buildErrors.isEmpty())
+        val config = JSONObject(requireNotNull(probe.json))
+        val endpoint = config.getJSONArray("endpoints").getJSONObject(0)
+        assertEquals(probe.tagsByNodeId.getValue(5), endpoint.getString("tag"))
+        assertEquals("direct", endpoint.getString("detour"))
+        assertTrue(config.getJSONArray("outbounds").toString().contains("\"direct\""))
+    }
 }
