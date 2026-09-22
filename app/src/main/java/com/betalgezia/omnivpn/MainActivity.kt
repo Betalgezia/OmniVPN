@@ -57,7 +57,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -121,6 +120,7 @@ class MainActivity : ComponentActivity() {
         val message by viewModel.message.collectAsStateWithLifecycle()
         val activeConnection by viewModel.activeConnection.collectAsStateWithLifecycle()
         val searchingFastest by viewModel.searchingFastest.collectAsStateWithLifecycle()
+        val testingAllFull by viewModel.testingAllFull.collectAsStateWithLifecycle()
         val nodeHealth by viewModel.nodeHealth.collectAsStateWithLifecycle()
         val canStartVpn = vpnState == VpnState.DISCONNECTED ||
             vpnState == VpnState.ERROR ||
@@ -287,14 +287,6 @@ class MainActivity : ComponentActivity() {
         val clipboardManager = LocalClipboardManager.current
 
         Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("OmniVPN") },
-                    actions = {
-                        TextButton(onClick = { sheetVisible = true }) { Text("Settings") }
-                    }
-                )
-            },
             snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { padding ->
             Column(
@@ -304,7 +296,24 @@ class MainActivity : ComponentActivity() {
                     .padding(horizontal = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(Modifier.height(12.dp))
+                // Replaces the old TopAppBar: no title bar at all now, just
+                // this one small icon reachable at a glance - see the
+                // September 2026 header-removal redesign. "OmniVPN" itself
+                // moved into the hero button's own background instead of
+                // sitting up here (see HeroConnectButton).
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    IconTapTarget(onClick = { sheetVisible = true }) {
+                        HamburgerGlyph(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
 
                 HeroConnectButton(
                     accent = hero.accent,
@@ -342,12 +351,35 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(18.dp))
 
-                Text(
-                    "Servers (${subscriptionNodes.size})",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
-                )
+                ) {
+                    Text(
+                        "Servers (${subscriptionNodes.size})",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // Small icon on the other side of the label from the
+                    // September 2026 feedback: a one-tap thorough (FULL mode)
+                    // check of every subscription server, independent of the
+                    // Settings sheet's test-mode toggle - see
+                    // MainViewModel.testAllSubscriptionsFull().
+                    IconTapTarget(
+                        onClick = { viewModel.testAllSubscriptionsFull() },
+                        enabled = !busy && canStartVpn && subscriptionNodes.isNotEmpty()
+                    ) {
+                        if (testingAllFull) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            FullTestGlyph(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
 
                 if (subscriptionNodes.isEmpty()) {
                     Box(
@@ -496,6 +528,21 @@ private fun HeroConnectButton(
 
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
+            // Faint wordmark deep behind the button, from the September 2026
+            // header-removal redesign: dropping the TopAppBar removed the
+            // one place "OmniVPN" used to be shown, so it moves here -
+            // oversized and very low-alpha so it reads as texture behind the
+            // glow/ring rather than as text anyone needs to read. Declared
+            // first so it paints at the bottom of this Box's z-order; this
+            // Box stays a fixed 200.dp (see .size below) and simply lets the
+            // oversized text paint past those bounds, which Compose allows
+            // by default (Box does not clip its children).
+            Text(
+                "OMNIVPN",
+                style = MaterialTheme.typography.displayMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f),
+                maxLines = 1
+            )
             // Soft outer glow: a larger, low-alpha radial gradient behind the
             // real button, pulsing gently while busy. A layered gradient
             // rather than Modifier.shadow()'s colour params - it reads as a
@@ -580,6 +627,271 @@ private fun PowerGlyph(color: Color, modifier: Modifier = Modifier) {
             end = Offset(center.x, center.y - radius * 0.1f),
             strokeWidth = strokeWidth,
             cap = StrokeCap.Round
+        )
+    }
+}
+
+/**
+ * A small tappable icon control used everywhere the app wants an icon-only
+ * action (menu, full test, add, subscription-row actions) - a plain clip +
+ * background + clickable circle rather than Material3's IconButton, matching
+ * how the rest of the app already builds tap targets (see HeroConnectButton,
+ * WarpPillButton) instead of pulling in IconButton's ripple/indication
+ * defaults sight-unseen with no compiler available to check the result.
+ */
+@androidx.compose.runtime.Composable
+private fun IconTapTarget(
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    content: @androidx.compose.runtime.Composable () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.08f else 0.04f))
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        content()
+    }
+}
+
+/**
+ * Three equal bars - opens the Settings sheet. Replaces the old TopAppBar's
+ * "Settings" text button (see the September 2026 header-removal redesign).
+ * Plain background rectangles rather than Canvas: three straight equal bars
+ * need nothing beyond what Modifier.background/clip already give for free.
+ */
+@androidx.compose.runtime.Composable
+private fun HamburgerGlyph(color: Color, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        repeat(3) {
+            Box(
+                modifier = Modifier
+                    .width(18.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(color)
+            )
+        }
+    }
+}
+
+/**
+ * Circle + checkmark - "thoroughly verified". Shared by the main screen's
+ * full-test icon, the Settings sheet's test-mode row and each subscription
+ * row's "test all" action, so the one glyph always means the same thing
+ * (see the September 2026 icon-menu redesign).
+ */
+@androidx.compose.runtime.Composable
+private fun FullTestGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.12f
+        val radius = size.minDimension / 2f * 0.82f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawCircle(
+            color = color,
+            radius = radius,
+            center = center,
+            style = Stroke(width = strokeWidth)
+        )
+        val checkStart = Offset(center.x - radius * 0.45f, center.y)
+        val checkMid = Offset(center.x - radius * 0.05f, center.y + radius * 0.4f)
+        val checkEnd = Offset(center.x + radius * 0.5f, center.y - radius * 0.35f)
+        drawLine(color = color, start = checkStart, end = checkMid, strokeWidth = strokeWidth, cap = StrokeCap.Round)
+        drawLine(color = color, start = checkMid, end = checkEnd, strokeWidth = strokeWidth, cap = StrokeCap.Round)
+    }
+}
+
+/** A "+" - adds whatever the adjacent field holds (a subscription URL, a pasted config). */
+@androidx.compose.runtime.Composable
+private fun PlusGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.16f
+        val half = size.minDimension * 0.32f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawLine(
+            color = color,
+            start = Offset(center.x - half, center.y),
+            end = Offset(center.x + half, center.y),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(center.x, center.y - half),
+            end = Offset(center.x, center.y + half),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/** A ">" chevron - "connect / go", used on the WARP endpoint field's inline action. */
+@androidx.compose.runtime.Composable
+private fun ArrowGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.16f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val half = size.minDimension * 0.28f
+        drawLine(
+            color = color,
+            start = Offset(center.x - half * 0.6f, center.y - half),
+            end = Offset(center.x + half * 0.6f, center.y),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(center.x + half * 0.6f, center.y),
+            end = Offset(center.x - half * 0.6f, center.y + half),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/** A simple document outline with two text lines - "import from file". */
+@androidx.compose.runtime.Composable
+private fun FileGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.09f
+        val bodyWidth = size.width * 0.64f
+        val bodyHeight = size.height * 0.82f
+        val topLeft = Offset((size.width - bodyWidth) / 2f, (size.height - bodyHeight) / 2f)
+        drawRoundRect(
+            color = color,
+            topLeft = topLeft,
+            size = Size(bodyWidth, bodyHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth * 0.12f),
+            style = Stroke(width = strokeWidth)
+        )
+        val lineInset = bodyWidth * 0.2f
+        val lineY1 = topLeft.y + bodyHeight * 0.42f
+        val lineY2 = topLeft.y + bodyHeight * 0.64f
+        drawLine(
+            color = color,
+            start = Offset(topLeft.x + lineInset, lineY1),
+            end = Offset(topLeft.x + bodyWidth - lineInset, lineY1),
+            strokeWidth = strokeWidth * 0.8f,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(topLeft.x + lineInset, lineY2),
+            end = Offset(topLeft.x + bodyWidth - lineInset * 1.9f, lineY2),
+            strokeWidth = strokeWidth * 0.8f,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/** Two concentric rings + a center dot - "scan for a working endpoint". */
+@androidx.compose.runtime.Composable
+private fun TargetGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.1f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val outerRadius = size.minDimension / 2f * 0.86f
+        drawCircle(color = color, radius = outerRadius, center = center, style = Stroke(width = strokeWidth))
+        drawCircle(color = color, radius = outerRadius * 0.5f, center = center, style = Stroke(width = strokeWidth))
+        drawCircle(color = color, radius = outerRadius * 0.14f, center = center)
+    }
+}
+
+/** An "!" - marks the destructive "Reset WARP account" row. */
+@androidx.compose.runtime.Composable
+private fun WarningGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.13f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawLine(
+            color = color,
+            start = Offset(center.x, size.height * 0.18f),
+            end = Offset(center.x, size.height * 0.58f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawCircle(color = color, radius = strokeWidth * 0.6f, center = Offset(center.x, size.height * 0.78f))
+    }
+}
+
+/** Two opposing arcs - "refresh/resync", used on each subscription row. */
+@androidx.compose.runtime.Composable
+private fun RefreshGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.12f
+        val radius = size.minDimension / 2f * 0.7f
+        val topLeft = Offset(size.width / 2f - radius, size.height / 2f - radius)
+        val arcSize = Size(radius * 2f, radius * 2f)
+        drawArc(
+            color = color,
+            startAngle = -150f,
+            sweepAngle = 210f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+        drawArc(
+            color = color,
+            startAngle = 30f,
+            sweepAngle = 210f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+    }
+}
+
+/** An "X" - removes a server or a subscription. */
+@androidx.compose.runtime.Composable
+private fun DeleteGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.14f
+        val inset = size.minDimension * 0.24f
+        drawLine(
+            color = color,
+            start = Offset(inset, inset),
+            end = Offset(size.width - inset, size.height - inset),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width - inset, inset),
+            end = Offset(inset, size.height - inset),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/** Two overlapping rings - a simplified chain link, marks a subscription. */
+@androidx.compose.runtime.Composable
+private fun LinkGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = size.minDimension * 0.14f
+        val radius = size.minDimension * 0.28f
+        val centerY = size.height / 2f
+        drawCircle(
+            color = color,
+            radius = radius,
+            center = Offset(size.width * 0.38f, centerY),
+            style = Stroke(width = strokeWidth)
+        )
+        drawCircle(
+            color = color,
+            radius = radius,
+            center = Offset(size.width * 0.62f, centerY),
+            style = Stroke(width = strokeWidth)
         )
     }
 }
@@ -676,11 +988,13 @@ private fun WarpPillButton(
 }
 
 /**
- * Compact "add a subscription" control, kept to the one thing the main
- * screen wants: a subscription URL. Pasting a raw config or picking a file
- * both moved to the Settings sheet (see SecondarySheetContent) - those are
- * one-off/power-user actions, not the everyday "I got a new subscription
- * link" case this is for.
+ * Compact "add a subscription" control: one row, the URL field with the
+ * existing "Paste" text action plus a small "+" icon inline as its trailing
+ * content - no separate full-width button underneath any more (see the
+ * September 2026 feedback asking for this field to take up less room).
+ * Pasting a raw config or picking a file both stay in the Settings sheet
+ * (see SecondarySheetContent) - those are one-off/power-user actions, not
+ * the everyday "I got a new subscription link" case this is for.
  */
 @androidx.compose.runtime.Composable
 private fun AddSubscriptionRow(
@@ -691,32 +1005,39 @@ private fun AddSubscriptionRow(
     onPasteFromClipboard: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            enabled = enabled,
-            label = { Text("Subscription URL") },
-            trailingIcon = {
+    val addEnabled = enabled && value.isNotBlank()
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        enabled = enabled,
+        placeholder = {
+            Text("Subscription URL", style = MaterialTheme.typography.bodyMedium)
+        },
+        trailingIcon = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Paste",
                     style = MaterialTheme.typography.labelMedium,
                     color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .clickable(enabled = enabled, onClick = onPasteFromClipboard)
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 )
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(8.dp))
-        Button(
-            onClick = onAdd,
-            enabled = enabled && value.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Add subscription") }
-    }
+                IconTapTarget(
+                    onClick = onAdd,
+                    enabled = addEnabled,
+                    modifier = Modifier.padding(end = 2.dp)
+                ) {
+                    PlusGlyph(
+                        color = if (addEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        },
+        modifier = modifier
+    )
 }
 
 /**
@@ -901,12 +1222,120 @@ private fun ServerRow(
 }
 
 /**
- * Everything demoted off the main screen by the redesign: importing a raw
- * config/file, WARP troubleshooting tools, subscription management and
- * configs imported outside a subscription. Reads straight from [viewModel]
- * like SubscriptionRow already did rather than having a dozen values
- * threaded in from the caller; only the bits that need the Activity's
- * permission-launcher/file-picker/clipboard are passed in.
+ * One row in the redesigned Settings sheet: a tinted icon chip, a title with
+ * an optional subtitle, and optional trailing content - the shared shape
+ * every settings action uses now instead of the old expand/collapse
+ * sections (see the September 2026 icon-menu redesign).
+ */
+@androidx.compose.runtime.Composable
+private fun SettingsRow(
+    glyph: @androidx.compose.runtime.Composable () -> Unit,
+    tint: Color,
+    title: String,
+    subtitle: String? = null,
+    enabled: Boolean = true,
+    trailing: (@androidx.compose.runtime.Composable () -> Unit)? = null,
+    onClick: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val contentAlpha = if (enabled) 1f else 0.4f
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(tint.copy(alpha = 0.14f * contentAlpha))
+            ) { glyph() }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+                )
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+                    )
+                }
+            }
+            if (trailing != null) {
+                Spacer(Modifier.width(8.dp))
+                trailing()
+            }
+        }
+    }
+}
+
+/** The Quick/Full segmented control used by the Settings sheet's "Test mode" row. */
+@androidx.compose.runtime.Composable
+private fun TestModeToggle(
+    mode: TestMode,
+    enabled: Boolean,
+    onChange: (TestMode) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(2.dp)
+    ) {
+        TestModeOption(
+            label = "Quick",
+            selected = mode == TestMode.QUICK,
+            enabled = enabled,
+            onClick = { onChange(TestMode.QUICK) }
+        )
+        TestModeOption(
+            label = "Full",
+            selected = mode == TestMode.FULL,
+            enabled = enabled,
+            onClick = { onChange(TestMode.FULL) }
+        )
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun TestModeOption(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * Everything demoted off the main screen by the September 2026 redesign:
+ * importing a raw config/file, WARP troubleshooting tools, subscription
+ * management and configs imported outside a subscription. Restructured
+ * again the same month into a flat, icon-led list of SettingsRows (no more
+ * expand/collapse sections) per follow-up feedback asking for the whole
+ * architecture to change, not just the visual surface. Reads straight from
+ * [viewModel] like SubscriptionRow already did rather than having a dozen
+ * values threaded in from the caller; only the bits that need the
+ * Activity's permission-launcher/file-picker/clipboard are passed in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @androidx.compose.runtime.Composable
@@ -937,16 +1366,13 @@ private fun SecondarySheetContent(
     // (sourceId != null), so these need a home too.
     val importedNodes = nodes.filter { it.sourceId == null }
 
-    var importExpanded by remember { mutableStateOf(false) }
-    var warpToolsExpanded by remember { mutableStateOf(false) }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
             .navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             Text("Settings", style = MaterialTheme.typography.titleLarge)
@@ -969,59 +1395,119 @@ private fun SecondarySheetContent(
         }
 
         item {
-            CollapsibleSection(
-                title = "Import config or file",
-                expanded = importExpanded,
-                onToggle = { importExpanded = !importExpanded }
-            ) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = onInputChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    label = { Text("Paste a config") },
-                    placeholder = { Text("vless://… / trojan://… / JSON / YAML") }
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(onClick = onImport, enabled = !busy && input.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Import") }
-                    OutlinedButton(onClick = onPickFile, enabled = !busy, modifier = Modifier.weight(1f)) { Text("File") }
+            SettingsRow(
+                glyph = {
+                    FullTestGlyph(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                },
+                tint = MaterialTheme.colorScheme.primary,
+                title = "Test mode",
+                subtitle = if (testMode == TestMode.QUICK) {
+                    "Quick: port only - a pass doesn't prove the proxy works"
+                } else {
+                    "Full: a real request through the server - slow but honest"
+                },
+                trailing = {
+                    TestModeToggle(
+                        mode = testMode,
+                        enabled = !busy,
+                        onChange = { viewModel.setTestMode(it) }
+                    )
                 }
-            }
+            )
         }
 
         item {
-            CollapsibleSection(
-                title = "Cloudflare WARP tools",
-                expanded = warpToolsExpanded,
-                onToggle = { warpToolsExpanded = !warpToolsExpanded }
-            ) {
-                OutlinedTextField(
-                    value = warpEndpointInput,
-                    onValueChange = onWarpEndpointChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Endpoint override (optional)") },
-                    placeholder = { Text("162.159.192.1:2408") }
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        enabled = !busy && canStartVpn,
-                        onClick = onWarpWithOverride,
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Connect with override") }
-                    OutlinedButton(
-                        enabled = !busy && canStartVpn,
-                        onClick = onFindWarpEndpoint,
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Find endpoint") }
+            Text(
+                "Add a server",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            val importEnabled = !busy && input.isNotBlank()
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                enabled = !busy,
+                placeholder = { Text("vless://… · trojan://… · JSON · YAML") },
+                trailingIcon = {
+                    IconTapTarget(onClick = onImport, enabled = importEnabled) {
+                        PlusGlyph(
+                            color = if (importEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
-                TextButton(enabled = !busy && canStartVpn, onClick = onResetWarpRequested) { Text("Reset WARP account") }
-            }
+            )
+        }
+        item {
+            SettingsRow(
+                glyph = { FileGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                title = "Import from file",
+                subtitle = "Pick a config file from your device",
+                enabled = !busy,
+                onClick = onPickFile
+            )
+        }
+
+        item {
+            Text(
+                "Cloudflare WARP",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            val warp = OmniVpnStatusColors.warp
+            val connectEnabled = !busy && canStartVpn
+            OutlinedTextField(
+                value = warpEndpointInput,
+                onValueChange = onWarpEndpointChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                enabled = !busy,
+                placeholder = { Text("Endpoint override · 162.159.192.1:2408") },
+                trailingIcon = {
+                    IconTapTarget(onClick = onWarpWithOverride, enabled = connectEnabled) {
+                        ArrowGlyph(
+                            color = if (connectEnabled) warp else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            )
+        }
+        item {
+            SettingsRow(
+                glyph = { TargetGlyph(color = OmniVpnStatusColors.warp, modifier = Modifier.size(18.dp)) },
+                tint = OmniVpnStatusColors.warp,
+                title = "Find working endpoint",
+                subtitle = "Scan Cloudflare's anycast IPs for one that connects",
+                enabled = !busy && canStartVpn,
+                onClick = onFindWarpEndpoint
+            )
+        }
+        item {
+            SettingsRow(
+                glyph = { WarningGlyph(color = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) },
+                tint = MaterialTheme.colorScheme.error,
+                title = "Reset WARP account",
+                subtitle = "Discards the saved account, registers a new one",
+                enabled = !busy && canStartVpn,
+                onClick = onResetWarpRequested
+            )
         }
 
         if (subscriptions.isNotEmpty()) {
             item {
-                Text("Subscriptions (${subscriptions.size})", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Subscriptions (${subscriptions.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             items(subscriptions, key = { it.id }) { subscription ->
                 SubscriptionRow(
@@ -1035,30 +1521,11 @@ private fun SecondarySheetContent(
         }
 
         item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    if (testMode == TestMode.QUICK) {
-                        "Manual test: port only - a pass doesn't prove the proxy works"
-                    } else {
-                        "Manual test: real request through the server - slow but honest"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    enabled = !busy,
-                    onClick = { viewModel.setTestMode(if (testMode == TestMode.QUICK) TestMode.FULL else TestMode.QUICK) }
-                ) { Text(if (testMode == TestMode.QUICK) "Quick" else "Full") }
-            }
-        }
-
-        item {
-            Text("Imported configs (${importedNodes.size})", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Imported configs (${importedNodes.size})",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         if (importedNodes.isEmpty()) {
             item {
@@ -1083,33 +1550,6 @@ private fun SecondarySheetContent(
     }
 }
 
-// Plain text disclosure triangle rather than Icons.Default.ExpandMore/Less: pulling
-// in the material-icons artifact for one glyph isn't worth a new dependency.
-@androidx.compose.runtime.Composable
-private fun CollapsibleSection(
-    title: String,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    content: @androidx.compose.runtime.Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(if (expanded) "▾" else "▸", style = MaterialTheme.typography.titleMedium)
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        }
-        if (expanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
-        }
-    }
-}
-
 @androidx.compose.runtime.Composable
 private fun SubscriptionRow(
     subscription: Subscription,
@@ -1123,28 +1563,41 @@ private fun SubscriptionRow(
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(subscription.name, style = MaterialTheme.typography.titleMedium)
-            Text(
-                subscription.url,
-                maxLines = 1,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { viewModel.refresh(subscription) },
-                    enabled = enabled
-                ) { Text("Refresh") }
-                OutlinedButton(
-                    onClick = onTestAll,
-                    enabled = testEnabled
-                ) { Text("Test all") }
-                OutlinedButton(
-                    onClick = { viewModel.delete(subscription) },
-                    enabled = enabled
-                ) { Text("Delete") }
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                ) {
+                    LinkGlyph(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(subscription.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(
+                        subscription.url,
+                        maxLines = 1,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                IconTapTarget(onClick = { viewModel.refresh(subscription) }, enabled = enabled) {
+                    RefreshGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                }
+                Spacer(Modifier.width(4.dp))
+                IconTapTarget(onClick = onTestAll, enabled = testEnabled) {
+                    FullTestGlyph(color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                }
+                Spacer(Modifier.width(4.dp))
+                IconTapTarget(onClick = { viewModel.delete(subscription) }, enabled = enabled) {
+                    DeleteGlyph(color = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                }
             }
         }
     }

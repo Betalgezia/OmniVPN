@@ -78,6 +78,13 @@ class MainViewModel @Inject constructor(
     private val _searchingFastest = MutableStateFlow(false)
     val searchingFastest: StateFlow<Boolean> = _searchingFastest.asStateFlow()
 
+    // Same idea as _searchingFastest, for the small "full test" icon next to
+    // the main screen's "Servers" label (see the September 2026 redesign) -
+    // distinct from _busy so that icon's own spinner only shows for its own
+    // action, not e.g. while a subscription is being added.
+    private val _testingAllFull = MutableStateFlow(false)
+    val testingAllFull: StateFlow<Boolean> = _testingAllFull.asStateFlow()
+
     // Server tests and the WARP endpoint search share this: both drive the one
     // sing-box engine, so they can never overlap anyway, and both can run long
     // enough that the user needs a way out.
@@ -285,6 +292,49 @@ class MainViewModel @Inject constructor(
             } finally {
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
                 _searchingFastest.value = false
+                _busy.value = false
+            }
+        }
+    }
+
+    /**
+     * Tests every subscription server in TestMode.FULL regardless of the
+     * _testMode toggle - the small icon next to the main screen's "Servers"
+     * label (see the September 2026 redesign). FULL is hardcoded here for
+     * the mirror-image reason connectFastest() hardcodes QUICK: that button's
+     * whole point is a fast default, this one's whole point is a thorough
+     * check without having to first go into Settings and flip the toggle.
+     * Shares testJob/canTestNow() with the other test actions for the same
+     * single-engine reason documented on connectFastest().
+     */
+    fun testAllSubscriptionsFull() {
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before testing servers"
+            return
+        }
+        val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
+        if (candidates.isEmpty()) {
+            _message.value = "No subscription servers yet - add a subscription first"
+            return
+        }
+        testJob?.cancel()
+        testJob = viewModelScope.launch {
+            _busy.value = true
+            _testingAllFull.value = true
+            _nodeHealth.update { current -> current + candidates.associate { it.id to NodeHealth.Checking } }
+            try {
+                nodeHealthChecker.checkAll(candidates, mode = TestMode.FULL) { node, health ->
+                    _nodeHealth.update { it + (node.id to health) }
+                }
+            } catch (cancelled: CancellationException) {
+                _message.value = "Test cancelled"
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(TAG, "testAllSubscriptionsFull: failed", t)
+                _message.value = t.message ?: "Server test failed"
+            } finally {
+                _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
+                _testingAllFull.value = false
                 _busy.value = false
             }
         }
