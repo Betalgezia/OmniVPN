@@ -14,7 +14,15 @@ import org.json.JSONObject
 data class ProbeConfig(
     val json: String?,
     val tagsByNodeId: Map<Long, String>,
-    val buildErrors: Map<Long, String>
+    val buildErrors: Map<Long, String>,
+    /**
+     * Tag of an outbound that cannot possibly work (it dials a closed port on
+     * loopback). Probing it is how the caller checks its own instrument: if a
+     * request through *this* comes back successful, then the probe never went
+     * through the named outbound at all, and every other verdict in the batch is
+     * measuring the phone's own connection rather than the server.
+     */
+    val sentinelTag: String
 )
 
 object SingBoxConfigBuilder {
@@ -27,15 +35,13 @@ object SingBoxConfigBuilder {
             .put("final", proxyTag)
 
         val root = JSONObject()
-            // "debug" (was "info") while we're still chasing the "connects but no
-            // traffic passes" symptom: at "info" the device logs only showed
-            // AndroidLocalDns (the app's own system-DNS bootstrap, bound outside the
-            // tunnel) and protect() calls - neither says anything about whether the
-            // proxy/endpoint outbound itself ever dialed or completed a handshake. At
-            // "debug" libbox additionally logs each inbound connection and its routing
-            // decision on the OmniVpnService "[libbox] ..." channel, which is what we
-            // actually need to see. Safe to turn back down to "info" once resolved.
-            .put("log", JSONObject().put("level", "debug"))
+            // Back to "info" from the "debug" used while chasing the "connects but
+            // no traffic passes" symptom. That investigation is done, and debug is
+            // not free on a phone: a 4-minute session logged every routing decision
+            // and every XtlsPadding/Unpadding block - thousands of lines of per-packet
+            // tracing. "info" still carries what diagnosis actually needs (each
+            // inbound/outbound connection, DNS exchanges, errors with their cause).
+            .put("log", JSONObject().put("level", "info"))
             .put("dns", buildDns())
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
@@ -57,6 +63,25 @@ object SingBoxConfigBuilder {
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
             })
+
+        // Without this the fakeip table lives only in memory, so every reconnect
+        // starts with an empty one while apps still hold DNS answers from the
+        // previous session pointing at 198.18.x.x. Those connections then arrive
+        // with no domain to recover and die - the core says so itself, once per
+        // affected connection: "missing fakeip record, try enable
+        // experimental.cache_file" (21 of them in one 4-minute session on-device,
+        // right after switching servers). Persisting the table is what makes a
+        // reconnect not look like "connected, but nothing loads".
+        root.put(
+            "experimental",
+            JSONObject().put(
+                "cache_file",
+                JSONObject()
+                    .put("enabled", true)
+                    .put("path", CACHE_FILE_NAME)
+                    .put("store_fakeip", true)
+            )
+        )
 
         if (endpointMode) {
             root.put("endpoints", JSONArray().put(buildAmneziaWgEndpoint(node)))
@@ -98,8 +123,15 @@ object SingBoxConfigBuilder {
                 errors[node.id] = it.message ?: "Invalid configuration"
             }
         }
-        if (tags.isEmpty()) return ProbeConfig(null, emptyMap(), errors)
+        if (tags.isEmpty()) return ProbeConfig(null, emptyMap(), errors, SENTINEL_TAG)
 
+        // Control outbound - see ProbeConfig.sentinelTag. A closed port on
+        // loopback refuses instantly, so checking it costs nothing.
+        outbounds.put(JSONObject()
+            .put("type", "vless").put("tag", SENTINEL_TAG)
+            .put("server", "127.0.0.1").put("server_port", 1)
+            .put("uuid", "00000000-0000-0000-0000-000000000000")
+            .put("network", "tcp"))
         outbounds.put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
         val root = JSONObject()
             .put("log", JSONObject().put("disabled", true))
@@ -107,7 +139,7 @@ object SingBoxConfigBuilder {
             .put("route", JSONObject().put("default_domain_resolver", LOCAL_DNS_TAG))
             .put("outbounds", outbounds)
         if (endpoints.length() > 0) root.put("endpoints", endpoints)
-        return ProbeConfig(root.toString(), tags, errors)
+        return ProbeConfig(root.toString(), tags, errors, SENTINEL_TAG)
     }
 
     private fun buildProbeDns(): JSONObject = JSONObject()
@@ -162,6 +194,7 @@ object SingBoxConfigBuilder {
                 put("server_port", node.port.requirePort())
                 put("uuid", node.uuid)
                 if (!has("tls") && !has("transport")) put("network", "tcp")
+                enforceBrowserTlsFingerprint(this)
             }
     }
 
@@ -173,6 +206,7 @@ object SingBoxConfigBuilder {
                 put("server_port", node.port.requirePort())
                 put("password", node.password)
                 if (!has("tls")) put("tls", JSONObject().put("enabled", true).put("server_name", node.server))
+                enforceBrowserTlsFingerprint(this)
             }
     }
 
@@ -268,6 +302,34 @@ object SingBoxConfigBuilder {
             .forEach { (key, value) -> if (!value.isNullOrBlank()) target.put(key, value) }
     }
 
+    /**
+     * Makes sure a TCP-TLS outbound presents a browser's TLS ClientHello (uTLS)
+     * rather than Go's.
+     *
+     * Without this, an imported Trojan/VLESS node that didn't specify a
+     * fingerprint handshakes with crypto/tls' own ClientHello, whose JA3/JA4 is
+     * both distinctive and well-published - it marks the connection as "not a
+     * browser" on the very first packet, before any of the protocol's own
+     * obfuscation gets a chance to matter. Reality already requires uTLS; this
+     * extends the same treatment to plain-TLS nodes.
+     *
+     * Deliberately not applied to Hysteria2: it is QUIC, where sing-box uses its
+     * own TLS stack and uTLS does not apply.
+     */
+    private fun enforceBrowserTlsFingerprint(outbound: JSONObject) {
+        val tls = outbound.optJSONObject("tls") ?: return
+        if (!tls.optBoolean("enabled", false)) return
+        val utls = tls.optJSONObject("utls")
+        if (utls == null) {
+            tls.put("utls", JSONObject().put("enabled", true).put("fingerprint", DEFAULT_TLS_FINGERPRINT))
+            return
+        }
+        utls.put("enabled", true)
+        if (utls.optString("fingerprint").lowercase().trim() !in TLS_FINGERPRINTS) {
+            utls.put("fingerprint", DEFAULT_TLS_FINGERPRINT)
+        }
+    }
+
     private fun sanitizeVless(outbound: JSONObject) {
         val flow = outbound.optString("flow")
         val hasTransportObject = outbound.optJSONObject("transport") != null
@@ -326,10 +388,30 @@ object SingBoxConfigBuilder {
         // rule below, for the A/AAAA queries the tun's hijack-dns actually
         // needs faked; anything else (e.g. the DNS server's own bootstrap)
         // still falls through to dns-local.
-        .put("rules", JSONArray().put(JSONObject()
-            .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
-            .put("action", "route")
-            .put("server", FAKE_IP_DNS_TAG)))
+        .put("rules", JSONArray().apply {
+            put(JSONObject()
+                .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
+                .put("action", "route")
+                .put("server", FAKE_IP_DNS_TAG))
+            // HTTPS/SVCB (type 65) used to fall through to "final" = dns-local,
+            // which resolves on the physical interface, outside the tunnel (see
+            // the note above) - and Chrome and the Android resolver query it for
+            // virtually every connection, so a DPI box on the path got a
+            // plaintext list of every domain visited, and got to answer it.
+            //
+            // Refused rather than forwarded over DoH-through-the-tunnel, which
+            // was the first attempt here: a client that gets no HTTPS record
+            // immediately falls back to plain A/AAAA (fakeip, answered on-device,
+            // never leaves it), whereas a forwarded query stalls for the full DNS
+            // timeout whenever that resolver isn't reachable through the proxy in
+            // use - which showed up as pages hanging. Refusing closes the same
+            // leak without ever being able to stall. The cost is ECH, which needs
+            // the HTTPS record; fakeip plus TLS sniffing covers the routing that
+            // record would otherwise inform.
+            put(JSONObject()
+                .put("query_type", JSONArray().apply { put("HTTPS"); put("SVCB") })
+                .put("action", "reject"))
+        })
         .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         .put("reverse_mapping", true)
@@ -342,8 +424,19 @@ object SingBoxConfigBuilder {
     private const val AWG_TAG = "awg"
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
+    private const val CACHE_FILE_NAME = "cache.db"
+    private const val SENTINEL_TAG = "probe-sentinel"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
+
+    private const val DEFAULT_TLS_FINGERPRINT = "chrome"
+    // Kept in step with ConfigParser.VALID_FINGERPRINTS: a fingerprint that
+    // survived import must not be second-guessed and downgraded here.
+    private val TLS_FINGERPRINTS = setOf(
+        "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
+        "chrome_pq", "chrome_pq_psk", "chrome", "firefox", "edge",
+        "safari", "360", "qq", "ios", "android", "random", "randomized"
+    )
 
     private val AWG_ENDPOINT_FIELDS = setOf(
         "system", "name", "mtu", "address", "private_key", "listen_port", "workers",

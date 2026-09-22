@@ -45,6 +45,7 @@ import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
+import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
     private fun OmniVpnScreen(viewModel: MainViewModel = hiltViewModel()) {
         val nodes by viewModel.nodes.collectAsStateWithLifecycle()
         val nodeHealth by viewModel.nodeHealth.collectAsStateWithLifecycle()
+        val testMode by viewModel.testMode.collectAsStateWithLifecycle()
         val subscriptions by viewModel.subscriptions.collectAsState()
         val vpnState by viewModel.vpnState.collectAsState()
         val busy by viewModel.busy.collectAsState()
@@ -168,7 +170,13 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("VPN: ${vpnState.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    if (busy) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    if (busy) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        // Testing a long server list can run for minutes now that
+                        // timeouts get a second, slower attempt - there has to be
+                        // a way to stop without force-quitting the app.
+                        TextButton(onClick = { viewModel.cancelTests() }) { Text("Cancel") }
+                    }
                     if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) {
                         OutlinedButton(onClick = viewModel::stop) { Text("Disconnect") }
                     }
@@ -243,6 +251,11 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f)
                         ) { Text("Reset WARP") }
                     }
+                    OutlinedButton(
+                        enabled = !busy && canStartVpn,
+                        onClick = { viewModel.findWarpEndpoint() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Find working endpoint") }
                 }
 
                 if (confirmResetWarp) {
@@ -318,6 +331,30 @@ class MainActivity : ComponentActivity() {
                         enabled = !busy && canStartVpn && nodes.isNotEmpty(),
                         onClick = { viewModel.checkAllNodes() }
                     ) { Text("Check all") }
+                }
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (testMode == TestMode.QUICK) {
+                            "Quick test: port only - a pass doesn't prove the proxy works"
+                        } else {
+                            "Full test: real request through the server - slow but honest"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        enabled = !busy,
+                        onClick = {
+                            viewModel.setTestMode(
+                                if (testMode == TestMode.QUICK) TestMode.FULL else TestMode.QUICK
+                            )
+                        }
+                    ) { Text(if (testMode == TestMode.QUICK) "Quick" else "Full") }
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(nodes, key = { it.id }) { node ->

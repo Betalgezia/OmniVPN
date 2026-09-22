@@ -156,6 +156,83 @@ class SingBoxConfigBuilderTest {
         assertFailsWith<IllegalArgumentException> { SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=70000, uuid="00000000-0000-0000-0000-000000000003")) }
     }
 
+    @Test fun httpsQueriesAreRefusedSoTheyNeverLeaveTheDevice() {
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
+        val dns = config.getJSONObject("dns")
+        val rules = (0 until dns.getJSONArray("rules").length()).map { dns.getJSONArray("rules").getJSONObject(it) }
+
+        // Refused, not forwarded: a forwarded query stalls for the full DNS
+        // timeout whenever the upstream isn't reachable through the proxy in
+        // use, which showed up as pages hanging. Refusing makes clients fall
+        // straight back to A/AAAA, which fakeip answers on-device.
+        val httpsRule = rules.first { it.optJSONArray("query_type")?.toString()?.contains("HTTPS") == true }
+        assertEquals("reject", httpsRule.getString("action"))
+
+        // A/AAAA must stay on fakeip - answered on-device, never leaks.
+        val addressRule = rules.first { it.getJSONArray("query_type").toString().contains("\"A\"") }
+        assertEquals("dns-fakeip", addressRule.getString("server"))
+
+        // No upstream resolver reachable only through the tunnel: nothing left
+        // that can stall when the proxy is down.
+        assertFalse(dns.getJSONArray("servers").toString().contains("dns-remote"))
+    }
+
+    @Test fun fakeipMappingsSurviveAReconnect() {
+        // Regression guard for "connected, but nothing loads" right after
+        // switching servers: apps still hold DNS answers pointing at 198.18.x.x
+        // from the previous session, and with an in-memory-only fakeip table the
+        // new engine has no record for them. The core names this itself, once per
+        // broken connection - "missing fakeip record, try enable
+        // experimental.cache_file" - 21 times in one measured session.
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
+        val cache = config.getJSONObject("experimental").getJSONObject("cache_file")
+        assertTrue(cache.getBoolean("enabled"))
+        assertTrue(cache.getBoolean("store_fakeip"))
+        assertTrue(cache.getString("path").isNotBlank())
+    }
+
+    @Test fun probeConfigCarriesASentinelThatCannotSucceed() {
+        val node = Node(id=1, name="a", protocol=Protocol.VLESS, server="one.example", port=443, uuid="00000000-0000-0000-0000-000000000001")
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(node))
+        val config = JSONObject(requireNotNull(probe.json))
+
+        val sentinel = (0 until config.getJSONArray("outbounds").length())
+            .map { config.getJSONArray("outbounds").getJSONObject(it) }
+            .first { it.getString("tag") == probe.sentinelTag }
+        // Loopback, port 1: refused instantly, so checking it is nearly free -
+        // and if a request through it ever *succeeds*, the probe isn't going
+        // through the named outbound at all and no verdict can be trusted.
+        assertEquals("127.0.0.1", sentinel.getString("server"))
+        assertEquals(1, sentinel.getInt("server_port"))
+        assertFalse(probe.tagsByNodeId.values.contains(probe.sentinelTag))
+    }
+
+    @Test fun trojanWithoutAFingerprintStillHandshakesAsABrowser() {
+        // Regression guard: this used to fall through to Go's own ClientHello,
+        // whose JA3/JA4 identifies the connection as non-browser immediately.
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="t", protocol=Protocol.TROJAN, server="example.com", port=443, password="secret")))
+        val utls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls").getJSONObject("utls")
+        assertTrue(utls.getBoolean("enabled"))
+        assertEquals("chrome", utls.getString("fingerprint"))
+    }
+
+    @Test fun anImportedFingerprintIsKeptRatherThanOverridden() {
+        val raw = JSONObject().put("type","vless").put("server","raw.example").put("server_port",443)
+            .put("uuid","raw-uuid")
+            .put("tls", JSONObject().put("enabled", true).put("server_name","example.com")
+                .put("utls", JSONObject().put("enabled", true).put("fingerprint","firefox")))
+            .toString()
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="v", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000009", rawConfig=raw)))
+        val utls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls").getJSONObject("utls")
+        assertEquals("firefox", utls.getString("fingerprint"))
+    }
+
+    @Test fun hysteria2IsLeftAloneBecauseUtlsDoesNotApplyToQuic() {
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="h", protocol=Protocol.HYSTERIA2, server="example.com", port=443, password="secret")))
+        val tls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls")
+        assertFalse(tls.has("utls"))
+    }
+
     @Test fun probeConfigHasNoTunAndUniqueTagsPerNode() {
         val vless = Node(id=1, name="a", protocol=Protocol.VLESS, server="one.example", port=443, uuid="00000000-0000-0000-0000-000000000001")
         val trojan = Node(id=2, name="b", protocol=Protocol.TROJAN, server="two.example", port=443, password="secret")
