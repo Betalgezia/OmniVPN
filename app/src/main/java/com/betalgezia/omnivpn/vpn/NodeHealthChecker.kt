@@ -22,6 +22,8 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -137,26 +139,21 @@ class NodeHealthChecker @Inject constructor(
             }
 
             try {
-                val client = connectCommandClient()
+                val sentinelClient = connectCommandClient()
                 try {
                     // Check the instrument before trusting it - see
                     // ProbeConfig.sentinelTag. Costs one refused connection.
-                    val sentinel = probeOnce(client, probe.sentinelTag, SENTINEL_TIMEOUT_MS)
+                    val sentinel = probeOnce(sentinelClient, probe.sentinelTag, SENTINEL_TIMEOUT_MS)
                     if (sentinel is ProbeOutcome.Reached) {
                         error(
                             "Test aborted: a request through a deliberately dead outbound succeeded, " +
                                 "so probes are not going through the servers at all"
                         )
                     }
-                    for (node in testable) {
-                        val tag = tags[node.id] ?: continue
-                        val health = runUrlTestWithRetry(client, tag, timeoutMs)
-                        onResult(node, health)
-                        if (stopOnFirstReachable && health is NodeHealth.Reachable) break
-                    }
                 } finally {
-                    runCatching { client.disconnect() }
+                    runCatching { sentinelClient.disconnect() }
                 }
+                probeInParallel(testable, tags, timeoutMs, stopOnFirstReachable, onResult)
             } finally {
                 // NonCancellable: a scan can run for minutes, so the caller's
                 // scope may well be cancelled part-way through (screen closed,
@@ -167,6 +164,61 @@ class NodeHealthChecker @Inject constructor(
                 withContext(NonCancellable) {
                     runCatching { engine.stop(emitDisconnected = false) }
                         .onFailure { android.util.Log.w(TAG, "checkAll: engine.stop failed", it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs the probes a few at a time instead of strictly one after another.
+     *
+     * Sequential probing made a real list unusable: 26 servers, each costing up to
+     * 6s and a further 15s if it needs the slow retry, is minutes of staring at a
+     * blocked UI - the on-device run this was measured against got cancelled after
+     * 22 seconds.
+     *
+     * Each worker gets *its own* CommandClient rather than sharing one across
+     * threads: libbox's is a native handle whose thread-safety isn't documented,
+     * and a client is only a connection to the same command server, so this stays
+     * on the documented path instead of gambling on concurrent calls into one.
+     */
+    private suspend fun probeInParallel(
+        testable: List<Node>,
+        tags: Map<Long, String>,
+        timeoutMs: Int,
+        stopOnFirstReachable: Boolean,
+        onResult: suspend (Node, NodeHealth) -> Unit
+    ) {
+        val queue = testable.filter { tags.containsKey(it.id) }
+        if (queue.isEmpty()) return
+        val nextIndex = java.util.concurrent.atomic.AtomicInteger(0)
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val resultLock = Mutex()
+
+        coroutineScope {
+            repeat(minOf(PROBE_CONCURRENCY, queue.size)) {
+                launch(Dispatchers.IO) {
+                    val client = runCatching { connectCommandClient() }.getOrElse {
+                        android.util.Log.w(TAG, "probeInParallel: worker client failed", it)
+                        return@launch
+                    }
+                    try {
+                        while (!done.get()) {
+                            val index = nextIndex.getAndIncrement()
+                            if (index >= queue.size) break
+                            val node = queue[index]
+                            val health = runUrlTestWithRetry(client, tags.getValue(node.id), timeoutMs)
+                            // Serialised so callers see one result at a time even
+                            // though several probes are in flight.
+                            resultLock.withLock { onResult(node, health) }
+                            if (stopOnFirstReachable && health is NodeHealth.Reachable) {
+                                done.set(true)
+                                break
+                            }
+                        }
+                    } finally {
+                        runCatching { client.disconnect() }
+                    }
                 }
             }
         }
@@ -358,7 +410,8 @@ class NodeHealthChecker @Inject constructor(
         // quickly; the retry is what gives a slow-but-alive one room (measured
         // successes already reached 4149ms - see runUrlTestWithRetry).
         const val DEFAULT_TIMEOUT_MS = 6000
-        const val RETRY_TIMEOUT_MS = 15000
+        const val RETRY_TIMEOUT_MS = 12000
+        const val PROBE_CONCURRENCY = 4
         const val QUICK_TIMEOUT_MS = 3000
         const val SENTINEL_TIMEOUT_MS = 4000
         const val CONNECT_TIMEOUT_MS = 3000L

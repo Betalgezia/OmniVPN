@@ -177,6 +177,20 @@ class SingBoxConfigBuilderTest {
         assertFalse(dns.getJSONArray("servers").toString().contains("dns-remote"))
     }
 
+    @Test fun fakeipMappingsSurviveAReconnect() {
+        // Regression guard for "connected, but nothing loads" right after
+        // switching servers: apps still hold DNS answers pointing at 198.18.x.x
+        // from the previous session, and with an in-memory-only fakeip table the
+        // new engine has no record for them. The core names this itself, once per
+        // broken connection - "missing fakeip record, try enable
+        // experimental.cache_file" - 21 times in one measured session.
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=443, uuid="00000000-0000-0000-0000-000000000001")))
+        val cache = config.getJSONObject("experimental").getJSONObject("cache_file")
+        assertTrue(cache.getBoolean("enabled"))
+        assertTrue(cache.getBoolean("store_fakeip"))
+        assertTrue(cache.getString("path").isNotBlank())
+    }
+
     @Test fun probeConfigCarriesASentinelThatCannotSucceed() {
         val node = Node(id=1, name="a", protocol=Protocol.VLESS, server="one.example", port=443, uuid="00000000-0000-0000-0000-000000000001")
         val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(node))

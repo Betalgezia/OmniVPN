@@ -35,15 +35,13 @@ object SingBoxConfigBuilder {
             .put("final", proxyTag)
 
         val root = JSONObject()
-            // "debug" (was "info") while we're still chasing the "connects but no
-            // traffic passes" symptom: at "info" the device logs only showed
-            // AndroidLocalDns (the app's own system-DNS bootstrap, bound outside the
-            // tunnel) and protect() calls - neither says anything about whether the
-            // proxy/endpoint outbound itself ever dialed or completed a handshake. At
-            // "debug" libbox additionally logs each inbound connection and its routing
-            // decision on the OmniVpnService "[libbox] ..." channel, which is what we
-            // actually need to see. Safe to turn back down to "info" once resolved.
-            .put("log", JSONObject().put("level", "debug"))
+            // Back to "info" from the "debug" used while chasing the "connects but
+            // no traffic passes" symptom. That investigation is done, and debug is
+            // not free on a phone: a 4-minute session logged every routing decision
+            // and every XtlsPadding/Unpadding block - thousands of lines of per-packet
+            // tracing. "info" still carries what diagnosis actually needs (each
+            // inbound/outbound connection, DNS exchanges, errors with their cause).
+            .put("log", JSONObject().put("level", "info"))
             .put("dns", buildDns())
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
@@ -65,6 +63,25 @@ object SingBoxConfigBuilder {
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
             })
+
+        // Without this the fakeip table lives only in memory, so every reconnect
+        // starts with an empty one while apps still hold DNS answers from the
+        // previous session pointing at 198.18.x.x. Those connections then arrive
+        // with no domain to recover and die - the core says so itself, once per
+        // affected connection: "missing fakeip record, try enable
+        // experimental.cache_file" (21 of them in one 4-minute session on-device,
+        // right after switching servers). Persisting the table is what makes a
+        // reconnect not look like "connected, but nothing loads".
+        root.put(
+            "experimental",
+            JSONObject().put(
+                "cache_file",
+                JSONObject()
+                    .put("enabled", true)
+                    .put("path", CACHE_FILE_NAME)
+                    .put("store_fakeip", true)
+            )
+        )
 
         if (endpointMode) {
             root.put("endpoints", JSONArray().put(buildAmneziaWgEndpoint(node)))
@@ -407,6 +424,7 @@ object SingBoxConfigBuilder {
     private const val AWG_TAG = "awg"
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
+    private const val CACHE_FILE_NAME = "cache.db"
     private const val SENTINEL_TAG = "probe-sentinel"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
