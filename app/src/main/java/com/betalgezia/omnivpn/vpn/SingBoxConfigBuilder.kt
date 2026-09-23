@@ -192,6 +192,53 @@ object SingBoxConfigBuilder {
                     // Not yet on-device tested past this reasoning - see the
                     // commit message for what the next log needs to show.
                     //
+                    // Source check (this round): pointed at
+                    // github.com/Leadaxe/sing-box-lx - it is public, contrary
+                    // to what every earlier round of this comment assumed.
+                    // dns/router.go's matchDNS/walkDNSRules never hand back a
+                    // transport whose Type() is DNSTypeFakeIP unless BOTH some
+                    // rule (or the config's own "final") resolves to one AND
+                    // the caller's allowFakeIP is true for that call -
+                    // confirmed by reading resolveDNSRoute and
+                    // TransportManager.Create/Default directly, the latter of
+                    // which refuses outright to ever set a fakeip-typed
+                    // transport as default. With none registered at all (this
+                    // round), every such lookup fails closed - "transport not
+                    // found" - so nothing in dns/router.go can hand this
+                    // session a 198.18.x.x/fc00::-range answer, confirmed from
+                    // the actual source rather than inferred from what logs
+                    // didn't show. What is still not pinned down is the exact
+                    // mechanism behind the v5 log above: matchDNS's own
+                    // no-match fallback returns TransportManager.Default(),
+                    // which Create() already refused to ever let be fakeip,
+                    // and actionResolve's own lookup hard-overrides the
+                    // transport to dns-local, bypassing rule matching
+                    // entirely - neither path this reading found should have
+                    // been able to produce that log line under v5's config.
+                    // Left unresolved rather than guessed at; it no longer
+                    // changes this round's correctness, only the understanding
+                    // of v5's failure, since removing the declaration closes
+                    // every path this source reading found regardless of
+                    // which one actually fired.
+                    //
+                    // Also confirmed from source, and relevant to attempts
+                    // 1/2's race further up: route/dns.go's HijackDNSPacket
+                    // ("lx:begin/end dns-hijack-async", "SPEC 046") runs every
+                    // hijacked query on its own goroutine - up to 256
+                    // concurrent, unordered, dropping past that limit - a
+                    // deliberate fork change so one slow/dead DNS transport
+                    // can't stall the whole packet loop. That is a genuine,
+                    // documented fork mechanism for many near-simultaneous
+                    // queries for the same domain to race each other, for
+                    // exactly the bursty feed/video-app pattern (Instagram/
+                    // YouTube) the on-device logs kept pointing at - it does
+                    // not by itself explain why fakeip specifically won that
+                    // race (dnsCacheKey includes transportTag, so a same-
+                    // domain cache collision between two different transports
+                    // was already ruled out by inspection), but it confirms
+                    // the concurrency half of that theory was never just a
+                    // guess.
+                    //
                     // "resolve" (no disable_cache - there is no live fakeip answer
                     // left in *this* session to race against, so caching its real
                     // answer is safe and helps the next connection to the same

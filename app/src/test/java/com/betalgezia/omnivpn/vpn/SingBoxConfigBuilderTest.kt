@@ -253,8 +253,11 @@ class SingBoxConfigBuilderTest {
         // resolve's reverse-mapping lookup really was doing genuine work for
         // at least some of this traffic, not just sitting there harmlessly -
         // consistent with, though not proof of, a volume-sensitive mechanism
-        // neither this log nor the unvendored sing-box-lx source can fully
-        // explain. What every failing case had in common was simpler: a
+        // this log alone couldn't fully explain. (Update: the fork source at
+        // github.com/Leadaxe/sing-box-lx turned out to be public - see
+        // build()'s route.rules comment for what reading dns/router.go and
+        // route/dns.go against this exact log confirmed and what it still
+        // couldn't pin down.) What every failing case had in common was simpler: a
         // fakeip server declared in dns.servers at all. v4 kept one declared
         // because review could not rule out "resolve" needing it to
         // recognize a stale destination as fake - the CIDR backstop asserted
