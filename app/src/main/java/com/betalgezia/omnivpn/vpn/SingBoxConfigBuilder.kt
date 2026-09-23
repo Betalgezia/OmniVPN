@@ -250,10 +250,37 @@ object SingBoxConfigBuilder {
                     // and resolving to an AAAA the endpoint has no local IPv6
                     // address to send from is its own failure mode ("missing
                     // IPv6 local address", also seen on-device).
+                    //
+                    // Round 8: server changed from dns-local to dns-tunnel.
+                    // Round 7 fixed endpointMode's main A/AAAA path (dns.rules,
+                    // in buildDns()) but never touched this rule - a separate
+                    // mechanism that only fires when a connection reaches the
+                    // tun with a destination this session's own DNS never
+                    // produced (see the "stale destination" reasoning above).
+                    // An on-device log taken specifically to confirm the round 7
+                    // fix showed dns.rules working (every fresh A/AAAA query
+                    // correctly routed to dns-tunnel, real answers for
+                    // g.whatsapp.net/youtubei.googleapis.com/etc.), but this
+                    // "resolve" call still occasionally handed back a fake-ip-
+                    // range destination for a small, bounded set of domains -
+                    // scontent-*.cdninstagram.com, graph.instagram.com and the
+                    // like - caught cleanly by the CIDR backstop below, with
+                    // the same app succeeding against a real IP on retry a few
+                    // seconds later. Same leak round 7 closed, different call
+                    // site: dns-local always resolves via the platform
+                    // interface on Android, so this rule's own re-resolution
+                    // was still reaching the LAN's own resolver - the one
+                    // rewriting Meta/YouTube domains to fake-ip in the first
+                    // place - instead of asking through the tunnel like
+                    // everything else in this session now does. Pointing it at
+                    // dns-tunnel closes that gap; nothing else about the rule
+                    // changes, including that it stays a no-op for a
+                    // destination that's already real. Not yet on-device
+                    // tested.
                     put(JSONObject()
                         .put("inbound", JSONArray().put(TUN_TAG))
                         .put("action", "resolve")
-                        .put("server", LOCAL_DNS_TAG)
+                        .put("server", TUNNEL_DNS_TAG)
                         .put("strategy", "prefer_ipv4"))
                     // Backstop for whatever "resolve" didn't catch - deliberately
                     // independent of the resolve/fake-ip-recognition uncertainty
@@ -645,6 +672,96 @@ object SingBoxConfigBuilder {
                 put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                     .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
             }
+            // Round 7. Round 6 is correct and stays: reconfirmed from the
+            // actual sing-box-lx source (dns/router.go, route/route.go,
+            // dns/transport_manager.go - every fake-ip decision point gates on
+            // a transport whose Type() is DNSTypeFakeIP, and TransportManager
+            // only ever sets that field from a config-declared fakeip server;
+            // with none declared for endpointMode, nothing in this session can
+            // mint a 198.18.x.x/fc00::-range answer, full stop). What round 6
+            // did not fix, because it isn't a sing-box bug: dns-local, on
+            // Android, always resolves via the platform interface, which
+            // always goes out the raw underlying network (see "final" below,
+            // and AndroidPlatformInterface) - never through the tun, regardless
+            // of auto_route/strict_route. For endpointMode that is not a brief
+            // bootstrap window, it is every A/AAAA query for the whole session
+            // (see dns.rules below - nothing else resolves endpointMode's real
+            // traffic). Whatever DNS server actually answers on the WiFi
+            // network the phone is joined to - not this app - gets every
+            // domain the user visits, in clear text, and its answer is taken
+            // at face value.
+            //
+            // An on-device log against a real WiFi network (one with an
+            // AmneziaWG interface already configured on the router for its own
+            // block-bypassing, the kind of setup this app's own vpn-aggregator
+            // work also builds) showed precisely that: g.whatsapp.net,
+            // graph.facebook.com, youtubei.googleapis.com and the rest of
+            // Meta/YouTube's API/infra hosts came back 198.18.0.x - fake-ip's
+            // default range, but also mihomo's default range, and mihomo was
+            // never ruled out as what is actually answering on that network -
+            // while www.google.com, Reddit, Yandex, Kaspersky and AppsFlyer
+            // resolved to ordinary real addresses on the same log, seconds
+            // apart. A resolver a few network hops away with its own
+            // domain-specific rules explains a split exactly along service
+            // lines; nothing sing-box does in this session could. This is also
+            // the most likely retroactive explanation for the "v5 mystery" the
+            // round 6 comment above left unresolved (a fresh query coming back
+            // fake-ip through no path source-reading could find) - not a
+            // sing-box mechanism nobody could locate, but this same LAN
+            // behavior showing through, indistinguishable at the time because
+            // the address shape happens to match sing-box's own fake-ip
+            // convention. It is also the likely reason a phone's standalone
+            // AmneziaWG app (not this one) stays unaffected on the same
+            // network: a well-behaved WireGuard client resolves DNS through
+            // its own tunnel to a fixed resolver rather than asking whatever
+            // the LAN hands it - exactly what this server adds for this app.
+            //
+            // dns-tunnel is a second, real (never fake-ip) resolver, reached
+            // only through the awg endpoint's own tunnel via detour (endpoint
+            // tags resolve as valid detour targets - confirmed from source,
+            // adapter/outbound/manager.go's Outbound(tag): a miss against the
+            // plain outbound table falls through to endpointManager.Get(tag)).
+            // Nothing about the endpoint's own bootstrap changes: the peer
+            // address in "endpoints" is already a literal IP by the time this
+            // JSON is built (resolved earlier, outside this session's DNS
+            // entirely - see buildAmneziaWgEndpoint), so this server has no
+            // chicken-and-egg problem to solve, only ongoing app traffic to
+            // carry.
+            //
+            // Deliberately not a "group" server racing dns-tunnel against
+            // dns-local for a graceful degrade if the awg tunnel is ever
+            // unhealthy - considered and rejected after reading
+            // dns/transport/group/group.go directly. "stable" mode's first
+            // pick (nothing sticky yet) is uniform-random among every clean
+            // member, so on a cold start this would prefer dns-local outright
+            // about half the time and then stay there for the rest of the
+            // session by design (stickiness) - silently defeating this entire
+            // round for roughly half of all connections, non-deterministically.
+            // "fastest" and "parallel" both race every clean member and let
+            // the first answer win; dns-local is a LAN round-trip (the
+            // on-device log above shows 5-90ms) against dns-tunnel's WireGuard
+            // hop, so dns-local wins that race almost every time - same silent
+            // defeat, every mode this transport offers considered. A single
+            // resolver with no fallback is the honest choice instead: DNS for
+            // endpointMode's regular traffic now depends on the awg tunnel
+            // being up, trading a leak that always "worked" for a failure
+            // that is at least visible. That dependency is judged a wash, not
+            // a regression - a dead awg tunnel already fails the resulting
+            // connection either way even with dns-local's real answer in
+            // hand, so nothing that used to actually work stops working; only
+            // the failure's shape changes, from a hung/refused connection to
+            // a DNS error.
+            //
+            // Not yet on-device tested. The next log needs to show the same
+            // Meta/YouTube domains resolving to real addresses over this WiFi
+            // network with WARP/AmneziaWG connected (not 198.18.x.x), and
+            // ordinary connectivity otherwise unaffected - including a cold
+            // connect, to catch any stall while the awg handshake is still in
+            // flight and dns-tunnel's first query has to wait on it.
+            if (endpointMode) {
+                put(JSONObject().put("type", "udp").put("tag", TUNNEL_DNS_TAG)
+                    .put("server", TUNNEL_DNS_SERVER).put("detour", AWG_TAG))
+            }
         })
         // A/AAAA queries must answer from fakeip, not local. "local" resolves
         // via the platform interface, which on Android *always* goes out over
@@ -693,13 +810,25 @@ object SingBoxConfigBuilder {
         // from before the reconnect) - see that rule's comment for the full
         // reasoning, including why no fakeip server is declared here at all
         // now.
+        //
+        // Round 7 correction: "unavoidable here either way" a few paragraphs
+        // up was wrong for ordinary app traffic, right only for the
+        // endpoint's own peer resolution - and even that turns out not to run
+        // through this dns.servers block at all (the peer address is already
+        // a literal IP by the time this JSON is built). The leak described
+        // above is real for this session's own queries specifically (round
+        // 6 racing itself), but nothing required paying it for every other
+        // query endpointMode makes for the rest of the session. See
+        // dns-tunnel in the servers block above and "final" below.
         .put("rules", JSONArray().apply {
-            if (!endpointMode) {
-                put(JSONObject()
-                    .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
-                    .put("action", "route")
-                    .put("server", FAKE_IP_DNS_TAG))
-            }
+            // Round 7: endpointMode gets an explicit A/AAAA rule too now,
+            // pointed at dns-tunnel instead of falling through to "final" -
+            // see the servers block above for why. vless/trojan/hysteria2 is
+            // untouched, still fakeip exactly as before.
+            put(JSONObject()
+                .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
+                .put("action", "route")
+                .put("server", if (endpointMode) TUNNEL_DNS_TAG else FAKE_IP_DNS_TAG))
             // HTTPS/SVCB (type 65) used to fall through to "final" = dns-local,
             // which resolves on the physical interface, outside the tunnel (see
             // the note above) - and Chrome and the Android resolver query it for
@@ -721,7 +850,13 @@ object SingBoxConfigBuilder {
                 .put("query_type", JSONArray().apply { put("HTTPS"); put("SVCB") })
                 .put("action", "reject"))
         })
-        .put("final", LOCAL_DNS_TAG)
+        // Round 7: dns-tunnel for endpointMode (see the servers block above),
+        // dns-local unchanged for vless/trojan/hysteria2. With A/AAAA now
+        // explicitly routed above for both modes, "final" only ever catches
+        // other query types (PTR and the like) - rare in practice, but kept
+        // consistent with each mode's own resolver rather than left on
+        // dns-local by default.
+        .put("final", if (endpointMode) TUNNEL_DNS_TAG else LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
         // Off for endpointMode. reverse_mapping is what let "resolve" recover
         // a domain from a stale fakeip destination with no sniffable
@@ -752,6 +887,12 @@ object SingBoxConfigBuilder {
     private const val SENTINEL_TAG = "probe-sentinel"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
+    private const val TUNNEL_DNS_TAG = "dns-tunnel"
+    // Round 7 (see buildDns()). Cloudflare's own resolver - on-net for WARP
+    // specifically, and a fast, neutral public default for a generic
+    // AmneziaWG server otherwise. Nothing here depends on it being
+    // Cloudflare; swapping it is a one-line change.
+    private const val TUNNEL_DNS_SERVER = "1.1.1.1"
 
     private const val DEFAULT_TLS_FINGERPRINT = "chrome"
     // Kept in step with ConfigParser.VALID_FINGERPRINTS: a fingerprint that

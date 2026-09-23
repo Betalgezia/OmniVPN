@@ -293,7 +293,12 @@ class SingBoxConfigBuilderTest {
         val resolveRule = requireNotNull(
             routeRules.firstOrNull { it.optString("action") == "resolve" }
         ) { "endpointMode must keep a resolve rule as first-attempt fixup for stale/foreign fakeip destinations" }
-        assertEquals("dns-local", resolveRule.getString("server"))
+        // Round 8: dns-local leaked this rule's own re-resolution to the LAN
+        // (same mechanism as the dns.rules leak round 7 closed) - an on-device
+        // log showed it still handing back fake-ip destinations for a bounded
+        // set of Meta CDN domains. Must go through the tunnel like every other
+        // endpointMode resolver now.
+        assertEquals("dns-tunnel", resolveRule.getString("server"))
         assertEquals("prefer_ipv4", resolveRule.getString("strategy"))
         // Not v2's disable_cache: with no fakeip server declared for
         // endpointMode at all (asserted below), there's no live fakeip
@@ -327,9 +332,32 @@ class SingBoxConfigBuilderTest {
             (0 until dnsRules.length()).any { dnsRules.getJSONObject(it).optString("server") == "dns-fakeip" },
             "endpointMode's dns.rules must not route anything to fakeip"
         )
-        // A/AAAA now falls through to "final" = dns-local, same as every
-        // other query type this config doesn't special-case.
-        assertEquals("dns-local", dns.getString("final"))
+        // Round 7: dns-local resolves outside the tunnel on Android (always -
+        // see buildDns()'s comment), so leaving it as endpointMode's own
+        // A/AAAA resolver leaked every domain in clear text to whatever the
+        // physical network's own resolver is, for the whole session - not
+        // fakeip, but the same class of leak, and the actual mechanism behind
+        // an on-device field report of Meta/YouTube domains coming back
+        // 198.18.x.x on a WiFi network with its own fake-ip-based transparent
+        // proxying. A/AAAA must now go to a real resolver reached only
+        // through the awg tunnel itself.
+        val servers = (0 until dns.getJSONArray("servers").length())
+            .map { dns.getJSONArray("servers").getJSONObject(it) }
+        val tunnelServer = requireNotNull(servers.firstOrNull { it.optString("tag") == "dns-tunnel" }) {
+            "endpointMode must declare a tunnel-routed DNS server"
+        }
+        assertEquals("udp", tunnelServer.getString("type"))
+        assertEquals(
+            "awg", tunnelServer.getString("detour"),
+            "dns-tunnel must dial through the awg tunnel, not the raw network"
+        )
+        val addressRule = (0 until dnsRules.length()).map { dnsRules.getJSONObject(it) }
+            .first { it.getJSONArray("query_type").toString().contains("\"A\"") }
+        assertEquals(
+            "dns-tunnel", addressRule.getString("server"),
+            "endpointMode's A/AAAA must resolve through the tunnel, not leak to the LAN"
+        )
+        assertEquals("dns-tunnel", dns.getString("final"))
         // Nothing left to reverse-map with no fakeip server declared.
         assertFalse(dns.getBoolean("reverse_mapping"))
         // The HTTPS/SVCB leak-avoidance reject is unrelated to fakeip and
@@ -365,6 +393,9 @@ class SingBoxConfigBuilderTest {
         assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).optString("action") == "resolve" })
         assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).has("ip_cidr") })
         assertTrue(vlessConfig.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
+        // Round 7 is endpointMode-only: vless/trojan/hysteria2 never gets a
+        // tunnel-routed resolver, still resolves everything via fakeip+sniff.
+        assertFalse(vlessConfig.getJSONObject("dns").getJSONArray("servers").toString().contains("dns-tunnel"))
         // Different cache_id than the AWG config above - the whole point is
         // that these two never resolve to the same cache_file bucket.
         assertEquals(
