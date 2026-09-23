@@ -152,7 +152,7 @@ class SingBoxConfigBuilderTest {
         )
     }
 
-    @Test fun awgNeverRacesItsOwnDnsAndIsolatesItsCacheFromOtherProtocols() {
+    @Test fun awgNeverDeclaresFakeipAndIsolatesItsCacheFromOtherProtocols() {
         // Same regression guard, several rounds in - each earlier version
         // locked in an approach that on-device logs (or, twice, adversarial
         // review before it reached the device again) proved incomplete, so
@@ -229,13 +229,51 @@ class SingBoxConfigBuilderTest {
         // for this session's own legitimate use of it too, on top of the
         // cross-protocol leak.
         //
-        // This version fixes both with the field sing-box documents for
-        // exactly this - cache_id, "enable[s] separate storage for different
-        // configurations sharing the same file path" - so endpointMode gets
-        // its own bucket a vless/trojan/hysteria2 session can never write to
-        // or read from, and vice versa. With that isolation in place there is
-        // no contamination risk left to justify store_fakeip being off, so it
-        // is unconditionally true again, matching every other protocol.
+        // v5 (shipped, tested; this is that config with cache_id added on
+        // top of v4) fixed the cross-session leak with the field sing-box
+        // documents for exactly this - cache_id, "enable[s] separate storage
+        // for different configurations sharing the same file path" - so
+        // endpointMode gets its own bucket a vless/trojan/hysteria2 session
+        // can never write to or read from, and vice versa.
+        //
+        // v6 (this version, not yet on-device tested): a fresh on-device log
+        // of the same live-switch test, taken after v5's cache_id was
+        // already live, showed the cross-session leak was fixed but a
+        // related bug was not: *fresh* endpointMode queries, not just stale
+        // destinations from another session, were still coming back fakeip.
+        // youtubei.googleapis.com's very first lookup in the new session was
+        // "exchanged A youtubei.googleapis.com. 60 IN A 198.18.0.3" - a
+        // brand new allocation, different from the address VLESS's own
+        // bucket had assigned the same domain a minute earlier - straight
+        // out of the resolve rule's own call to dns-local, with no dns.rules
+        // entry routing there. It never recovered for the rest of a
+        // 90-second log. The same pattern hit a dozen other high-traffic
+        // Instagram/YouTube/Meta domains, while quieter ones (single
+        // connections rather than bursts) resolved correctly - meaning
+        // resolve's reverse-mapping lookup really was doing genuine work for
+        // at least some of this traffic, not just sitting there harmlessly -
+        // consistent with, though not proof of, a volume-sensitive mechanism
+        // neither this log nor the unvendored sing-box-lx source can fully
+        // explain. What every failing case had in common was simpler: a
+        // fakeip server declared in dns.servers at all. v4 kept one declared
+        // because review could not rule out "resolve" needing it to
+        // recognize a stale destination as fake - the CIDR backstop asserted
+        // below (which needs nothing from dns.servers) closes the *crash*
+        // risk that concern was really about, but it is a clean rejection,
+        // not a fix-up: for a stale/foreign fakeip destination with nothing
+        // sniffable to identify it, the old declared-fakeip design could
+        // sometimes recover it silently via reverse_mapping the way this
+        // test just confirmed it does for real traffic; the backstop can
+        // only fail that connection once and leave it to the client's retry.
+        // Judged a worthwhile trade against a broader, already-confirmed
+        // failure, not a free improvement. v6 goes back to what v3 wanted
+        // and removes the declaration entirely - not "never routed to",
+        // genuinely absent, so nothing in this session can mint a fakeip
+        // answer for endpointMode to begin with - and turns reverse_mapping
+        // off with it, since there is nothing left to reverse-map.
+        // store_fakeip and cache_id are untouched: harmless no-ops for
+        // endpointMode now, but still exactly what vless/trojan/hysteria2
+        // need.
         val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
             .put("private_key","base64-private")
             .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
@@ -254,10 +292,10 @@ class SingBoxConfigBuilderTest {
         ) { "endpointMode must keep a resolve rule as first-attempt fixup for stale/foreign fakeip destinations" }
         assertEquals("dns-local", resolveRule.getString("server"))
         assertEquals("prefer_ipv4", resolveRule.getString("strategy"))
-        // Not v2's disable_cache: with the fakeip server never routed to for
-        // endpointMode (asserted below), there's no live fakeip answer in
-        // this session to race against, so caching this resolve's real
-        // answer is safe again (and helps the next connection to the same
+        // Not v2's disable_cache: with no fakeip server declared for
+        // endpointMode at all (asserted below), there's no live fakeip
+        // answer in this session to race against, so caching this resolve's
+        // real answer is safe (and helps the next connection to the same
         // domain).
         assertFalse(resolveRule.has("disable_cache") && resolveRule.getBoolean("disable_cache"))
 
@@ -273,22 +311,24 @@ class SingBoxConfigBuilderTest {
         assertTrue(routeRules.indexOf(resolveRule) < routeRules.indexOf(rejectRule))
 
         val dns = config.getJSONObject("dns")
-        // The fakeip server is declared for endpointMode too now (see
-        // buildDns()'s comment for why: resolve's ability to recognize a
-        // fakeip address at all may depend on it) - what actually prevents
-        // the v1/v2 race is that nothing routes a query to it, checked next.
-        assertTrue(
+        // v6: no fakeip server declared for endpointMode at all - see
+        // buildDns()'s comment. Genuinely absent, not just unrouted, is what
+        // makes it impossible for anything in this session to mint a fakeip
+        // answer for endpointMode's own queries.
+        assertFalse(
             dns.getJSONArray("servers").toString().contains("fakeip"),
-            "endpointMode must still declare a fakeip DNS server, for resolve's sake"
+            "endpointMode must not declare a fakeip DNS server at all"
         )
         val dnsRules = dns.getJSONArray("rules")
         assertFalse(
             (0 until dnsRules.length()).any { dnsRules.getJSONObject(it).optString("server") == "dns-fakeip" },
-            "endpointMode's dns.rules must not route anything to fakeip - this is what removes the race"
+            "endpointMode's dns.rules must not route anything to fakeip"
         )
         // A/AAAA now falls through to "final" = dns-local, same as every
         // other query type this config doesn't special-case.
         assertEquals("dns-local", dns.getString("final"))
+        // Nothing left to reverse-map with no fakeip server declared.
+        assertFalse(dns.getBoolean("reverse_mapping"))
         // The HTTPS/SVCB leak-avoidance reject is unrelated to fakeip and
         // must survive untouched for endpointMode too.
         val httpsRule = (0 until dnsRules.length()).map { dnsRules.getJSONObject(it) }
@@ -302,10 +342,10 @@ class SingBoxConfigBuilderTest {
         // shared one cache_file store with no cache_id to tell them apart.
         // endpointMode gets its own id so it can never read back an entry a
         // vless/trojan/hysteria2 session wrote (or vice versa). store_fakeip
-        // is unconditionally true again too - "missing fakeip record" (the
-        // same log) is exactly the reverse-map lookup the resolve rule above
-        // depends on, and there is no contamination risk left to justify
-        // leaving storage off now that the two protocols can't share a bucket.
+        // is unconditionally true, matching every other protocol - a no-op
+        // for endpointMode specifically since v6 (no fakeip server declared
+        // here to ever generate a mapping worth storing), but still exactly
+        // what the vless/trojan/hysteria2 buckets need.
         val cache = config.getJSONObject("experimental").getJSONObject("cache_file")
         assertTrue(cache.getBoolean("enabled"))
         assertEquals("endpoint", cache.getString("cache_id"))

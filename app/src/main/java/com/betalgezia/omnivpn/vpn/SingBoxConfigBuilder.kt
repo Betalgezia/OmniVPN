@@ -126,6 +126,72 @@ object SingBoxConfigBuilder {
                     // fresh queries (see buildDns()'s dns.rules), so it can still
                     // never regenerate the race attempt 1/2 hit.
                     //
+                    // Round 6: a fresh on-device log of the same live VLESS ->
+                    // AmneziaWG switch test (round 5's cache_id already
+                    // isolating the two sessions by then) showed point 2 above
+                    // was the wrong call. It was not a stale cross-session
+                    // destination doing the damage this time - it was *fresh*
+                    // endpointMode queries. youtubei.googleapis.com's very
+                    // first lookup in the new session came back "exchanged A
+                    // youtubei.googleapis.com. 60 IN A 198.18.0.3" - a brand
+                    // new fakeip allocation, different from the address
+                    // VLESS's own cache_id bucket had assigned the same domain
+                    // a minute earlier (198.18.0.13) - straight out of this
+                    // "resolve" rule's own call to dns-local, even though
+                    // nothing in dns.rules routes an endpointMode query to
+                    // fakeip. It never recovered: the same failing lookup
+                    // recurred for the same domain roughly 32 and 40 seconds
+                    // later, still the same address, for the rest of the log.
+                    // The same pattern hit yt3.ggpht.com, redirector.
+                    // googlevideo.com and several other googlevideo.com edges,
+                    // graph.instagram.com, z-m-gateway.facebook.com, e8.
+                    // whatsapp.net - almost exactly the domains a feed/video app
+                    // hits with the most parallel, repeated connections, which
+                    // fits a burst/volume-sensitive mechanism even though it
+                    // doesn't prove one: quieter domains hit by only one or two
+                    // connections at a time (mtalk.google.com, Kaspersky's
+                    // telemetry hosts) also showed the destination-already-
+                    // fakeip pattern from reused connections, but resolve fixed
+                    // every one of those up to a real IP correctly - meaning
+                    // resolve's reverse-mapping lookup (only possible with a
+                    // fakeip server declared) really was doing genuine,
+                    // correct work for at least some of this traffic, not just
+                    // sitting there harmlessly. Exactly how a session with no
+                    // A/AAAA->fakeip routing rule still hands out fresh fakeip
+                    // answers, for some domains and not others, is not
+                    // something this log (or the missing sing-box-lx source)
+                    // can fully explain. But declaring the server at all is
+                    // the one thing every failing lookup has in common, and on
+                    // balance that is judged worse than what removing the
+                    // declaration gives up: point 1 above is now handled by
+                    // cache_id regardless (added for a different bug, round 5,
+                    // but it also means there is no shared bucket left for a
+                    // fakeip mapping to leak through), and point 2's worry -
+                    // that "resolve" needs a declared fakeip server to
+                    // recognize a stale destination as fake - no longer risks
+                    // the *crash* it originally did, now that the CIDR
+                    // backstop below exists: a plain destination-IP range
+                    // check that needs nothing from dns.servers, added *after*
+                    // attempt 3 was shelved, so it was never weighed against
+                    // this choice before. It is not a full substitute, though,
+                    // and the trade is real, not free: for a stale/foreign
+                    // fakeip destination that arrives with nothing sniffable
+                    // (no fresh TLS/QUIC handshake for "sniff" to read), the
+                    // old declared-fakeip design could sometimes recover the
+                    // domain via resolve's reverse-mapping lookup and fix the
+                    // connection up correctly, silently; the CIDR backstop can
+                    // only reject that same connection, once, leaving it to
+                    // the client's own retry - whose fresh DNS query is at
+                    // least now guaranteed real, with no fakeip transport left
+                    // in the session to hand it a fake one again. buildDns()
+                    // now declares no fakeip server at all for endpointMode -
+                    // not "never routed to", genuinely absent - trading that
+                    // narrower, silent fixup capability for eliminating the
+                    // broader, confirmed-severe failure above by construction
+                    // rather than by hoping every path to it has been found.
+                    // Not yet on-device tested past this reasoning - see the
+                    // commit message for what the next log needs to show.
+                    //
                     // "resolve" (no disable_cache - there is no live fakeip answer
                     // left in *this* session to race against, so caching its real
                     // answer is safe and helps the next connection to the same
@@ -147,8 +213,9 @@ object SingBoxConfigBuilder {
                     // above: this is a plain CIDR containment check against the
                     // packet's destination, the most basic and unambiguous
                     // matching sing-box route rules do. 198.18.0.0/15 and
-                    // fc00::/18 are the exact ranges buildDns()'s fakeip server
-                    // uses (both IANA/RFC 6890-reserved, benchmark-testing and
+                    // fc00::/18 are the fixed ranges this app's fakeip servers
+                    // always use, on vless/trojan/hysteria2 sessions if not this
+                    // one (both IANA/RFC 6890-reserved, benchmark-testing and
                     // unique-local space - no legitimate WireGuard peer or CDN
                     // edge is ever going to live there), so this can only ever
                     // match a fakeip address that "resolve" failed to rewrite,
@@ -210,16 +277,15 @@ object SingBoxConfigBuilder {
         // Hysteria2's, so a fakeip-carrying answer one of them cached can never
         // surface on this side again.
         //
-        // store_fakeip is back to unconditionally true (it was `!endpointMode`
-        // in the version that produced the log above) for the same reason the
-        // fakeip server itself stays declared: "missing fakeip record" is
-        // exactly the reverse-map-table-lookup failure the resolve rule below
-        // depends on succeeding, and turning storage off for endpointMode very
-        // plausibly starved that lookup for its own session too, on top of the
-        // cross-protocol contamination cache_id now fixes on its own. With a
-        // separate cache_id there is no contamination risk left to guard
-        // against by leaving it off, so there is no reason left not to match
-        // every other protocol here.
+        // store_fakeip stayed unconditionally true through round 6 too, though
+        // it is now a no-op for endpointMode specifically: round 6 (see
+        // buildDns()) stopped declaring a fakeip server for endpointMode at
+        // all, so there is no fakeip mapping of its own left for this bucket
+        // to ever store. Left on anyway rather than threaded through as a
+        // third `!endpointMode` conditional in this block - matching every
+        // other protocol here is simpler than a flag that only ever matters
+        // for the vless/trojan/hysteria2 buckets, and cache_id already keeps
+        // this bucket from ever writing or reading anything they did.
         root.put(
             "experimental",
             JSONObject().put(
@@ -510,19 +576,28 @@ object SingBoxConfigBuilder {
     private fun buildDns(endpointMode: Boolean): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
-            // Declared for endpointMode too, deliberately, even though nothing in
-            // dns.rules below ever routes an endpointMode query to it: build()'s
-            // route.rules "resolve" action for endpointMode needs this session's
-            // own DNS to still recognize a fakeip-range address as fake at all
-            // (a stale one can still reach the tun - see that rule's comment),
-            // and review could not confirm from source that recognition works
-            // with no fakeip server declared. Keeping the declaration matches the
-            // one config shape already proven on-device (attempts 1 and 2) to
-            // make "resolve" work, without reopening the race those attempts
-            // hit - see the dns.rules comment below for why not routing to it
-            // is what actually matters for that.
-            put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
-                .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
+            // endpointMode does NOT declare a fakeip server at all - round 6's
+            // reversal of round 4's choice to keep one declared "for resolve's
+            // sake" (see build()'s route.rules comment for the on-device
+            // evidence, and for the real capability this trades away rather
+            // than getting for free: with a fakeip server present, *fresh*
+            // endpointMode queries - not just stale ones from another session
+            // - started coming back fakeip too, and never self-corrected for
+            // the rest of a 90-second log; that was judged worse than losing
+            // resolve's ability to silently recover a stale destination with
+            // no sniffable handshake). With no fakeip server anywhere in this
+            // session, nothing can ever hand endpointMode's own DNS traffic a
+            // 198.18.x.x/fc00::-range answer, by construction - not "won't",
+            // "can't". A stale destination arriving from outside this session
+            // (another protocol's leftover connection, a requesting app's own
+            // cache) still gets a clean, fast rejection - see the CIDR
+            // backstop in build(), which needs nothing from this server list
+            // to work, though unlike resolve+reverse_mapping it cannot fix
+            // the connection up, only fail it cleanly for the client to retry.
+            if (!endpointMode) {
+                put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
+                    .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
+            }
         })
         // A/AAAA queries must answer from fakeip, not local. "local" resolves
         // via the platform interface, which on Android *always* goes out over
@@ -559,18 +634,18 @@ object SingBoxConfigBuilder {
         // unavoidable here either way. Answering directly from dns-local
         // removes the race for this session's own queries by removing the
         // duplicate, at the exact same privacy cost this mode already had -
-        // this is the rule below that matters for the race: the fakeip
-        // *server* stays declared just above for endpointMode too, but never
-        // gets a query routed to it, so it can never generate a fresh answer
-        // for THIS session to race against, regardless of why it's declared.
+        // and round 6 removed the fakeip server declaration itself (see the
+        // servers block above), so there is now no fakeip transport anywhere
+        // in this session that could generate a fresh answer to race against,
+        // regardless of routing.
         // build()'s route.rules still carries a "resolve" rule (and a CIDR-
         // based backstop) for endpointMode - not for this race, but as a
         // defensive fixup for a fakeip destination that reaches the tun from
         // *outside* this session's own DNS entirely (another protocol's
-        // fakeip mapping, persisted to the shared cache.db; or a requesting
-        // app's own stale DNS/QUIC cache from before the reconnect) - see
-        // that rule's comment for the full reasoning, including why the
-        // server above is still declared rather than dropped.
+        // leftover connection; a requesting app's own stale DNS/QUIC cache
+        // from before the reconnect) - see that rule's comment for the full
+        // reasoning, including why no fakeip server is declared here at all
+        // now.
         .put("rules", JSONArray().apply {
             if (!endpointMode) {
                 put(JSONObject()
@@ -601,7 +676,16 @@ object SingBoxConfigBuilder {
         })
         .put("final", LOCAL_DNS_TAG)
         .put("strategy", "prefer_ipv4")
-        .put("reverse_mapping", true)
+        // Off for endpointMode. reverse_mapping is what let "resolve" recover
+        // a domain from a stale fakeip destination with no sniffable
+        // handshake to read instead - a real capability, not a dead option
+        // (see build()'s route.rules comment for on-device evidence it did
+        // fix some connections up correctly). It has to go with the fakeip
+        // server above rather than stay on its own: there is nothing left in
+        // this session for it to map a destination back to, and leaving it
+        // on with no fakeip server declared is untested territory this
+        // sandbox cannot check against sing-box-lx's actual validation.
+        .put("reverse_mapping", !endpointMode)
 
     private fun String.requireServer(): String = trim().also { require(it.isNotEmpty()) { "Server is required" } }
     private fun Int.requirePort(): Int = also { require(it in 1..65535) { "Port must be between 1 and 65535" } }
