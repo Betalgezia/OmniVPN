@@ -184,13 +184,42 @@ object SingBoxConfigBuilder {
         // affected connection: "missing fakeip record, try enable
         // experimental.cache_file" (21 of them in one 4-minute session on-device,
         // right after switching servers). Persisting the table is what makes a
-        // reconnect not look like "connected, but nothing loads". Left enabled
-        // for endpointMode too, even though buildDns() never routes an
-        // endpointMode query to its own fakeip server (see there): store_fakeip
-        // is still tied to endpointMode below since that server never answers
-        // anything to persist for this mode either way, but "enabled" itself
-        // guards more than store_fakeip alone (rule-set caching among it), so it
-        // stays on unconditionally rather than guessed at per-flag.
+        // reconnect not look like "connected, but nothing loads".
+        //
+        // cache_id is what actually matters for endpointMode, added after an
+        // on-device log of a live VLESS -> AmneziaWG switch (no disconnect in
+        // between) caught this file without it. This app's cache_file has one
+        // path (CACHE_FILE_NAME) shared by every protocol, with no cache_id -
+        // sing-box's own docs describe cache_id as exactly the field meant to
+        // "enable separate storage for different configurations sharing the
+        // same file path". Without it, the log showed the AmneziaWG session
+        // getting served a DNS answer straight out of VLESS's still-warm cache:
+        // "dns: exchanged A g.whatsapp.net. 60 IN A 198.18.0.25" - a fakeip
+        // address, for a query that buildDns()'s own dns.rules for endpointMode
+        // never route to fakeip at all. The cache short-circuited before this
+        // session's dns.rules were ever consulted, because from the cache's
+        // point of view VLESS and AmneziaWG are the same store. That poisoned
+        // answer then died the moment something tried to actually connect to
+        // it: same log, same few addresses (198.18.0.0, .3, .4, .11, .12, .13,
+        // repeated dozens of times over the full session, never recovering)
+        // failing immediately with "missing fakeip record" - a check that
+        // happens before route.rules even runs, so neither the resolve rule
+        // nor the ip_cidr backstop below ever got a chance at any of them.
+        // Giving endpointMode its own cache_id makes its store_fakeip/store_dns
+        // state (and this stale-answer path) fully separate from VLESS/Trojan/
+        // Hysteria2's, so a fakeip-carrying answer one of them cached can never
+        // surface on this side again.
+        //
+        // store_fakeip is back to unconditionally true (it was `!endpointMode`
+        // in the version that produced the log above) for the same reason the
+        // fakeip server itself stays declared: "missing fakeip record" is
+        // exactly the reverse-map-table-lookup failure the resolve rule below
+        // depends on succeeding, and turning storage off for endpointMode very
+        // plausibly starved that lookup for its own session too, on top of the
+        // cross-protocol contamination cache_id now fixes on its own. With a
+        // separate cache_id there is no contamination risk left to guard
+        // against by leaving it off, so there is no reason left not to match
+        // every other protocol here.
         root.put(
             "experimental",
             JSONObject().put(
@@ -198,7 +227,8 @@ object SingBoxConfigBuilder {
                 JSONObject()
                     .put("enabled", true)
                     .put("path", CACHE_FILE_NAME)
-                    .put("store_fakeip", !endpointMode)
+                    .put("cache_id", if (endpointMode) ENDPOINT_CACHE_ID else DEFAULT_CACHE_ID)
+                    .put("store_fakeip", true)
             )
         )
 
@@ -582,6 +612,12 @@ object SingBoxConfigBuilder {
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
     private const val CACHE_FILE_NAME = "cache.db"
+    // Separate cache_file namespaces (see the comment where these are used) so
+    // an endpointMode (AmneziaWG/WARP) session and a vless/trojan/hysteria2
+    // session sharing CACHE_FILE_NAME never read back each other's cached
+    // fakeip mappings or DNS answers.
+    private const val DEFAULT_CACHE_ID = "default"
+    private const val ENDPOINT_CACHE_ID = "endpoint"
     private const val SENTINEL_TAG = "probe-sentinel"
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"

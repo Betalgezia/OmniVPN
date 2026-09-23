@@ -152,7 +152,7 @@ class SingBoxConfigBuilderTest {
         )
     }
 
-    @Test fun awgNeverRacesItsOwnDnsButStillGuardsStaleFakeipDestinations() {
+    @Test fun awgNeverRacesItsOwnDnsAndIsolatesItsCacheFromOtherProtocols() {
         // Same regression guard, several rounds in - each earlier version
         // locked in an approach that on-device logs (or, twice, adversarial
         // review before it reached the device again) proved incomplete, so
@@ -205,20 +205,37 @@ class SingBoxConfigBuilderTest {
         //     traffic this whole fix is about, with nothing to show for it
         //     in an "info"-level log.
         //
-        // This version keeps what v3 got right - endpointMode's own A/AAAA
-        // queries never route to fakeip (asserted below: dns.rules has no
-        // A/AAAA->fakeip rule), so there is exactly one query per domain and
-        // nothing left to race - but restores the fakeip server declaration
-        // itself (matching the shape already proven on-device in v1/v2 to
-        // make "resolve" work) and adds a plain CIDR-match reject as a
-        // backstop that does not depend on the unverified "resolve"
-        // recognition question at all: if "resolve" doesn't fix up a stale
-        // fakeip destination, the reject rule catches it deterministically
-        // (matching the exact ranges buildDns()'s fakeip server uses) and
-        // fails that one connection fast rather than dialing a black hole -
-        // the client's own retry re-queries DNS and gets a real answer on
-        // the very next attempt, since there's no fakeip in the way for a
-        // fresh endpointMode query either way.
+        // v4 (shipped, tested) kept what v3 got right - endpointMode's own
+        // A/AAAA queries never route to fakeip (asserted below: dns.rules has
+        // no A/AAAA->fakeip rule), so there is exactly one query per domain
+        // and nothing left to race - and answered v3's open question by
+        // restoring the fakeip server declaration (matching the shape already
+        // proven on-device in v1/v2 to make "resolve" work) plus a CIDR-match
+        // reject backstop after it. Shipped without a cache_id, though -
+        // still one shared cache_file bucket for every protocol - and a log
+        // of a live VLESS -> AmneziaWG switch (no disconnect) showed why that
+        // still mattered: "dns: exchanged A g.whatsapp.net. 60 IN A
+        // 198.18.0.25" - a fakeip answer for a query that this session's own
+        // dns.rules never route to fakeip at all, served straight out of
+        // VLESS's still-warm cache, bypassing dns.rules entirely because nothing
+        // told the two sessions apart. Every connection that then tried to use
+        // that address died immediately with "missing fakeip record, try
+        // enable experimental.cache_file" - a check that happens *before*
+        // route.rules runs, so neither the resolve rule nor the CIDR backstop
+        // ever got a chance at any of them (340 of 1196 connections in that
+        // log, the same handful of addresses over and over, never
+        // recovering). The v4 code had also set store_fakeip to
+        // `!endpointMode`, which likely starved that same reverse-map lookup
+        // for this session's own legitimate use of it too, on top of the
+        // cross-protocol leak.
+        //
+        // This version fixes both with the field sing-box documents for
+        // exactly this - cache_id, "enable[s] separate storage for different
+        // configurations sharing the same file path" - so endpointMode gets
+        // its own bucket a vless/trojan/hysteria2 session can never write to
+        // or read from, and vice versa. With that isolation in place there is
+        // no contamination risk left to justify store_fakeip being off, so it
+        // is unconditionally true again, matching every other protocol.
         val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
             .put("private_key","base64-private")
             .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
@@ -278,13 +295,21 @@ class SingBoxConfigBuilderTest {
             .first { it.optJSONArray("query_type")?.toString()?.contains("HTTPS") == true }
         assertEquals("reject", httpsRule.getString("action"))
 
-        // cache_file.store_fakeip: the fakeip server is declared again, but
-        // still never answers anything for endpointMode (nothing routes to
-        // it), so there's still nothing for store_fakeip to persist - stays
-        // off instead of trusting that "true" is a harmless no-op.
+        // cache_id is the fix for a real on-device failure: a live VLESS ->
+        // AmneziaWG switch (no disconnect) fed this session a DNS answer
+        // straight out of VLESS's still-warm cache ("g.whatsapp.net -> fakeip
+        // 198.18.0.25"), bypassing dns.rules entirely, because both sessions
+        // shared one cache_file store with no cache_id to tell them apart.
+        // endpointMode gets its own id so it can never read back an entry a
+        // vless/trojan/hysteria2 session wrote (or vice versa). store_fakeip
+        // is unconditionally true again too - "missing fakeip record" (the
+        // same log) is exactly the reverse-map lookup the resolve rule above
+        // depends on, and there is no contamination risk left to justify
+        // leaving storage off now that the two protocols can't share a bucket.
         val cache = config.getJSONObject("experimental").getJSONObject("cache_file")
         assertTrue(cache.getBoolean("enabled"))
-        assertFalse(cache.getBoolean("store_fakeip"))
+        assertEquals("endpoint", cache.getString("cache_id"))
+        assertTrue(cache.getBoolean("store_fakeip"))
 
         // vless/trojan/hysteria2 are untouched: no resolve rule, no CIDR
         // backstop, still get fakeip+sniff exactly as before endpointMode
@@ -297,6 +322,12 @@ class SingBoxConfigBuilderTest {
         assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).optString("action") == "resolve" })
         assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).has("ip_cidr") })
         assertTrue(vlessConfig.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
+        // Different cache_id than the AWG config above - the whole point is
+        // that these two never resolve to the same cache_file bucket.
+        assertEquals(
+            "default",
+            vlessConfig.getJSONObject("experimental").getJSONObject("cache_file").getString("cache_id")
+        )
     }
 
     @Test fun invalidPortIsRejectedBeforeCore() {
