@@ -42,7 +42,7 @@ object SingBoxConfigBuilder {
             // tracing. "info" still carries what diagnosis actually needs (each
             // inbound/outbound connection, DNS exchanges, errors with their cause).
             .put("log", JSONObject().put("level", "info"))
-            .put("dns", buildDns())
+            .put("dns", buildDns(endpointMode))
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
@@ -52,64 +52,117 @@ object SingBoxConfigBuilder {
                     .put("protocol", "dns")
                     .put("action", "hijack-dns"))
                 if (endpointMode) {
-                    // A WireGuard/AmneziaWG endpoint (this also covers WARP -
-                    // see WarpAccount.toNode, which tags itself AMNEZIAWG)
-                    // routes by real destination IP, not by the sniffed
-                    // domain the way the vless/trojan/hysteria2 outbounds
-                    // above do - it has no notion of "connect to this
-                    // hostname". Every connection here started as a fakeip
-                    // address (buildDns answers every A/AAAA query from
-                    // dns-fakeip), so without this rule the core has a
-                    // destination it structurally cannot dial through a
-                    // WireGuard peer and, for UDP, refuses outright:
-                    // "a resolve action is required before routing to
-                    // outbound/wireguard[awg]" - confirmed from an on-device
-                    // log where every dropped YouTube/Instagram connection
-                    // was exactly this, always UDP/QUIC (TCP mostly slipped
-                    // through some other path, which is why only QUIC-heavy
-                    // traffic looked broken). "resolve" swaps the fakeip
-                    // address for a real one using the domain already
-                    // recovered by sniffing, then falls through to the
-                    // endpoint below with something it can actually route.
-                    // prefer_ipv4 matches buildDns()'s own DNS strategy -
-                    // some AmneziaWG/WARP configs carry only an IPv4 tunnel
-                    // address, and resolving to an AAAA the endpoint has no
-                    // local IPv6 address to send from is its own failure
-                    // mode ("missing IPv6 local address", also seen
-                    // on-device).
+                    // History, because the reasoning here is not obvious from the
+                    // rules alone and three earlier designs each got corrected by
+                    // the next one - two of them only after shipping and testing
+                    // on-device:
                     //
-                    // disable_cache is the second half of this fix, added
-                    // after the plain version above shipped and a fresh
-                    // on-device log showed it wasn't enough: sing-box's DNS
-                    // client caches/coalesces purely by (domain, query
-                    // type), with no regard for which server tag asked -
-                    // so this resolve query for, say, i.instagram.com can
-                    // land on the exact same cache slot/in-flight request
-                    // as the *app's own* hijacked A-record query for
-                    // i.instagram.com, which is answered by dns-fakeip on
-                    // purpose. Whichever of the two wins the race writes
-                    // the slot, and dns-fakeip answers in ~0ms against
-                    // dns-local's real round trip, so it wins almost every
-                    // time - "router: resolved [198.18.x.x]" right back to
-                    // the endpoint it was supposed to be an alternative to.
-                    // It barely showed on a quiet connection (nothing else
-                    // was racing the same domain) but was consistent on the
-                    // exact hostnames Instagram/YouTube hammer with many
-                    // parallel connections in a burst - scontent-*.
-                    // cdninstagram.com, i.instagram.com, youtubei.googleapis.
-                    // com, redirector.googlevideo.com, i.ytimg.com - which
-                    // is exactly the "feed and video never load, everything
-                    // else is fine" pattern reported after the first fix.
-                    // disable_cache ("disable cache and save cache in this
-                    // query", sing-box's own words for the field) makes this
-                    // resolve neither read nor write that shared slot, so it
-                    // no longer has anything to race.
+                    // Attempt 1 (shipped) added just the "resolve" rule below (a
+                    // WireGuard/AmneziaWG endpoint - also covers WARP, see
+                    // WarpAccount.toNode - routes by real destination IP only, and
+                    // every connection here started as a fakeip address, so
+                    // without *something* the core refused UDP outright: "a
+                    // resolve action is required before routing to outbound/
+                    // wireguard[awg]"). Fixed the outright rejection, confirmed
+                    // on-device.
+                    //
+                    // Attempt 2 (shipped) added disable_cache to that rule after a
+                    // second log showed it still handed fakeip addresses to the
+                    // endpoint for specific domains - concentrated on scontent-*.
+                    // cdninstagram.com, i.instagram.com, youtubei.googleapis.com,
+                    // redirector.googlevideo.com, i.ytimg.com, i.e. exactly
+                    // Instagram's feed/media and YouTube's API/video hosts, hit by
+                    // many parallel connections in a burst. Theory: sing-box's DNS
+                    // client races/coalesces by (domain, query type) alone - this
+                    // resolve query and the *app's own* hijacked query for the
+                    // same domain (both answered by dns-fakeip, back when
+                    // buildDns() still routed endpointMode's own A/AAAA queries
+                    // there) could land on the same slot, and dns-fakeip's ~0ms
+                    // synthetic answer usually won the race. disable_cache made it
+                    // measurably worse (confirmed on a third on-device log): the
+                    // fakeip rate on those domains went from 28% (66/234) to 95%
+                    // (100/105), now also hitting a YouTube video edge (rr*---sn-
+                    // *.googlevideo.com) that had been fine before. Every failing
+                    // query was logged "exchanged", never "cached" - proving the
+                    // race was live/in-flight, not a stale-cache-read problem, and
+                    // that disable_cache had thrown away the accidental mitigation
+                    // attempt 1 relied on (once some connection won the race for a
+                    // domain, the real answer got cached and reused by every other
+                    // parallel connection to the same host; without that, every
+                    // connection had to win its own race against Instagram/
+                    // YouTube's bursts, and almost never did).
+                    //
+                    // The fix for that race is in buildDns(): endpointMode's own
+                    // A/AAAA queries are never routed to fakeip at all now, so
+                    // there is exactly one query per domain (straight to
+                    // dns-local) - never two competing for the same slot. That
+                    // removes the race, but a from-scratch draft that also
+                    // stopped *declaring* a fakeip server for endpointMode (on the
+                    // reasoning that nothing routes to it, so why declare it) was
+                    // caught by review before going on-device a third time, for
+                    // two separate reasons stacked on top of each other:
+                    //
+                    // 1. This app's experimental.cache_file (cache.db) has no
+                    // cache_id and is shared by every protocol on the device, so a
+                    // VLESS/Trojan/Hysteria2 session (store_fakeip is still true
+                    // for those) can persist e.g. "instagram.com -> 198.18.x.x" to
+                    // that same file, and a requesting app's own DNS/QUIC-layer
+                    // cache can independently hand out a fakeip address it learned
+                    // in a previous session. Either way, a fakeip destination can
+                    // reach the tun for an endpointMode connection without this
+                    // session's own DNS ever having produced it.
+                    //
+                    // 2. Whether "resolve" can even recognize such a destination
+                    // as fake at all may depend on this session's dns.servers
+                    // still declaring a fakeip-type server - sing-box-lx isn't
+                    // vendored here to check, and review could not rule out that
+                    // "resolve" silently no-ops on an address it no longer
+                    // considers fake, which would quietly reopen exactly this
+                    // failure mode. Rather than gamble on unverified internals a
+                    // third time, buildDns() keeps declaring the fakeip server for
+                    // endpointMode (restoring the one config shape already proven
+                    // on-device to make "resolve" work in attempts 1 and 2) - it
+                    // is simply never a routing target for endpointMode's own
+                    // fresh queries (see buildDns()'s dns.rules), so it can still
+                    // never regenerate the race attempt 1/2 hit.
+                    //
+                    // "resolve" (no disable_cache - there is no live fakeip answer
+                    // left in *this* session to race against, so caching its real
+                    // answer is safe and helps the next connection to the same
+                    // domain) is therefore first crack at any fakeip-range
+                    // destination that still reaches here: a no-op for the normal,
+                    // already-real case, a silent fixup for a recognized stale
+                    // one. prefer_ipv4 matches buildDns()'s own strategy - some
+                    // AmneziaWG/WARP configs carry only an IPv4 tunnel address,
+                    // and resolving to an AAAA the endpoint has no local IPv6
+                    // address to send from is its own failure mode ("missing
+                    // IPv6 local address", also seen on-device).
                     put(JSONObject()
                         .put("inbound", JSONArray().put(TUN_TAG))
                         .put("action", "resolve")
                         .put("server", LOCAL_DNS_TAG)
-                        .put("strategy", "prefer_ipv4")
-                        .put("disable_cache", true))
+                        .put("strategy", "prefer_ipv4"))
+                    // Backstop for whatever "resolve" didn't catch - deliberately
+                    // independent of the resolve/fake-ip-recognition uncertainty
+                    // above: this is a plain CIDR containment check against the
+                    // packet's destination, the most basic and unambiguous
+                    // matching sing-box route rules do. 198.18.0.0/15 and
+                    // fc00::/18 are the exact ranges buildDns()'s fakeip server
+                    // uses (both IANA/RFC 6890-reserved, benchmark-testing and
+                    // unique-local space - no legitimate WireGuard peer or CDN
+                    // edge is ever going to live there), so this can only ever
+                    // match a fakeip address that "resolve" failed to rewrite,
+                    // never a real destination. Rejecting fails that one
+                    // connection fast instead of dialing a black hole the app
+                    // would otherwise wait on indefinitely; virtually every HTTP/
+                    // QUIC client retries a failed connection, and the retry's
+                    // fresh DNS query goes straight to dns-local with no fakeip
+                    // involved (see buildDns()), so it should succeed immediately
+                    // on the next attempt.
+                    put(JSONObject()
+                        .put("inbound", JSONArray().put(TUN_TAG))
+                        .put("ip_cidr", JSONArray().apply { put("198.18.0.0/15"); put("fc00::/18") })
+                        .put("action", "reject"))
                 }
             }))
             .put("inbounds", JSONArray().put(buildTun()))
@@ -131,7 +184,13 @@ object SingBoxConfigBuilder {
         // affected connection: "missing fakeip record, try enable
         // experimental.cache_file" (21 of them in one 4-minute session on-device,
         // right after switching servers). Persisting the table is what makes a
-        // reconnect not look like "connected, but nothing loads".
+        // reconnect not look like "connected, but nothing loads". Left enabled
+        // for endpointMode too, even though buildDns() never routes an
+        // endpointMode query to its own fakeip server (see there): store_fakeip
+        // is still tied to endpointMode below since that server never answers
+        // anything to persist for this mode either way, but "enabled" itself
+        // guards more than store_fakeip alone (rule-set caching among it), so it
+        // stays on unconditionally rather than guessed at per-flag.
         root.put(
             "experimental",
             JSONObject().put(
@@ -139,7 +198,7 @@ object SingBoxConfigBuilder {
                 JSONObject()
                     .put("enabled", true)
                     .put("path", CACHE_FILE_NAME)
-                    .put("store_fakeip", true)
+                    .put("store_fakeip", !endpointMode)
             )
         )
 
@@ -418,9 +477,20 @@ object SingBoxConfigBuilder {
         return obj
     }
 
-    private fun buildDns(): JSONObject = JSONObject()
+    private fun buildDns(endpointMode: Boolean): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
+            // Declared for endpointMode too, deliberately, even though nothing in
+            // dns.rules below ever routes an endpointMode query to it: build()'s
+            // route.rules "resolve" action for endpointMode needs this session's
+            // own DNS to still recognize a fakeip-range address as fake at all
+            // (a stale one can still reach the tun - see that rule's comment),
+            // and review could not confirm from source that recognition works
+            // with no fakeip server declared. Keeping the declaration matches the
+            // one config shape already proven on-device (attempts 1 and 2) to
+            // make "resolve" work, without reopening the race those attempts
+            // hit - see the dns.rules comment below for why not routing to it
+            // is what actually matters for that.
             put(JSONObject().put("type", "fakeip").put("tag", FAKE_IP_DNS_TAG)
                 .put("inet4_range", "198.18.0.0/15").put("inet6_range", "fc00::/18"))
         })
@@ -441,18 +511,43 @@ object SingBoxConfigBuilder {
         // domain-based blocking, the resulting behavior) was visible to the
         // WiFi ISP outside the tunnel while unblocked domains resolved fine
         // either way, so the leak was invisible for them.
-        // "final" (the default/fallback server) must stay a real resolver -
-        // libbox rejects a config where the default server is the fakeip
-        // server itself ("initialize DNS server[1]: default server cannot be
-        // fakeip", confirmed on-device). fakeip only kicks in through the
-        // rule below, for the A/AAAA queries the tun's hijack-dns actually
-        // needs faked; anything else (e.g. the DNS server's own bootstrap)
-        // still falls through to dns-local.
+        //
+        // endpointMode is the one deliberate exception, and it's a narrower
+        // version of the same leak this whole fakeip design exists to avoid
+        // (see build()'s comment for the two fixes that came before this and
+        // why both still left every A/AAAA answer as a fakeip that a
+        // WireGuard endpoint can't dial). A WireGuard/AmneziaWG endpoint has
+        // no notion of "connect to this hostname" at all - it only ever
+        // dials a real IP - so a query it's involved with was always going
+        // to end up resolved via dns-local's plaintext, outside-the-tunnel
+        // path *somewhere*; the only question was whether the app's own
+        // hijacked query did it once, directly, or fakeip answered it first
+        // and a second, separate query redid the same lookup moments later.
+        // That second query was the actual bug (two independent lookups for
+        // the same domain racing each other, fakeip's near-instant synthetic
+        // answer almost always winning), not the leak itself, which is
+        // unavoidable here either way. Answering directly from dns-local
+        // removes the race for this session's own queries by removing the
+        // duplicate, at the exact same privacy cost this mode already had -
+        // this is the rule below that matters for the race: the fakeip
+        // *server* stays declared just above for endpointMode too, but never
+        // gets a query routed to it, so it can never generate a fresh answer
+        // for THIS session to race against, regardless of why it's declared.
+        // build()'s route.rules still carries a "resolve" rule (and a CIDR-
+        // based backstop) for endpointMode - not for this race, but as a
+        // defensive fixup for a fakeip destination that reaches the tun from
+        // *outside* this session's own DNS entirely (another protocol's
+        // fakeip mapping, persisted to the shared cache.db; or a requesting
+        // app's own stale DNS/QUIC cache from before the reconnect) - see
+        // that rule's comment for the full reasoning, including why the
+        // server above is still declared rather than dropped.
         .put("rules", JSONArray().apply {
-            put(JSONObject()
-                .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
-                .put("action", "route")
-                .put("server", FAKE_IP_DNS_TAG))
+            if (!endpointMode) {
+                put(JSONObject()
+                    .put("query_type", JSONArray().apply { put("A"); put("AAAA") })
+                    .put("action", "route")
+                    .put("server", FAKE_IP_DNS_TAG))
+            }
             // HTTPS/SVCB (type 65) used to fall through to "final" = dns-local,
             // which resolves on the physical interface, outside the tunnel (see
             // the note above) - and Chrome and the Android resolver query it for
@@ -467,7 +562,9 @@ object SingBoxConfigBuilder {
             // use - which showed up as pages hanging. Refusing closes the same
             // leak without ever being able to stall. The cost is ECH, which needs
             // the HTTPS record; fakeip plus TLS sniffing covers the routing that
-            // record would otherwise inform.
+            // record would otherwise inform. Kept as a reject for endpointMode
+            // too, non-fakeip or not: still avoids the stall, and there's no ECH
+            // benefit to chase when every A/AAAA answer here is real already.
             put(JSONObject()
                 .put("query_type", JSONArray().apply { put("HTTPS"); put("SVCB") })
                 .put("action", "reject"))

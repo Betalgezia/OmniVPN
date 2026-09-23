@@ -152,18 +152,73 @@ class SingBoxConfigBuilderTest {
         )
     }
 
-    @Test fun awgRouteResolvesFakeipBeforeTheFinalWireguardHop() {
-        // Regression guard for an on-device report: "YouTube and Instagram
-        // stopped working" through an AmneziaWG subscription server (and
-        // the same applies to WARP - WarpAccount.toNode tags itself
-        // AMNEZIAWG). fakeip answers every A/AAAA query (see buildDns), but
-        // a WireGuard/AmneziaWG endpoint routes by real IP, not by the
-        // sniffed domain the way vless/trojan/hysteria2 outbounds do.
-        // Without an explicit "resolve" rule the core refuses outright for
-        // UDP - "a resolve action is required before routing to
-        // outbound/wireguard[awg]" - confirmed from an on-device log, which
-        // is why only QUIC-heavy traffic (video, most of Instagram) looked
-        // broken while ordinary TCP pages kept loading.
+    @Test fun awgNeverRacesItsOwnDnsButStillGuardsStaleFakeipDestinations() {
+        // Same regression guard, several rounds in - each earlier version
+        // locked in an approach that on-device logs (or, twice, adversarial
+        // review before it reached the device again) proved incomplete, so
+        // all of them are worth naming here instead of just quietly
+        // replacing them:
+        //
+        // v1 asserted a "resolve" route rule existed (server=dns-local,
+        // strategy=prefer_ipv4, no disable_cache). That fixed the original
+        // bug - AmneziaWG/WARP (a WireGuard endpoint, which routes by real IP
+        // only) got fed a fakeip address and sing-box refused UDP outright:
+        // "a resolve action is required before routing to outbound/
+        // wireguard[awg]". But a fresh log showed that resolve rule still
+        // handed fakeip addresses to the endpoint for the exact domains
+        // Instagram/YouTube hammer with many parallel connections at once
+        // (scontent-*.cdninstagram.com, i.instagram.com, youtubei.
+        // googleapis.com, redirector.googlevideo.com) - a race between this
+        // resolve query and the app's own hijacked query for the same domain
+        // (both answered by dns-fakeip, back when buildDns() still routed
+        // endpointMode's own A/AAAA queries there), decided by whichever
+        // server answered faster (fakeip, ~0ms, almost always).
+        //
+        // v2 added disable_cache to that resolve rule, on the theory that
+        // removing it from the shared cache slot would remove the race. A
+        // third log showed the opposite: the fakeip rate on those same
+        // domains went from 28% to 95%, because disable_cache also removed
+        // the accidental mitigation v1 had been relying on - once some
+        // connection won the race for a domain, the real answer got cached
+        // and reused by every other parallel connection to the same host.
+        // Without that, every connection had to win its own independent race
+        // against a burst of competing fakeip-bound queries, and almost never
+        // did.
+        //
+        // v3 (never shipped - caught by review) removed the resolve rule
+        // entirely and made buildDns() stop *declaring* a fakeip server for
+        // endpointMode, on the reasoning that nothing routes to it, so why
+        // declare it. Two problems, stacked:
+        //  1. This app's experimental.cache_file has no cache_id and is
+        //     shared by every protocol on the device, so a VLESS/Trojan/
+        //     Hysteria2 session (store_fakeip is still true for those - see
+        //     fakeipMappingsSurviveAReconnect) can persist a fakeip mapping
+        //     for a domain, and a requesting app's own DNS/QUIC-layer cache
+        //     can independently hand out a fakeip address it learned in a
+        //     previous session - either way a fakeip destination can reach
+        //     the tun for an endpointMode connection this session's own DNS
+        //     never produced.
+        //  2. Whether "resolve" can even recognize such an address as fake
+        //     at all, with no fakeip server in the session's dns.servers, is
+        //     unverified (sing-box-lx isn't vendored here to check) - so v3
+        //     risked silently reopening the original bug for exactly the
+        //     traffic this whole fix is about, with nothing to show for it
+        //     in an "info"-level log.
+        //
+        // This version keeps what v3 got right - endpointMode's own A/AAAA
+        // queries never route to fakeip (asserted below: dns.rules has no
+        // A/AAAA->fakeip rule), so there is exactly one query per domain and
+        // nothing left to race - but restores the fakeip server declaration
+        // itself (matching the shape already proven on-device in v1/v2 to
+        // make "resolve" work) and adds a plain CIDR-match reject as a
+        // backstop that does not depend on the unverified "resolve"
+        // recognition question at all: if "resolve" doesn't fix up a stale
+        // fakeip destination, the reject rule catches it deterministically
+        // (matching the exact ranges buildDns()'s fakeip server uses) and
+        // fails that one connection fast rather than dialing a black hole -
+        // the client's own retry re-queries DNS and gets a real answer on
+        // the very next attempt, since there's no fakeip in the way for a
+        // fresh endpointMode query either way.
         val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
             .put("private_key","base64-private")
             .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
@@ -173,35 +228,75 @@ class SingBoxConfigBuilderTest {
             name = "awg", protocol = Protocol.AMNEZIAWG, server = "203.0.113.10", port = 51820,
             privateKey = "base64-private", rawConfig = raw
         )))
-        val rules = config.getJSONObject("route").getJSONArray("rules")
-        val resolveRule = (0 until rules.length()).map { rules.getJSONObject(it) }
-            .first { it.optString("action") == "resolve" }
+
+        val routeRules = (0 until config.getJSONObject("route").getJSONArray("rules").length())
+            .map { config.getJSONObject("route").getJSONArray("rules").getJSONObject(it) }
+
+        val resolveRule = requireNotNull(
+            routeRules.firstOrNull { it.optString("action") == "resolve" }
+        ) { "endpointMode must keep a resolve rule as first-attempt fixup for stale/foreign fakeip destinations" }
         assertEquals("dns-local", resolveRule.getString("server"))
         assertEquals("prefer_ipv4", resolveRule.getString("strategy"))
-        // Second-round regression guard: a fresh on-device log after the
-        // plain resolve rule shipped showed it still returning fakeip
-        // addresses for exactly the domains Instagram/YouTube hammer with
-        // many parallel connections (scontent-*.cdninstagram.com,
-        // i.instagram.com, youtubei.googleapis.com, redirector.googlevideo.
-        // com) - sing-box's DNS client caches/coalesces by (domain, query
-        // type) alone, so this query can share a slot with the app's own
-        // hijacked query for the same domain (answered by dns-fakeip on
-        // purpose), and the near-instant fakeip answer wins the race almost
-        // every time. disable_cache stops this resolve from reading or
-        // writing that shared slot.
-        assertEquals(true, resolveRule.getBoolean("disable_cache"))
+        // Not v2's disable_cache: with the fakeip server never routed to for
+        // endpointMode (asserted below), there's no live fakeip answer in
+        // this session to race against, so caching this resolve's real
+        // answer is safe again (and helps the next connection to the same
+        // domain).
+        assertFalse(resolveRule.has("disable_cache") && resolveRule.getBoolean("disable_cache"))
 
-        // vless/trojan/hysteria2 must NOT get this rule: they proxy by the
-        // sniffed domain already, and forcing a real resolve would leak it
-        // in clear text on the physical network before the tunnel ever
-        // sees it (see buildDns's own comment on why fakeip was chosen
-        // over that in the first place).
+        val rejectRule = requireNotNull(
+            routeRules.firstOrNull { it.optString("action") == "reject" && it.has("ip_cidr") }
+        ) { "endpointMode must keep a CIDR backstop for any fakeip destination resolve doesn't catch" }
+        val rejectedCidrs = (0 until rejectRule.getJSONArray("ip_cidr").length())
+            .map { rejectRule.getJSONArray("ip_cidr").getString(it) }
+            .toSet()
+        assertEquals(setOf("198.18.0.0/15", "fc00::/18"), rejectedCidrs)
+        // The backstop must come after resolve, so a successfully fixed-up
+        // destination never reaches it.
+        assertTrue(routeRules.indexOf(resolveRule) < routeRules.indexOf(rejectRule))
+
+        val dns = config.getJSONObject("dns")
+        // The fakeip server is declared for endpointMode too now (see
+        // buildDns()'s comment for why: resolve's ability to recognize a
+        // fakeip address at all may depend on it) - what actually prevents
+        // the v1/v2 race is that nothing routes a query to it, checked next.
+        assertTrue(
+            dns.getJSONArray("servers").toString().contains("fakeip"),
+            "endpointMode must still declare a fakeip DNS server, for resolve's sake"
+        )
+        val dnsRules = dns.getJSONArray("rules")
+        assertFalse(
+            (0 until dnsRules.length()).any { dnsRules.getJSONObject(it).optString("server") == "dns-fakeip" },
+            "endpointMode's dns.rules must not route anything to fakeip - this is what removes the race"
+        )
+        // A/AAAA now falls through to "final" = dns-local, same as every
+        // other query type this config doesn't special-case.
+        assertEquals("dns-local", dns.getString("final"))
+        // The HTTPS/SVCB leak-avoidance reject is unrelated to fakeip and
+        // must survive untouched for endpointMode too.
+        val httpsRule = (0 until dnsRules.length()).map { dnsRules.getJSONObject(it) }
+            .first { it.optJSONArray("query_type")?.toString()?.contains("HTTPS") == true }
+        assertEquals("reject", httpsRule.getString("action"))
+
+        // cache_file.store_fakeip: the fakeip server is declared again, but
+        // still never answers anything for endpointMode (nothing routes to
+        // it), so there's still nothing for store_fakeip to persist - stays
+        // off instead of trusting that "true" is a harmless no-op.
+        val cache = config.getJSONObject("experimental").getJSONObject("cache_file")
+        assertTrue(cache.getBoolean("enabled"))
+        assertFalse(cache.getBoolean("store_fakeip"))
+
+        // vless/trojan/hysteria2 are untouched: no resolve rule, no CIDR
+        // backstop, still get fakeip+sniff exactly as before endpointMode
+        // existed at all.
         val vlessConfig = JSONObject(SingBoxConfigBuilder.build(Node(
             name = "v", protocol = Protocol.VLESS, server = "example.com", port = 443,
             uuid = "00000000-0000-0000-0000-000000000001"
         )))
         val vlessRules = vlessConfig.getJSONObject("route").getJSONArray("rules")
         assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).optString("action") == "resolve" })
+        assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).has("ip_cidr") })
+        assertTrue(vlessConfig.getJSONObject("dns").getJSONArray("servers").toString().contains("fakeip"))
     }
 
     @Test fun invalidPortIsRejectedBeforeCore() {
