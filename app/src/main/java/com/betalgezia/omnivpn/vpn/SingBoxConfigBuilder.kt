@@ -77,11 +77,39 @@ object SingBoxConfigBuilder {
                     // local IPv6 address to send from is its own failure
                     // mode ("missing IPv6 local address", also seen
                     // on-device).
+                    //
+                    // disable_cache is the second half of this fix, added
+                    // after the plain version above shipped and a fresh
+                    // on-device log showed it wasn't enough: sing-box's DNS
+                    // client caches/coalesces purely by (domain, query
+                    // type), with no regard for which server tag asked -
+                    // so this resolve query for, say, i.instagram.com can
+                    // land on the exact same cache slot/in-flight request
+                    // as the *app's own* hijacked A-record query for
+                    // i.instagram.com, which is answered by dns-fakeip on
+                    // purpose. Whichever of the two wins the race writes
+                    // the slot, and dns-fakeip answers in ~0ms against
+                    // dns-local's real round trip, so it wins almost every
+                    // time - "router: resolved [198.18.x.x]" right back to
+                    // the endpoint it was supposed to be an alternative to.
+                    // It barely showed on a quiet connection (nothing else
+                    // was racing the same domain) but was consistent on the
+                    // exact hostnames Instagram/YouTube hammer with many
+                    // parallel connections in a burst - scontent-*.
+                    // cdninstagram.com, i.instagram.com, youtubei.googleapis.
+                    // com, redirector.googlevideo.com, i.ytimg.com - which
+                    // is exactly the "feed and video never load, everything
+                    // else is fine" pattern reported after the first fix.
+                    // disable_cache ("disable cache and save cache in this
+                    // query", sing-box's own words for the field) makes this
+                    // resolve neither read nor write that shared slot, so it
+                    // no longer has anything to race.
                     put(JSONObject()
                         .put("inbound", JSONArray().put(TUN_TAG))
                         .put("action", "resolve")
                         .put("server", LOCAL_DNS_TAG)
-                        .put("strategy", "prefer_ipv4"))
+                        .put("strategy", "prefer_ipv4")
+                        .put("disable_cache", true))
                 }
             }))
             .put("inbounds", JSONArray().put(buildTun()))

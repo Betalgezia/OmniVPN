@@ -178,6 +178,18 @@ class SingBoxConfigBuilderTest {
             .first { it.optString("action") == "resolve" }
         assertEquals("dns-local", resolveRule.getString("server"))
         assertEquals("prefer_ipv4", resolveRule.getString("strategy"))
+        // Second-round regression guard: a fresh on-device log after the
+        // plain resolve rule shipped showed it still returning fakeip
+        // addresses for exactly the domains Instagram/YouTube hammer with
+        // many parallel connections (scontent-*.cdninstagram.com,
+        // i.instagram.com, youtubei.googleapis.com, redirector.googlevideo.
+        // com) - sing-box's DNS client caches/coalesces by (domain, query
+        // type) alone, so this query can share a slot with the app's own
+        // hijacked query for the same domain (answered by dns-fakeip on
+        // purpose), and the near-instant fakeip answer wins the race almost
+        // every time. disable_cache stops this resolve from reading or
+        // writing that shared slot.
+        assertEquals(true, resolveRule.getBoolean("disable_cache"))
 
         // vless/trojan/hysteria2 must NOT get this rule: they proxy by the
         // sniffed domain already, and forcing a real resolve would leak it
