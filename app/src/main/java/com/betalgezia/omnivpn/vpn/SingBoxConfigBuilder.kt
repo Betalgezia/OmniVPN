@@ -51,6 +51,38 @@ object SingBoxConfigBuilder {
                     .put("inbound", JSONArray().put(TUN_TAG))
                     .put("protocol", "dns")
                     .put("action", "hijack-dns"))
+                if (endpointMode) {
+                    // A WireGuard/AmneziaWG endpoint (this also covers WARP -
+                    // see WarpAccount.toNode, which tags itself AMNEZIAWG)
+                    // routes by real destination IP, not by the sniffed
+                    // domain the way the vless/trojan/hysteria2 outbounds
+                    // above do - it has no notion of "connect to this
+                    // hostname". Every connection here started as a fakeip
+                    // address (buildDns answers every A/AAAA query from
+                    // dns-fakeip), so without this rule the core has a
+                    // destination it structurally cannot dial through a
+                    // WireGuard peer and, for UDP, refuses outright:
+                    // "a resolve action is required before routing to
+                    // outbound/wireguard[awg]" - confirmed from an on-device
+                    // log where every dropped YouTube/Instagram connection
+                    // was exactly this, always UDP/QUIC (TCP mostly slipped
+                    // through some other path, which is why only QUIC-heavy
+                    // traffic looked broken). "resolve" swaps the fakeip
+                    // address for a real one using the domain already
+                    // recovered by sniffing, then falls through to the
+                    // endpoint below with something it can actually route.
+                    // prefer_ipv4 matches buildDns()'s own DNS strategy -
+                    // some AmneziaWG/WARP configs carry only an IPv4 tunnel
+                    // address, and resolving to an AAAA the endpoint has no
+                    // local IPv6 address to send from is its own failure
+                    // mode ("missing IPv6 local address", also seen
+                    // on-device).
+                    put(JSONObject()
+                        .put("inbound", JSONArray().put(TUN_TAG))
+                        .put("action", "resolve")
+                        .put("server", LOCAL_DNS_TAG)
+                        .put("strategy", "prefer_ipv4"))
+                }
             }))
             .put("inbounds", JSONArray().put(buildTun()))
             .put("outbounds", JSONArray().apply {

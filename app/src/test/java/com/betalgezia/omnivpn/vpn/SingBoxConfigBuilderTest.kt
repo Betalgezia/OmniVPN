@@ -152,6 +152,46 @@ class SingBoxConfigBuilderTest {
         )
     }
 
+    @Test fun awgRouteResolvesFakeipBeforeTheFinalWireguardHop() {
+        // Regression guard for an on-device report: "YouTube and Instagram
+        // stopped working" through an AmneziaWG subscription server (and
+        // the same applies to WARP - WarpAccount.toNode tags itself
+        // AMNEZIAWG). fakeip answers every A/AAAA query (see buildDns), but
+        // a WireGuard/AmneziaWG endpoint routes by real IP, not by the
+        // sniffed domain the way vless/trojan/hysteria2 outbounds do.
+        // Without an explicit "resolve" rule the core refuses outright for
+        // UDP - "a resolve action is required before routing to
+        // outbound/wireguard[awg]" - confirmed from an on-device log, which
+        // is why only QUIC-heavy traffic (video, most of Instagram) looked
+        // broken while ordinary TCP pages kept loading.
+        val raw = JSONObject().put("type","wireguard").put("address", JSONArray().put("10.0.0.2/32"))
+            .put("private_key","base64-private")
+            .put("peers", JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820)
+                .put("public_key","base64-public").put("allowed_ips", JSONArray().put("0.0.0.0/0"))))
+            .toString()
+        val config = JSONObject(SingBoxConfigBuilder.build(Node(
+            name = "awg", protocol = Protocol.AMNEZIAWG, server = "203.0.113.10", port = 51820,
+            privateKey = "base64-private", rawConfig = raw
+        )))
+        val rules = config.getJSONObject("route").getJSONArray("rules")
+        val resolveRule = (0 until rules.length()).map { rules.getJSONObject(it) }
+            .first { it.optString("action") == "resolve" }
+        assertEquals("dns-local", resolveRule.getString("server"))
+        assertEquals("prefer_ipv4", resolveRule.getString("strategy"))
+
+        // vless/trojan/hysteria2 must NOT get this rule: they proxy by the
+        // sniffed domain already, and forcing a real resolve would leak it
+        // in clear text on the physical network before the tunnel ever
+        // sees it (see buildDns's own comment on why fakeip was chosen
+        // over that in the first place).
+        val vlessConfig = JSONObject(SingBoxConfigBuilder.build(Node(
+            name = "v", protocol = Protocol.VLESS, server = "example.com", port = 443,
+            uuid = "00000000-0000-0000-0000-000000000001"
+        )))
+        val vlessRules = vlessConfig.getJSONObject("route").getJSONArray("rules")
+        assertFalse((0 until vlessRules.length()).any { vlessRules.getJSONObject(it).optString("action") == "resolve" })
+    }
+
     @Test fun invalidPortIsRejectedBeforeCore() {
         assertFailsWith<IllegalArgumentException> { SingBoxConfigBuilder.build(Node(name="test", protocol=Protocol.VLESS, server="example.com", port=70000, uuid="00000000-0000-0000-0000-000000000003")) }
     }
