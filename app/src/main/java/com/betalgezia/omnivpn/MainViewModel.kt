@@ -14,7 +14,6 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
-import com.betalgezia.omnivpn.vpn.SubscriptionParser
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
@@ -26,6 +25,7 @@ import com.betalgezia.omnivpn.vpn.WarpObfuscationStore
 import com.betalgezia.omnivpn.vpn.WarpObfuscationTuner
 import com.betalgezia.omnivpn.vpn.WarpSettings
 import com.betalgezia.omnivpn.vpn.WarpStorage
+import com.betalgezia.omnivpn.vpn.SubscriptionParser
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
