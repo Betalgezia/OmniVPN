@@ -1,10 +1,12 @@
 package com.betalgezia.omnivpn
 
+import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.betalgezia.omnivpn.data.NodeImportService
 import com.betalgezia.omnivpn.data.NodeRepository
+import com.betalgezia.omnivpn.data.SubscriptionAutoUpdateScheduler
 import com.betalgezia.omnivpn.data.SubscriptionRepository
 import com.betalgezia.omnivpn.data.hasDomainWireguardEndpoint
 import com.betalgezia.omnivpn.data.model.Node
@@ -15,15 +17,23 @@ import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
+import com.betalgezia.omnivpn.vpn.AwgObfuscation
+import com.betalgezia.omnivpn.vpn.TuneState
 import com.betalgezia.omnivpn.vpn.WarpAccount
 import com.betalgezia.omnivpn.vpn.WarpEndpointScanner
+import com.betalgezia.omnivpn.vpn.WarpObfuscationStore
+import com.betalgezia.omnivpn.vpn.WarpObfuscationTuner
+import com.betalgezia.omnivpn.vpn.WarpSettings
+import com.betalgezia.omnivpn.vpn.WarpStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
@@ -49,17 +59,39 @@ class MainViewModel @Inject constructor(
     private val subscriptionRepository: SubscriptionRepository,
     private val vpnController: VpnController,
     private val nodeHealthChecker: NodeHealthChecker,
-    private val warpEndpointScanner: WarpEndpointScanner
+    private val warpEndpointScanner: WarpEndpointScanner,
+    private val warpSettings: WarpSettings,
+    private val warpObfuscationTuner: WarpObfuscationTuner,
+    private val warpObfuscationStore: WarpObfuscationStore,
+    private val autoUpdateScheduler: SubscriptionAutoUpdateScheduler,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     init {
         viewModelScope.launch {
             runCatching { nodeRepository.removeLegacyDemoNode() }
         }
+        // Make the persisted auto-update choice take effect on launch:
+        // (re)schedule when enabled (idempotent), cancel when off. References
+        // only constructor params, so it's safe in this first init block.
+        if (warpSettings.autoUpdateEnabled) {
+            autoUpdateScheduler.schedule(warpSettings.autoUpdateIntervalMinutes)
+        } else {
+            autoUpdateScheduler.cancel()
+        }
     }
 
     val nodes = nodeRepository.nodes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val subscriptions = subscriptionRepository.subscriptions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // User-chosen subscription order (persisted in WarpSettings). Declared
+    // before `subscriptions` because that flow reads it during construction.
+    private val _subscriptionOrder = MutableStateFlow(warpSettings.subscriptionOrder)
+
+    // Everything downstream - main-screen groups, the Settings list,
+    // refreshAll - sees subscriptions in the user's order, not the database's.
+    val subscriptions = combine(subscriptionRepository.subscriptions, _subscriptionOrder) { subs, order ->
+        orderSubscriptions(subs, order)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val vpnState: StateFlow<VpnState> = vpnController.state
 
     private val _busy = MutableStateFlow(false)
@@ -90,10 +122,215 @@ class MainViewModel @Inject constructor(
     // enough that the user needs a way out.
     private var testJob: Job? = null
 
-    private val _testMode = MutableStateFlow(TestMode.FULL)
+    // Persisted (WarpSettings.testMode). It used to reset to FULL on every
+    // launch, so after a restart - including every reinstall - the per-server
+    // "Тест" silently ran the slow full test even with "Быстрая" picked.
+    private val _testMode = MutableStateFlow(warpSettings.testMode)
     val testMode: StateFlow<TestMode> = _testMode.asStateFlow()
 
-    fun setTestMode(mode: TestMode) { _testMode.value = mode }
+    fun setTestMode(mode: TestMode) {
+        warpSettings.testMode = mode
+        _testMode.value = mode
+    }
+
+    // Persisted via WarpSettings - see its own comment for why this needs to
+    // survive app restarts.
+    private val _ipv6Enabled = MutableStateFlow(warpSettings.ipv6Enabled)
+    val ipv6Enabled: StateFlow<Boolean> = _ipv6Enabled.asStateFlow()
+
+    fun setIpv6Enabled(enabled: Boolean) {
+        warpSettings.ipv6Enabled = enabled
+        _ipv6Enabled.value = enabled
+    }
+
+    // ---- Nocturne v2 redesign additions ----
+
+    // Subscription ids currently refreshing, for the per-group ⟳ spinner and
+    // the "Обновить" (refresh-all) header icon. Refresh only does HTTP+parse,
+    // never touches the sing-box engine, so it doesn't gate on _busy and the
+    // rest of the UI stays usable while a refresh runs.
+    private val _refreshingSubscriptions = MutableStateFlow<Set<Long>>(emptySet())
+    val refreshingSubscriptions: StateFlow<Set<Long>> = _refreshingSubscriptions.asStateFlow()
+
+    // Instant we entered CONNECTED (see the trailing init) - the session timer.
+    private val _connectedSince = MutableStateFlow<Long?>(null)
+    val connectedSince: StateFlow<Long?> = _connectedSince.asStateFlow()
+
+    private val _autoUpdateEnabled = MutableStateFlow(warpSettings.autoUpdateEnabled)
+    val autoUpdateEnabled: StateFlow<Boolean> = _autoUpdateEnabled.asStateFlow()
+    private val _autoUpdateIntervalMinutes = MutableStateFlow(warpSettings.autoUpdateIntervalMinutes)
+    val autoUpdateIntervalMinutes: StateFlow<Int> = _autoUpdateIntervalMinutes.asStateFlow()
+
+    fun setAutoUpdateEnabled(enabled: Boolean) {
+        warpSettings.autoUpdateEnabled = enabled
+        _autoUpdateEnabled.value = enabled
+        if (enabled) autoUpdateScheduler.schedule(_autoUpdateIntervalMinutes.value)
+        else autoUpdateScheduler.cancel()
+    }
+
+    fun setAutoUpdateInterval(minutes: Int) {
+        warpSettings.autoUpdateIntervalMinutes = minutes
+        _autoUpdateIntervalMinutes.value = minutes
+        if (_autoUpdateEnabled.value) autoUpdateScheduler.schedule(minutes)
+    }
+
+    // Obfuscation autotuner state + the current profile summary shown in the
+    // Settings sheet's WARP section.
+    private val _tuneState = MutableStateFlow<TuneState>(TuneState.Idle)
+    val tuneState: StateFlow<TuneState> = _tuneState.asStateFlow()
+    private val _currentObfuscation = MutableStateFlow(warpObfuscationStore.currentOrDefault())
+    val currentObfuscation: StateFlow<AwgObfuscation> = _currentObfuscation.asStateFlow()
+    private val _obfuscationIsCustom = MutableStateFlow(warpObfuscationStore.load() != null)
+    val obfuscationIsCustom: StateFlow<Boolean> = _obfuscationIsCustom.asStateFlow()
+    private var tuneJob: Job? = null
+
+    private fun refreshObfuscationState() {
+        _currentObfuscation.value = warpObfuscationStore.currentOrDefault()
+        _obfuscationIsCustom.value = warpObfuscationStore.load() != null
+    }
+
+    /**
+     * Manual obfuscation autotune (see WarpObfuscationTuner). Requires the VPN
+     * to be disconnected for the same single-engine reason as every other
+     * probe (canTestNow), and shares _busy so the hero/tests can't run at once.
+     */
+    fun startTune() {
+        if (!canTestNow()) {
+            _message.value = "Disconnect the VPN before tuning obfuscation"
+            return
+        }
+        val account = WarpStorage(appContext).get()
+        if (account == null) {
+            _message.value = "Register WARP first (tap Cloudflare WARP), then tune"
+            return
+        }
+        tuneJob?.cancel()
+        // Placeholder so the sheet switches to the "running" UI immediately;
+        // the first real emit replaces it with an accurate step/total.
+        _tuneState.value = TuneState.Running(0, 15, emptyList(), 0)
+        tuneJob = viewModelScope.launch {
+            _busy.value = true
+            try {
+                warpObfuscationTuner.tune(account, warpSettings.ipv6Enabled).collect { state ->
+                    _tuneState.value = state
+                }
+            } catch (cancelled: CancellationException) {
+                _tuneState.value = TuneState.Idle
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.e(TAG, "startTune: failed", t)
+                _tuneState.value = TuneState.Idle
+                _message.value = t.message ?: "Tuning failed"
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun cancelTune() {
+        tuneJob?.cancel()
+        tuneJob = null
+        _tuneState.value = TuneState.Idle
+        _message.value = "Tuning stopped - parameters unchanged"
+    }
+
+    fun applyTune() {
+        val found = _tuneState.value as? TuneState.Found ?: return
+        viewModelScope.launch {
+            warpObfuscationTuner.apply(found.best)
+            refreshObfuscationState()
+            _tuneState.value = TuneState.Idle
+            _message.value = "Obfuscation applied for this network"
+        }
+    }
+
+    fun dismissTune() { _tuneState.value = TuneState.Idle }
+
+    fun resetObfuscation() {
+        warpObfuscationTuner.reset()
+        refreshObfuscationState()
+        _tuneState.value = TuneState.Idle
+        _message.value = "Reverted to default obfuscation"
+    }
+
+    fun refreshAll() {
+        val subs = subscriptions.value
+        if (subs.isEmpty()) return
+        viewModelScope.launch {
+            _refreshingSubscriptions.update { current -> current + subs.map { it.id } }
+            var failures = 0
+            for (subscription in subs) {
+                runCatching { subscriptionRepository.refresh(subscription) }
+                    .onFailure {
+                        failures++
+                        android.util.Log.e(TAG, "refreshAll: failed id=${subscription.id}", it)
+                    }
+                _refreshingSubscriptions.update { current -> current - subscription.id }
+            }
+            _message.value = if (failures == 0) "All subscriptions updated" else "Updated with $failures failure(s)"
+        }
+    }
+
+    // ---- Subscription groups: collapse, order, per-group tests ----
+
+    private val _collapsedSubscriptions = MutableStateFlow(warpSettings.collapsedSubscriptionIds)
+    val collapsedSubscriptions: StateFlow<Set<Long>> = _collapsedSubscriptions.asStateFlow()
+
+    fun toggleSubscriptionCollapsed(subscription: Subscription) {
+        val current = _collapsedSubscriptions.value
+        val next = if (subscription.id in current) current - subscription.id else current + subscription.id
+        warpSettings.collapsedSubscriptionIds = next
+        _collapsedSubscriptions.value = next
+    }
+
+    /** Moves [subscription] one place up ([delta] = -1) or down (+1). */
+    fun moveSubscription(subscription: Subscription, delta: Int) {
+        val ids = subscriptions.value.map { it.id }.toMutableList()
+        val from = ids.indexOf(subscription.id)
+        val to = from + delta
+        if (from < 0 || to !in ids.indices) return
+        ids.removeAt(from)
+        ids.add(to, subscription.id)
+        warpSettings.subscriptionOrder = ids
+        _subscriptionOrder.value = ids
+    }
+
+    private fun orderSubscriptions(subs: List<Subscription>, order: List<Long>): List<Subscription> {
+        if (order.isEmpty()) return subs
+        val rank = order.withIndex().associate { (index, id) -> id to index }
+        // sortedBy is stable: subscriptions not in the saved order (added
+        // since) keep their database order, after the ordered ones.
+        return subs.sortedBy { rank[it.id] ?: Int.MAX_VALUE }
+    }
+
+    // Which subscription - and in which mode - its own group quick/full button
+    // is testing right now, so only that one button shows a spinner.
+    private val _subscriptionTest = MutableStateFlow<Pair<Long, TestMode>?>(null)
+    val subscriptionTest: StateFlow<Pair<Long, TestMode>?> = _subscriptionTest.asStateFlow()
+
+    /**
+     * The quick / full buttons on each main-screen subscription group: tests
+     * just that subscription's servers in the given mode, whatever the Settings
+     * toggle says (that toggle stays the default for the per-server "Тест").
+     */
+    fun testSubscription(subscription: Subscription, mode: TestMode) {
+        val targets = nodes.value.filter { it.sourceId == subscription.id }
+        runNodeCheck(targets, mode, subscriptionTag = subscription.id to mode)
+    }
+
+    // Session-timer source: stamped in a trailing init (after the backing
+    // field above is declared, so no forward reference).
+    init {
+        viewModelScope.launch {
+            vpnController.state.collect { state ->
+                _connectedSince.value = if (state == VpnState.CONNECTED) {
+                    _connectedSince.value ?: System.currentTimeMillis()
+                } else {
+                    null
+                }
+            }
+        }
+    }
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
@@ -125,8 +362,12 @@ class MainViewModel @Inject constructor(
             _busy.value = true
             runCatching {
                 if (isSubscriptionUrl) {
-                    val id = subscriptionRepository.add("Subscription", value)
-                    val nodes = subscriptionRepository.refresh(Subscription(id=id, name="Subscription", url=value, enabled=true))
+                    // Blank name: add() falls back to the URL's own host as the
+                    // name (see its doc). Used to be hardcoded to the literal
+                    // "Subscription" here, which is why every subscription
+                    // showed the same name regardless of its actual URL.
+                    val id = subscriptionRepository.add("", value)
+                    val nodes = subscriptionRepository.refresh(Subscription(id=id, name="", url=value, enabled=true))
                     hasDomainWireguardEndpoint(nodes)
                 } else {
                     nodeImportService.importText(value).domainWireguardEndpoint
@@ -147,7 +388,10 @@ class MainViewModel @Inject constructor(
 
     fun refresh(subscription: Subscription) {
         viewModelScope.launch {
-            _busy.value = true
+            // Per-subscription spinner rather than the global _busy: a refresh
+            // is only HTTP+parse (no sing-box engine), so the hero/tests stay
+            // usable and just this row's ⟳ spins (see refreshingSubscriptions).
+            _refreshingSubscriptions.update { it + subscription.id }
             runCatching { subscriptionRepository.refresh(subscription) }
                 .onSuccess { nodes ->
                     val base = "Updated ${nodes.size} nodes"
@@ -157,7 +401,7 @@ class MainViewModel @Inject constructor(
                     android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
                     _message.value = it.message ?: "Refresh failed"
                 }
-            _busy.value = false
+            _refreshingSubscriptions.update { it - subscription.id }
         }
     }
 
@@ -166,6 +410,15 @@ class MainViewModel @Inject constructor(
             runCatching { subscriptionRepository.delete(subscription) }.onFailure {
                 android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
                 _message.value = it.message
+            }
+        }
+    }
+
+    fun renameSubscription(subscription: Subscription, name: String) {
+        viewModelScope.launch {
+            runCatching { subscriptionRepository.rename(subscription, name) }.onFailure {
+                android.util.Log.e(TAG, "renameSubscription: failed for id=${subscription.id}", it)
+                _message.value = it.message ?: "Unable to rename subscription"
             }
         }
     }
@@ -186,7 +439,14 @@ class MainViewModel @Inject constructor(
 
     fun checkNode(node: Node) = checkNodes(listOf(node))
 
-    fun checkNodes(targets: List<Node>) {
+    fun checkNodes(targets: List<Node>) = runNodeCheck(targets, _testMode.value, subscriptionTag = null)
+
+    /**
+     * Shared by the per-server "Тест" (Settings test mode) and the per-group
+     * quick/full buttons (explicit mode). [subscriptionTag] marks which group
+     * button started it, for that button's spinner.
+     */
+    private fun runNodeCheck(targets: List<Node>, mode: TestMode, subscriptionTag: Pair<Long, TestMode>?) {
         // Testing runs a real (if TUN-less) sing-box session on the same engine the
         // actual VPN connection uses - see NodeHealthChecker. They can't run at once.
         if (!canTestNow()) {
@@ -198,9 +458,10 @@ class MainViewModel @Inject constructor(
         testJob?.cancel()
         testJob = viewModelScope.launch {
             _busy.value = true
+            _subscriptionTest.value = subscriptionTag
             _nodeHealth.update { current -> current + testable.associate { it.id to NodeHealth.Checking } }
             try {
-                nodeHealthChecker.checkAll(testable, mode = _testMode.value) { node, health ->
+                nodeHealthChecker.checkAll(testable, mode = mode) { node, health ->
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
@@ -215,6 +476,9 @@ class MainViewModel @Inject constructor(
                 // the call, which a cancellation would skip straight past and
                 // leave the whole UI disabled.
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
+                // Only clear the group spinner if it's still ours - a newer
+                // run may already have tagged a different button.
+                if (_subscriptionTest.value == subscriptionTag) _subscriptionTest.value = null
                 _busy.value = false
             }
         }

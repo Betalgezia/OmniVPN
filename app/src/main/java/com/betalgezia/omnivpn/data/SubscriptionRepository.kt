@@ -56,6 +56,18 @@ class SubscriptionRepository @Inject constructor(
         }
     }
 
+    /**
+     * User-chosen display name (see the September 2026 fix for every
+     * subscription showing the same literal "Subscription" - [add]'s blank-name
+     * fallback picks the URL host at creation time, but nothing let the user
+     * change it afterwards).
+     */
+    suspend fun rename(subscription: Subscription, name: String) {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "Subscription name cannot be empty" }
+        dao.rename(subscription.id, trimmed)
+    }
+
     suspend fun refresh(subscription: Subscription): List<Node> = withContext(Dispatchers.IO) {
         require(subscription.id > 0) { "Subscription must be persisted before refresh" }
         val body = fetch(subscription.url)

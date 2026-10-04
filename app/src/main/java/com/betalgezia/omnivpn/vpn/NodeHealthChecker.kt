@@ -20,7 +20,12 @@ import io.nekohasekai.libbox.StringIterator
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -80,6 +85,10 @@ class NodeHealthChecker @Inject constructor(
 ) {
     private val probeMutex = Mutex()
 
+    // Singleton-lifetime scope for quick probes that must not pin the caller's
+    // scope while a blocking DNS lookup finishes - see quickCheckBounded.
+    private val detachedIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /**
      * @param stopOnFirstReachable stop as soon as one node passes, leaving the rest
      * unreported. For picking *a* working candidate out of an ordered list (see
@@ -97,11 +106,7 @@ class NodeHealthChecker @Inject constructor(
         if (testable.isEmpty()) return
 
         if (mode == TestMode.QUICK) {
-            for (node in testable) {
-                val health = quickCheck(node)
-                onResult(node, health)
-                if (stopOnFirstReachable && health is NodeHealth.Reachable) break
-            }
+            quickInParallel(testable, stopOnFirstReachable, onResult)
             return
         }
 
@@ -225,6 +230,77 @@ class NodeHealthChecker @Inject constructor(
     }
 
     /**
+     * QUICK mode, probed concurrently. Each probe is a bare socket check - no
+     * sing-box engine, nothing shared to serialise on - yet this used to run
+     * strictly one server after another, so a "quick" test took the SUM of
+     * every probe. Under DPI that sum is dominated by servers whose SYN is
+     * silently dropped: each burned the full [QUICK_TIMEOUT_MS] before the next
+     * probe even started, so a ~20-server subscription with a handful of
+     * blocked servers took tens of seconds. Run concurrently, the whole scan
+     * takes about as long as its single slowest probe.
+     *
+     * [onResult] stays serialised ([resultLock]) - the same guarantee
+     * [probeInParallel] gives FULL-mode callers, which connectFastest() relies
+     * on to track its running best without a lock of its own.
+     */
+    private suspend fun quickInParallel(
+        testable: List<Node>,
+        stopOnFirstReachable: Boolean,
+        onResult: suspend (Node, NodeHealth) -> Unit
+    ) {
+        val gate = Semaphore(QUICK_CONCURRENCY)
+        val resultLock = Mutex()
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        // Sum of every probe's own duration = what the old one-at-a-time loop
+        // would have taken; logged next to the real wall time for comparison.
+        val probeTotalMs = java.util.concurrent.atomic.AtomicLong(0)
+        val started = System.nanoTime()
+        coroutineScope {
+            for (node in testable) {
+                launch {
+                    gate.withPermit {
+                        if (stopOnFirstReachable && done.get()) return@withPermit
+                        val t0 = System.nanoTime()
+                        val health = quickCheckBounded(node)
+                        probeTotalMs.addAndGet((System.nanoTime() - t0) / 1_000_000)
+                        resultLock.withLock { onResult(node, health) }
+                        if (stopOnFirstReachable && health is NodeHealth.Reachable) done.set(true)
+                    }
+                }
+            }
+        }
+        android.util.Log.i(
+            TAG,
+            "quick: ${testable.size} nodes in ${(System.nanoTime() - started) / 1_000_000} ms " +
+                "(one-at-a-time would have been ~${probeTotalMs.get()} ms)"
+        )
+    }
+
+    /**
+     * [quickCheck] with a hard ceiling on its total time. The socket timeouts
+     * inside it only bound connect/receive; resolving a hostname happens
+     * before that (in InetSocketAddress's constructor) and is a blocking call
+     * no coroutine timeout can interrupt. The probe runs in [detachedIoScope],
+     * outside this call's structured scope, so giving up on a stalled lookup
+     * here doesn't have to wait for it to return - its result is discarded.
+     * One node's unexpected failure is reported as that node's result rather
+     * than aborting the whole concurrent scan.
+     */
+    private suspend fun quickCheckBounded(node: Node): NodeHealth {
+        val probe = detachedIoScope.async { quickCheck(node) }
+        return try {
+            withTimeoutOrNull((QUICK_TIMEOUT_MS + QUICK_WATCHDOG_GRACE_MS).toLong()) { probe.await() }
+                ?: NodeHealth.Unreachable("Timed out")
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            NodeHealth.Unreachable(e.message ?: "Probe failed")
+        } finally {
+            if (!probe.isCompleted) probe.cancel()
+        }
+    }
+
+    /**
      * Socket-level reachability, no core involved. TCP protocols get a connect;
      * UDP ones (Hysteria2, AmneziaWG) get a connected-socket probe where only an
      * ICMP port-unreachable is conclusive - those protocols drop unsolicited
@@ -272,6 +348,91 @@ class NodeHealthChecker @Inject constructor(
         var result: NodeHealth = NodeHealth.Unreachable("Not tested")
         checkAll(listOf(node), timeoutMs) { _, health -> result = health }
         return result
+    }
+
+    /**
+     * Like [check], but holds ONE probe tunnel open across [holdMs] and tests
+     * traffic twice - immediately after the handshake and again after the hold -
+     * returning [NodeHealth.Reachable] only if BOTH pass. This is what
+     * [WarpObfuscationTuner] needs: WARP's characteristic DPI failure is a
+     * handshake that completes and a tunnel that then goes silent ~15s later
+     * (see the notes on WarpAccount.DEFAULT_OBFUSCATION). A plain [check] sees
+     * only the first, immediate success and would wrongly call such a profile
+     * good - and one of the tuner's own candidates (jc=4/40/70) is exactly a
+     * shape those notes record as passing the handshake and dying at ~15s.
+     *
+     * A candidate that fails the first, immediate probe returns at once (no
+     * hold), so dead shapes are still rejected quickly. The reported latency is
+     * the first probe's, matching [check]. Runs under the same [probeMutex] and
+     * single-engine constraints as [checkAll]; the caller must be disconnected.
+     */
+    suspend fun checkSustained(
+        node: Node,
+        firstTimeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        holdMs: Long = SUSTAIN_HOLD_MS,
+        secondTimeoutMs: Int = DEFAULT_TIMEOUT_MS
+    ): NodeHealth = probeMutex.withLock {
+        if (node.protocol == Protocol.WARP) {
+            return@withLock NodeHealth.Unreachable("WARP is not probed directly")
+        }
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(node))
+        probe.buildErrors[node.id]?.let { return@withLock NodeHealth.Unreachable(it) }
+        val tag = probe.tagsByNodeId[node.id]
+        if (tag == null || probe.json == null) {
+            return@withLock NodeHealth.Unreachable("Probe config could not be built")
+        }
+        if (engine.isRunning()) {
+            return@withLock NodeHealth.Unreachable("Disconnect the VPN before testing servers")
+        }
+
+        val startResult = runCatching {
+            OmniVpnApplication.libboxReady.await()
+            engine.start(probe.json, ProbePlatformInterface(context), ProbeCommandServerHandler(), emitEvents = false)
+        }
+        if (startResult.isFailure) {
+            val t = startResult.exceptionOrNull()
+            android.util.Log.e(TAG, "checkSustained: probe engine failed to start", t)
+            return@withLock NodeHealth.Unreachable(t?.message ?: "Probe failed to start")
+        }
+
+        try {
+            // Same sanity check as checkAll: a request through a deliberately
+            // dead outbound must NOT succeed, or probes aren't going through the
+            // node at all. Costs one refused connection.
+            if (probe.sentinelTag.isNotBlank()) {
+                val sentinelClient = connectCommandClient()
+                val sentinel = runCatching { probeOnce(sentinelClient, probe.sentinelTag, SENTINEL_TIMEOUT_MS) }
+                runCatching { sentinelClient.disconnect() }
+                if (sentinel.getOrNull() is ProbeOutcome.Reached) {
+                    return@withLock NodeHealth.Unreachable("Probe sanity check failed")
+                }
+            }
+
+            val client = connectCommandClient()
+            try {
+                val first = probeOnce(client, tag, firstTimeoutMs)
+                if (first !is ProbeOutcome.Reached) return@withLock first.toHealth()
+                // Hold the one tunnel open, then re-test through it: a shape that
+                // dies ~15s in fails here even though the handshake just passed.
+                kotlinx.coroutines.delay(holdMs)
+                val second = probeOnce(client, tag, secondTimeoutMs)
+                return@withLock if (second is ProbeOutcome.Reached) {
+                    NodeHealth.Reachable(first.latencyMs)
+                } else {
+                    NodeHealth.Unreachable("Passed handshake, died after ${holdMs / 1000}s")
+                }
+            } finally {
+                runCatching { client.disconnect() }
+            }
+        } finally {
+            // NonCancellable for the same reason as checkAll: stopping the
+            // engine is itself suspending, so a cancelled scope would otherwise
+            // skip it and leave the probe instance running.
+            withContext(NonCancellable) {
+                runCatching { engine.stop(emitDisconnected = false) }
+                    .onFailure { android.util.Log.w(TAG, "checkSustained: engine.stop failed", it) }
+            }
+        }
     }
 
     // Was CommandClient.urlTestOutbound() - dropped after confirming on-device (see
@@ -411,8 +572,18 @@ class NodeHealthChecker @Inject constructor(
         // successes already reached 4149ms - see runUrlTestWithRetry).
         const val DEFAULT_TIMEOUT_MS = 6000
         const val RETRY_TIMEOUT_MS = 12000
+        // How long checkSustained holds one probe tunnel open before re-testing.
+        // Sits past WARP's observed ~15s "handshake ok, then goes silent" death
+        // (see WarpAccount.DEFAULT_OBFUSCATION notes) so that failure is caught.
+        const val SUSTAIN_HOLD_MS = 18_000L
         const val PROBE_CONCURRENCY = 4
         const val QUICK_TIMEOUT_MS = 3000
+        // Quick probes are bare sockets, so many at once is cheap; the cap only
+        // stops a huge subscription from opening hundreds of sockets at once.
+        const val QUICK_CONCURRENCY = 32
+        // Headroom past QUICK_TIMEOUT_MS before quickCheckBounded gives up on a
+        // probe - covers hostname resolution, which the socket timeouts don't.
+        const val QUICK_WATCHDOG_GRACE_MS = 1500
         const val SENTINEL_TIMEOUT_MS = 4000
         const val CONNECT_TIMEOUT_MS = 3000L
         const val WATCHDOG_GRACE_MS = 1500
