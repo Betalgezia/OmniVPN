@@ -255,6 +255,25 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun dropsXhttpValuesTheCoreWouldRefuse() {
+        // sing-box-lx fails the WHOLE config over either value ("unknown mode: bogus",
+        // strconv.Atoi: parsing "abc") - every server tested alongside this node, too.
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&type=xhttp&path=%2Fx&mode=bogus&xPaddingBytes=abc"
+        val transport = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("xhttp", transport.getString("type"))
+        assertFalse(transport.has("mode"))
+        assertFalse(transport.has("x_padding_bytes"))
+    }
+
+    @Test
+    fun keepsValidXhttpModeAndPadding() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&type=xhttp&path=%2Fx&mode=stream-one&xPaddingBytes=100-1000"
+        val transport = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("stream-one", transport.getString("mode"))
+        assertEquals("100-1000", transport.getString("x_padding_bytes"))
+    }
+
+    @Test
     fun fallsBackToHostPortNameWhenRemarkIsBlank() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
         val node = SubscriptionParser.parse(uri).single()

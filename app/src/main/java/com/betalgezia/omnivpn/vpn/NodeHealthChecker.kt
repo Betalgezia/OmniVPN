@@ -128,15 +128,30 @@ class NodeHealthChecker @Inject constructor(
                 return@withLock
             }
 
+            // One outbound the core refuses fails Libbox.checkConfig() for the whole
+            // config, and engine.start() would then pin that node's error on every node
+            // in the batch. vetProbeConfig() takes such nodes out first.
+            val vetted = try {
+                OmniVpnApplication.libboxReady.await()
+                vetProbeConfig(testable, probe, onResult)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "checkAll: config pre-check failed, testing the batch as built", t)
+                probe
+            }
+            val vettedJson = vetted.json ?: return@withLock
+            val vettedTags = vetted.tagsByNodeId
+
             runCatching {
                 OmniVpnApplication.libboxReady.await()
                 // emitEvents=false: this never establishes a tunnel and has nothing
                 // to do with the user's real VPN state (see SingBoxEngine.start doc).
-                engine.start(probe.json, ProbePlatformInterface(context), ProbeCommandServerHandler(), emitEvents = false)
+                engine.start(vettedJson, ProbePlatformInterface(context), ProbeCommandServerHandler(), emitEvents = false)
             }.onFailure { t ->
                 android.util.Log.e(TAG, "checkAll: probe engine failed to start", t)
                 for (node in testable) {
-                    if (tags.containsKey(node.id)) {
+                    if (vettedTags.containsKey(node.id)) {
                         onResult(node, NodeHealth.Unreachable(t.message ?: "Probe failed to start"))
                     }
                 }
@@ -158,7 +173,7 @@ class NodeHealthChecker @Inject constructor(
                 } finally {
                     runCatching { sentinelClient.disconnect() }
                 }
-                probeInParallel(testable, tags, timeoutMs, stopOnFirstReachable, onResult)
+                probeInParallel(testable, vettedTags, timeoutMs, stopOnFirstReachable, onResult)
             } finally {
                 // NonCancellable: a scan can run for minutes, so the caller's
                 // scope may well be cancelled part-way through (screen closed,
@@ -173,6 +188,84 @@ class NodeHealthChecker @Inject constructor(
             }
         }
     }
+
+    /**
+     * Takes every node whose outbound the core refuses out of [probe], reporting each with
+     * the core's own error, so the rest of the batch still gets tested.
+     *
+     * Libbox.checkConfig() judges the probe config as a whole: one outbound sing-box
+     * rejects (an xhttp mode it doesn't know, an encryption string it can't parse, ...)
+     * fails all of it, and engine.start() then reported that one node's error against
+     * every node in the batch - the whole list "unreachable" with the same text. The core
+     * names only the first outbound it trips over, so this checks again after each
+     * removal; an error that names no node, by tag or by position, is narrowed down by
+     * halving the list. At most [MAX_VET_CHECKS] checks: past that, whatever is left goes
+     * to engine.start() as before.
+     */
+    private suspend fun vetProbeConfig(
+        nodes: List<Node>,
+        probe: ProbeConfig,
+        onResult: suspend (Node, NodeHealth) -> Unit
+    ): ProbeConfig {
+        val budget = CheckBudget(MAX_VET_CHECKS)
+        var current = probe
+        var remaining = nodes.filter { probe.tagsByNodeId.containsKey(it.id) }
+        while (true) {
+            val json = current.json ?: return current
+            val error = configError(json, budget) ?: return current
+            val named = nodeNamedIn(error, json, current.tagsByNodeId, remaining)
+            val rejected = if (named != null) listOf(named to error) else findRejected(remaining, budget)
+            // Not any one node's fault (or out of checks): leave it to engine.start().
+            if (rejected.isEmpty()) return current
+            for ((node, reason) in rejected) {
+                android.util.Log.w(TAG, "checkAll: core rejected ${current.tagsByNodeId[node.id]}: $reason")
+                onResult(node, NodeHealth.Unreachable(reason))
+            }
+            val rejectedIds = rejected.mapTo(HashSet()) { it.first.id }
+            remaining = remaining.filter { it.id !in rejectedIds }
+            current = SingBoxConfigBuilder.buildProbeConfig(remaining)
+        }
+    }
+
+    /** Halves [nodes] down to the ones the core refuses on their own. */
+    private suspend fun findRejected(nodes: List<Node>, budget: CheckBudget): List<Pair<Node, String>> {
+        if (nodes.isEmpty()) return emptyList()
+        val probe = SingBoxConfigBuilder.buildProbeConfig(nodes)
+        val json = probe.json ?: return emptyList()
+        val error = configError(json, budget) ?: return emptyList()
+        if (nodes.size == 1) return listOf(nodes.single() to error)
+        nodeNamedIn(error, json, probe.tagsByNodeId, nodes)?.let { return listOf(it to error) }
+        val middle = nodes.size / 2
+        return findRejected(nodes.subList(0, middle), budget) + findRejected(nodes.subList(middle, nodes.size), budget)
+    }
+
+    /**
+     * The node [error] is about, when it says: by tag (`vless[probe-12]`) or by position
+     * (`outbound[3]`, `outbounds[3]`, `endpoint[0]`) in [json]'s arrays.
+     */
+    private fun nodeNamedIn(error: String, json: String, tags: Map<Long, String>, nodes: List<Node>): Node? {
+        nodes.firstOrNull { node ->
+            val tag = tags[node.id] ?: return@firstOrNull false
+            Regex("(?<![\\w-])" + Regex.escape(tag) + "(?![\\w-])").containsMatchIn(error)
+        }?.let { return it }
+        val position = POSITION_IN_ERROR.find(error) ?: return null
+        val array = if (position.groupValues[1].startsWith("endpoint")) "endpoints" else "outbounds"
+        val tag = runCatching {
+            org.json.JSONObject(json).getJSONArray(array).getJSONObject(position.groupValues[2].toInt()).getString("tag")
+        }.getOrNull() ?: return null
+        return nodes.firstOrNull { tags[it.id] == tag }
+    }
+
+    /** checkConfig's complaint about [json]; null if it passes, or once [budget] is spent. */
+    private suspend fun configError(json: String, budget: CheckBudget): String? {
+        if (budget.left <= 0) return null
+        budget.left--
+        return withContext(Dispatchers.IO) {
+            runCatching { Libbox.checkConfig(json) }.exceptionOrNull()?.let { it.message ?: it.toString() }
+        }
+    }
+
+    private class CheckBudget(var left: Int)
 
     /**
      * Runs the probes a few at a time instead of strictly one after another.
@@ -577,6 +670,12 @@ class NodeHealthChecker @Inject constructor(
         // (see WarpAccount.DEFAULT_OBFUSCATION notes) so that failure is caught.
         const val SUSTAIN_HOLD_MS = 18_000L
         const val PROBE_CONCURRENCY = 4
+        // Upper bound on Libbox.checkConfig() calls vetProbeConfig() makes per test run.
+        // A rejected node costs one when the error names it, a few more when it has to be
+        // found by halving; a list with more bad nodes than this is not a realistic case.
+        const val MAX_VET_CHECKS = 100
+        // "outbound[3]" / "outbounds[3]" / "endpoint[0]" - where the core says it failed.
+        val POSITION_IN_ERROR = Regex("""\b(outbounds?|endpoints?)\[(\d+)]""")
         const val QUICK_TIMEOUT_MS = 3000
         // Quick probes are bare sockets, so many at once is cheap; the cap only
         // stops a huge subscription from opening hundreds of sockets at once.

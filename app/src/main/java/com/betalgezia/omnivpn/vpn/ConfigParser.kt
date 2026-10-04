@@ -169,6 +169,7 @@ object ConfigParser {
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
+        canonical.optJSONObject("transport")?.let(OutboundFieldRules::sanitizeXhttpTransport)
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.VLESS, server, port, uuid = uuid, raw = canonical.toString())
     }
@@ -184,6 +185,7 @@ object ConfigParser {
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
+        canonical.optJSONObject("transport")?.let(OutboundFieldRules::sanitizeXhttpTransport)
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.TROJAN, server, port, password = password, raw = canonical.toString())
     }
@@ -315,8 +317,13 @@ object ConfigParser {
                 JSONObject().put("type", "xhttp").apply {
                     putXHttpString(this, x, "host", "host")
                     putXHttpString(this, x, "path", "path")
-                    putXHttpString(this, x, "mode", "mode")
-                    putXHttpString(this, x, "x_padding_bytes", "x-padding-bytes", "xPaddingBytes", "x-padding_bytes")
+                    // mode, x_padding_bytes and xmux are checked rather than copied: a value
+                    // the core rejects fails every node tested with this one (OutboundFieldRules).
+                    OutboundFieldRules.xhttpMode(x["mode"])?.let { put("mode", it) }
+                    OutboundFieldRules.range(
+                        "x_padding_bytes",
+                        listOf("x-padding-bytes", "xPaddingBytes", "x-padding_bytes", "x_padding_bytes").firstNotNullOfOrNull { x[it] }
+                    )?.let { put("x_padding_bytes", it) }
                     putXHttpString(this, x, "session_placement", "session-placement", "sessionPlacement")
                     putXHttpString(this, x, "session_key", "session-key", "sessionKey")
                     putXHttpString(this, x, "seq_placement", "seq-placement", "seqPlacement")
@@ -336,7 +343,8 @@ object ConfigParser {
                     if (isTrue(x["x-padding-obfs-mode"]) || isTrue(x["x_padding_obfs_mode"]) || isTrue(x["xPaddingObfsMode"])) put("x_padding_obfs_mode", true)
                     if (isTrue(x["no-grpc-header"]) || isTrue(x["no_grpc_header"]) || isTrue(x["noGRPCHeader"])) put("no_grpc_header", true)
                     (x["headers"] as? Map<*, *>)?.let { put("headers", toJsonValue(it)) }
-                    (x["xmux"] as? Map<*, *>)?.let { put("xmux", buildXHttpXmux(it)) }
+                    (x["xmux"] as? Map<*, *>)?.let { source -> OutboundFieldRules.xmux { key -> source[key] } }
+                        ?.let { put("xmux", it) }
                 }
             }
             else -> null
@@ -387,19 +395,6 @@ object ConfigParser {
         string(raw, *sourceKeys)?.let { target.put(targetKey, it) }
     }
 
-    private fun buildXHttpXmux(raw: Map<*, *>): JSONObject = JSONObject().apply {
-        val fields = mapOf(
-            "max_concurrency" to arrayOf("max_concurrency", "max-concurrency", "maxConcurrency"),
-            "max_connections" to arrayOf("max_connections", "max-connections", "maxConnections"),
-            "c_max_reuse_times" to arrayOf("c_max_reuse_times", "c-max-reuse-times", "cMaxReuseTimes"),
-            "h_max_request_times" to arrayOf("h_max_request_times", "h-max-request-times", "hMaxRequestTimes"),
-            "h_max_reusable_secs" to arrayOf("h_max_reusable_secs", "h-max-reusable-secs", "hMaxReusableSecs"),
-            "h_keep_alive_period" to arrayOf("h_keep_alive_period", "h-keep-alive-period", "hKeepAlivePeriod")
-        )
-        for ((targetKey, sourceKeys) in fields) {
-            sourceKeys.firstNotNullOfOrNull { raw[it] }?.let { put(targetKey, toJsonValue(it)) }
-        }
-    }
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
         val value = raw[field] as? Map<*, *> ?: return
         target.put(field, toJsonValue(value))

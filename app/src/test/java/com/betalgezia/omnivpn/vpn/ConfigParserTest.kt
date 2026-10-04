@@ -235,6 +235,42 @@ class ConfigParserTest {
         assertEquals("1-1", x.getJSONObject("xmux").getString("max_concurrency"))
     }
     @Test
+    fun dropsMihomoXhttpValuesTheCoreWouldRefuse() {
+        val yaml = """
+            proxies:
+              - name: X
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                network: xhttp
+                xhttp-opts:
+                  mode: bogus
+                  path: /x
+                  x-padding-bytes: abc
+                  xmux:
+                    max-concurrency: 16
+                    max-connections: nope
+        """.trimIndent()
+        val x = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!).getJSONObject("transport")
+        assertFalse(x.has("mode"))
+        assertFalse(x.has("x_padding_bytes"))
+        assertEquals("16", x.getJSONObject("xmux").getString("max_concurrency"))
+        assertFalse(x.getJSONObject("xmux").has("max_connections"))
+    }
+
+    @Test
+    fun sanitizesXhttpTransportInSingBoxJson() {
+        val json = JSONObject().put("type", "vless").put("server", "edge.example.com").put("server_port", 443)
+            .put("uuid", "00000000-0000-0000-0000-000000000001")
+            .put("transport", JSONObject().put("type", "xhttp").put("path", "/x").put("mode", "bogus"))
+        val x = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("/x", x.getString("path"))
+        assertFalse(x.has("mode"))
+    }
+
+    @Test
     fun dropsVisionFlowWhenMihomoTransportIsPresent() {
         val yaml = """
             proxies:

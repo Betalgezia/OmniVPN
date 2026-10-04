@@ -226,8 +226,11 @@ object SubscriptionParser {
             "xhttp" -> JSONObject().put("type", "xhttp").apply {
                 query["path"]?.let { put("path", it) }
                 query["host"]?.let { put("host", it) }
-                query["mode"]?.let { put("mode", it) }
-                (query["xPaddingBytes"] ?: query["x-padding-bytes"])?.let { put("x_padding_bytes", it) }
+                // Both checked, not copied as-is: a value the core rejects would fail every
+                // node tested alongside this one (see OutboundFieldRules).
+                OutboundFieldRules.xhttpMode(query["mode"])?.let { put("mode", it) }
+                OutboundFieldRules.range("x_padding_bytes", query["xPaddingBytes"] ?: query["x-padding-bytes"])
+                    ?.let { put("x_padding_bytes", it) }
                 (query["noGRPCHeader"] ?: query["no-grpc-header"])?.let { if (isTrue(it)) put("no_grpc_header", true) }
             }
             else -> null
