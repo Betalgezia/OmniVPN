@@ -72,6 +72,13 @@ internal object OutboundFieldRules {
         return bytes.size in VLESS_ENCRYPTION_KEY_BYTES
     }
 
+    // Hysteria2 bbr_profile: the core's own list, enum:"standard,conservative,aggressive".
+    private val HYSTERIA2_BBR_PROFILES = setOf("standard", "conservative", "aggressive")
+
+    fun bbrProfile(value: Any?): String? = keepIf("bbr_profile", value) {
+        value?.toString()?.trim()?.lowercase()?.takeIf { it in HYSTERIA2_BBR_PROFILES }
+    }
+
     fun xhttpMode(value: Any?): String? = keepIf("mode", value) {
         value?.toString()?.trim()?.lowercase()?.takeIf { it in XHTTP_MODES }
     }

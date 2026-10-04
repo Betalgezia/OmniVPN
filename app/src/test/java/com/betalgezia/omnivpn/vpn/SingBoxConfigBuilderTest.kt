@@ -489,6 +489,30 @@ class SingBoxConfigBuilderTest {
         assertEquals(encryption, outbound.getString("encryption"))
     }
 
+    @Test fun hysteria2KeepsObfsAndBandwidthFromTheLink() {
+        val node = SubscriptionParser.parse(
+            "hysteria2://pass@example.com:443?sni=example.com&obfs=salamander&obfs-password=secret&up=50&down=200#t"
+        ).single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("salamander", outbound.getJSONObject("obfs").getString("type"))
+        assertEquals("secret", outbound.getJSONObject("obfs").getString("password"))
+        assertEquals(50, outbound.getInt("up_mbps"))
+        assertEquals(200, outbound.getInt("down_mbps"))
+    }
+
+    @Test fun hysteria2KeepsKnownBbrProfilesAndDropsOthers() {
+        fun outboundFor(profile: String): JSONObject {
+            val raw = JSONObject().put("type", "hysteria2").put("server", "example.com").put("server_port", 443)
+                .put("password", "secret").put("bbr_profile", profile).put("disable_chrome_parrot", true).toString()
+            val node = Node(name = "h", protocol = Protocol.HYSTERIA2, server = "example.com", port = 443, password = "secret", rawConfig = raw)
+            return JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        }
+        assertEquals("aggressive", outboundFor("aggressive").getString("bbr_profile"))
+        assertTrue(outboundFor("aggressive").getBoolean("disable_chrome_parrot"))
+        // "unsupported BBR profile: zzz" would stop the core outright.
+        assertFalse(outboundFor("zzz").has("bbr_profile"))
+    }
+
     @Test fun hysteria2IsLeftAloneBecauseUtlsDoesNotApplyToQuic() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="h", protocol=Protocol.HYSTERIA2, server="example.com", port=443, password="secret")))
         val tls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls")

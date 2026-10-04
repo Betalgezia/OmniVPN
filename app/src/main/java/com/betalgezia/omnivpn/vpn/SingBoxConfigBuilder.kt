@@ -501,12 +501,25 @@ object SingBoxConfigBuilder {
 
     private fun buildHysteria2(node: Node, tag: String = PROXY_TAG): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Hysteria2 password is required" }
-        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"), tag)
+        // obfs, up/down and the rest used to be parsed and then dropped right here: a
+        // server with salamander/gecko obfs never answered the plain QUIC this sent, and
+        // without up/down the client ran BBR instead of the Brutal the link asked for.
+        val fields = setOf(
+            "password", "network", "tls", "transport", "multiplex", "domain_resolver",
+            "obfs", "up_mbps", "down_mbps", "disable_chrome_parrot", "bbr_profile"
+        )
+        return baseOutbound(node, "hysteria2", fields, tag)
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
                 put("password", node.password)
                 if (!has("tls")) put("tls", JSONObject().put("enabled", true).put("server_name", node.server))
+                // An unknown profile stops the core at start ("unsupported BBR profile");
+                // left out, it uses its default.
+                if (has("bbr_profile")) {
+                    val profile = OutboundFieldRules.bbrProfile(opt("bbr_profile"))
+                    if (profile == null) remove("bbr_profile") else put("bbr_profile", profile)
+                }
             }
     }
 

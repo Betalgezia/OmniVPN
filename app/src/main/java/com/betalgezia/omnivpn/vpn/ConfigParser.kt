@@ -206,7 +206,11 @@ object ConfigParser {
         int(raw, "up_mbps", "up")?.let { canonical.put("up_mbps", it) }
         int(raw, "down_mbps", "down")?.let { canonical.put("down_mbps", it) }
         copyNetworkField(raw, canonical)
-        copy(raw, canonical, setOf("domain_resolver", "bbr_profile", "disable_chrome_parrot"))
+        copy(raw, canonical, setOf("domain_resolver"))
+        // Checked rather than copied: an unknown bbr_profile, or a non-boolean
+        // disable_chrome_parrot, stops the core from starting at all.
+        OutboundFieldRules.bbrProfile(raw["bbr_profile"])?.let { canonical.put("bbr_profile", it) }
+        if (isTrue(raw["disable_chrome_parrot"])) canonical.put("disable_chrome_parrot", true)
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
         putTlsMapIfPresent(raw, canonical, "")

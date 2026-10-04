@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class ConfigParserTest {
     @Test
@@ -286,6 +287,21 @@ class ConfigParserTest {
         val raw = JSONObject(ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt.$key")).single().rawConfig!!)
         assertEquals("mlkem768x25519plus.random.1rtt.$key", raw.getString("encryption"))
         assertEquals(0, ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt")).size)
+    }
+
+    @Test
+    fun checksHysteria2BbrProfileAndChromeParrotOnImport() {
+        fun imported(profile: String, parrot: Any) = JSONObject(
+            ConfigParser.parse(
+                JSONObject().put("type", "hysteria2").put("server", "example.com").put("server_port", 443)
+                    .put("password", "secret").put("bbr_profile", profile).put("disable_chrome_parrot", parrot)
+                    .toString()
+            ).single().rawConfig!!
+        )
+        assertEquals("conservative", imported("Conservative", true).getString("bbr_profile"))
+        assertTrue(imported("conservative", "true").getBoolean("disable_chrome_parrot"))
+        assertFalse(imported("zzz", false).has("bbr_profile"))
+        assertFalse(imported("zzz", false).has("disable_chrome_parrot"))
     }
 
     @Test
