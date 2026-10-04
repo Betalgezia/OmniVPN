@@ -274,6 +274,54 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun carriesVlessEncryption() {
+        // The two shapes seen in real lists: an X25519 key (43 chars) with "native", and
+        // an ML-KEM-768 key (1579 chars) with "xorpub" - both with Vision.
+        assertEquals(1579, base64Url(1184).length)
+        val x25519 = "mlkem768x25519plus.native.0rtt.${base64Url(32)}"
+        val mlkem = "mlkem768x25519plus.xorpub.0rtt.${base64Url(1184)}"
+        for (encryption in listOf(x25519, mlkem)) {
+            val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&flow=xtls-rprx-vision&encryption=$encryption#e"
+            val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+            assertEquals(encryption, raw.getString("encryption"))
+            assertEquals("xtls-rprx-vision", raw.getString("flow"))
+        }
+    }
+
+    @Test
+    fun skipsVlessLinkWithAnEncryptionStringTheCoreCannotParse() {
+        val key = base64Url(32)
+        val bad = listOf(
+            "mlkem768x25519plus.native.0rtt",
+            "mlkem768x25519plus.native.2rtt.$key",
+            "mlkem768x25519plus.plain.0rtt.$key",
+            "x25519.native.0rtt.$key",
+            "mlkem768x25519plus.native..0rtt.$key",
+            "mlkem768x25519plus.native.0rtt.${base64Url(31)}"
+        )
+        for (encryption in bad) {
+            val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&encryption=$encryption#e"
+            assertEquals(0, SubscriptionParser.parse(uri).size, encryption)
+        }
+    }
+
+    @Test
+    fun acceptsXrayPaddingSegmentsBeforeTheKey() {
+        val encryption = "mlkem768x25519plus.random.1rtt.100-111-1111.75-0-111.${base64Url(32)}"
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&encryption=$encryption#e"
+        assertEquals(encryption, JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getString("encryption"))
+    }
+
+    @Test
+    fun encryptionNoneIsNotCarried() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&encryption=none#e"
+        assertFalse(JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).has("encryption"))
+    }
+
+    private fun base64Url(size: Int): String =
+        java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(size) { (it * 7).toByte() })
+
+    @Test
     fun fallsBackToHostPortNameWhenRemarkIsBlank() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
         val node = SubscriptionParser.parse(uri).single()

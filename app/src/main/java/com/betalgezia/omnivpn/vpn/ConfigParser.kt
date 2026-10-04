@@ -151,6 +151,13 @@ object ConfigParser {
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
+        // Same rule as SubscriptionParser.parseVless: carried when the core can parse it,
+        // the entry skipped when it can't.
+        val encryption = string(raw, "encryption")?.trim().orEmpty()
+        if (encryption.isNotEmpty() && !encryption.equals("none", ignoreCase = true)) {
+            if (!OutboundFieldRules.isValidVlessEncryption(encryption)) return null
+            canonical.put("encryption", encryption)
+        }
         val flow = string(raw, "flow")?.trim().orEmpty()
         val transportType = string(raw, "network")?.lowercase()
         val hasTransport = raw["transport"] is Map<*, *> || (transportType != null && transportType != "tcp")

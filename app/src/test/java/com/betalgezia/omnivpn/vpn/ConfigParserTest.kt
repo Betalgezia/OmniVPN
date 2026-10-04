@@ -271,6 +271,24 @@ class ConfigParserTest {
     }
 
     @Test
+    fun carriesValidVlessEncryptionFromYamlAndSkipsAnInvalidOne() {
+        val key = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 2 })
+        fun yaml(encryption: String) = """
+            proxies:
+              - name: E
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                encryption: $encryption
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt.$key")).single().rawConfig!!)
+        assertEquals("mlkem768x25519plus.random.1rtt.$key", raw.getString("encryption"))
+        assertEquals(0, ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt")).size)
+    }
+
+    @Test
     fun dropsVisionFlowWhenMihomoTransportIsPresent() {
         val yaml = """
             proxies:

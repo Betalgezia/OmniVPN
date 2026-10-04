@@ -102,6 +102,16 @@ object SubscriptionParser {
         val port = if (uri.port == -1) 443 else uri.port.takeIf { it in 1..65535 } ?: return null
         val uuid = decode(uri.rawUserInfo).substringBefore(":").takeIf { it.isNotBlank() } ?: return null
         val query = parseQuery(uri.rawQuery)
+        // Post-quantum VLESS encryption. A server that has it set talks to nobody without
+        // it, so it is carried into the config - and a link whose string the core can't
+        // parse is skipped: without the string the node can only fail, and with it the
+        // core refuses the whole config, failing every node tested alongside it.
+        val encryption = query["encryption"]?.trim().orEmpty()
+        val usesEncryption = encryption.isNotEmpty() && !encryption.equals("none", ignoreCase = true)
+        if (usesEncryption && !OutboundFieldRules.isValidVlessEncryption(encryption)) {
+            runCatching { android.util.Log.w(TAG, "parseVless: skipped a node with an encryption string sing-box-lx can't parse") }
+            return null
+        }
         var flow = query["flow"]?.trim().orEmpty()
         var packetEncoding = query["packetEncoding"] ?: query["packet_encoding"] ?: ""
         if (flow == "xtls-rprx-vision-udp443") {
@@ -118,6 +128,7 @@ object SubscriptionParser {
             .put("server_port", port)
             .put("uuid", uuid)
             .apply {
+                if (usesEncryption) put("encryption", encryption)
                 if (visionValid) {
                     put("flow", flow)
                 }

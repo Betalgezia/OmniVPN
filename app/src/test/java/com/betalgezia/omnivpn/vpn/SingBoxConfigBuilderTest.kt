@@ -479,6 +479,16 @@ class SingBoxConfigBuilderTest {
         assertEquals("firefox", utls.getString("fingerprint"))
     }
 
+    @Test fun vlessEncryptionReachesTheOutbound() {
+        val encryption = "mlkem768x25519plus.native.0rtt." +
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 1 })
+        val node = SubscriptionParser.parse(
+            "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&encryption=$encryption#e"
+        ).single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals(encryption, outbound.getString("encryption"))
+    }
+
     @Test fun hysteria2IsLeftAloneBecauseUtlsDoesNotApplyToQuic() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="h", protocol=Protocol.HYSTERIA2, server="example.com", port=443, password="secret")))
         val tls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls")

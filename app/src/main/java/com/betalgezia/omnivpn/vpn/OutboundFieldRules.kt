@@ -32,6 +32,46 @@ internal object OutboundFieldRules {
     )
     private val XMUX_KEEP_ALIVE_KEYS = listOf("h_keep_alive_period", "h-keep-alive-period", "hKeepAlivePeriod")
 
+    // VLESS `encryption` (Xray's post-quantum "VLESS Encryption"), the shape the core's own
+    // errors spell out: "expected at least method.appearance.rtt.key", "expected
+    // native|xorpub|random", "expected 0rtt|1rtt", "empty segment in encryption string",
+    // "no encryption keys in encryption string".
+    private const val VLESS_ENCRYPTION_METHOD = "mlkem768x25519plus"
+    private val VLESS_ENCRYPTION_APPEARANCES = setOf("native", "xorpub", "random")
+    private val VLESS_ENCRYPTION_RTTS = setOf("0rtt", "1rtt")
+    // A key is base64url: an X25519 public key (32 bytes, 43 chars) or an ML-KEM-768
+    // encapsulation key (1184 bytes, 1579 chars) - the two seen in real links.
+    private val VLESS_ENCRYPTION_KEY_BYTES = setOf(32, 1184)
+    // Xray allows padding settings between the RTT and the keys, e.g. "100-111-1111".
+    private val VLESS_ENCRYPTION_PADDING = Regex("""\d+(-\d+)*""")
+
+    /**
+     * True if [value] is a VLESS encryption string the core can parse:
+     * mlkem768x25519plus.(native|xorpub|random).(0rtt|1rtt)[.padding...].key[.key...].
+     * "none" is not an encryption string - callers deal with it before asking.
+     */
+    fun isValidVlessEncryption(value: String): Boolean {
+        val parts = value.trim().split('.')
+        if (parts.size < 4 || parts.any { it.isEmpty() }) return false
+        if (parts[0] != VLESS_ENCRYPTION_METHOD) return false
+        if (parts[1] !in VLESS_ENCRYPTION_APPEARANCES || parts[2] !in VLESS_ENCRYPTION_RTTS) return false
+        var keys = 0
+        for (part in parts.drop(3)) {
+            when {
+                isVlessEncryptionKey(part) -> keys++
+                VLESS_ENCRYPTION_PADDING.matches(part) -> Unit
+                else -> return false
+            }
+        }
+        return keys > 0
+    }
+
+    private fun isVlessEncryptionKey(part: String): Boolean {
+        if (!part.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' }) return false
+        val bytes = runCatching { Base64Compat.decodeUrl(part) }.getOrNull() ?: return false
+        return bytes.size in VLESS_ENCRYPTION_KEY_BYTES
+    }
+
     fun xhttpMode(value: Any?): String? = keepIf("mode", value) {
         value?.toString()?.trim()?.lowercase()?.takeIf { it in XHTTP_MODES }
     }
