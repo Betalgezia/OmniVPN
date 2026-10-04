@@ -126,9 +126,47 @@ class SubscriptionParserTest {
     }
 
     @Test
-    fun rejectsOversizedUriList() {
+    fun skipsASingleLineOverThePerLineLimit() {
         val huge = "vless://" + "a".repeat(64 * 1024)
         assertEquals(0, SubscriptionParser.parse(huge).size)
+    }
+
+    @Test
+    fun parsesAListLongerThan64KiB() {
+        // Used to come back empty: the whole list was rejected past 64 KiB of text,
+        // which is only ~190 links in Relay's export format.
+        val lines = (1..300).map { i ->
+            "vless://00000000-0000-0000-0000-${i.toString().padStart(12, '0')}@edge$i.example.com:443" +
+                "?security=tls&sni=cdn.example.com&type=ws&path=%2F${"p".repeat(200)}#node-$i"
+        }
+        val list = lines.joinToString("\n")
+        assertTrue(list.length > 64 * 1024)
+        val parsed = SubscriptionParser.parseWithCount(list)
+        assertEquals(300, parsed.nodes.size)
+        assertEquals(0, parsed.skipped)
+    }
+
+    @Test
+    fun keepsTheFirstNodesOfAnOverlongListAndCountsTheRest() {
+        val extra = 7
+        val list = (1..SubscriptionParser.MAX_NODES_PER_LIST + extra).joinToString("\n") { i ->
+            "trojan://secret$i@host$i.example.com:443#n$i"
+        }
+        val parsed = SubscriptionParser.parseWithCount(list)
+        assertEquals(SubscriptionParser.MAX_NODES_PER_LIST, parsed.nodes.size)
+        assertEquals("n1", parsed.nodes.first().name)
+        assertEquals(extra, parsed.skipped)
+    }
+
+    @Test
+    fun configParserPassesTheCutCountThroughForBase64Lists() {
+        val list = (1..SubscriptionParser.MAX_NODES_PER_LIST + 3).joinToString("\n") { i ->
+            "trojan://secret$i@host$i.example.com:443#n$i"
+        }
+        val body = java.util.Base64.getEncoder().encodeToString(list.toByteArray())
+        val parsed = ConfigParser.parseWithCount(body)
+        assertEquals(SubscriptionParser.MAX_NODES_PER_LIST, parsed.nodes.size)
+        assertEquals(3, parsed.skipped)
     }
     @Test
     fun invalidVlessFingerprintFallsBackToRandom() {

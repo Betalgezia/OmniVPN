@@ -14,6 +14,7 @@ import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
+import com.betalgezia.omnivpn.vpn.SubscriptionParser
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
@@ -367,13 +368,13 @@ class MainViewModel @Inject constructor(
                     // "Subscription" here, which is why every subscription
                     // showed the same name regardless of its actual URL.
                     val id = subscriptionRepository.add("", value)
-                    val nodes = subscriptionRepository.refresh(Subscription(id=id, name="", url=value, enabled=true))
-                    hasDomainWireguardEndpoint(nodes)
+                    val parsed = subscriptionRepository.refresh(Subscription(id=id, name="", url=value, enabled=true))
+                    hasDomainWireguardEndpoint(parsed.nodes) to parsed.skipped
                 } else {
-                    nodeImportService.importText(value).domainWireguardEndpoint
+                    nodeImportService.importText(value).domainWireguardEndpoint to 0
                 }
-            }.onSuccess { domainWarning ->
-                val base = if (isSubscriptionUrl) "Subscription added and synced" else "Configuration imported"
+            }.onSuccess { (domainWarning, skipped) ->
+                val base = withSkippedNote(if (isSubscriptionUrl) "Subscription added and synced" else "Configuration imported", skipped)
                 _message.value = if (domainWarning) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
             }.onFailure {
                 // Logged explicitly: SubscriptionRepository/NodeImportService never call
@@ -393,9 +394,9 @@ class MainViewModel @Inject constructor(
             // usable and just this row's ⟳ spins (see refreshingSubscriptions).
             _refreshingSubscriptions.update { it + subscription.id }
             runCatching { subscriptionRepository.refresh(subscription) }
-                .onSuccess { nodes ->
-                    val base = "Updated ${nodes.size} nodes"
-                    _message.value = if (hasDomainWireguardEndpoint(nodes)) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
+                .onSuccess { parsed ->
+                    val base = withSkippedNote("Updated ${parsed.nodes.size} nodes", parsed.skipped)
+                    _message.value = if (hasDomainWireguardEndpoint(parsed.nodes)) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
                 }
                 .onFailure {
                     android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
@@ -672,6 +673,13 @@ class MainViewModel @Inject constructor(
 
     private companion object {
         private const val TAG = "MainViewModel"
+
+        // A list longer than SubscriptionParser.MAX_NODES_PER_LIST keeps only its
+        // first nodes; say so, or the cut list looks like the whole subscription.
+        fun withSkippedNote(base: String, skipped: Int): String =
+            if (skipped <= 0) base
+            else "$base\nThe list is longer than ${SubscriptionParser.MAX_NODES_PER_LIST} servers: " +
+                "the remaining $skipped were not loaded."
 
         // Shown after import/refresh when an AmneziaWG/WireGuard peer's
         // endpoint is a domain name rather than a literal IP - see

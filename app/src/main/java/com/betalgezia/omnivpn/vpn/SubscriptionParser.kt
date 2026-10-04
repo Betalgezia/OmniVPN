@@ -8,25 +8,53 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
+/**
+ * Nodes parsed from one config/subscription body. [skipped] counts list entries past
+ * [SubscriptionParser.MAX_NODES_PER_LIST] that were never read: non-zero means the list
+ * was cut, which callers report rather than show the list as if it were complete.
+ */
+data class ParsedNodes(val nodes: List<Node>, val skipped: Int = 0)
+
 object SubscriptionParser {
-    fun parse(input: String): List<Node> {
-        if (input.length > MAX_URI_LIST_CHARS) return emptyList()
+    /**
+     * Most nodes taken from one URI list. What a long list costs is the nodes - the
+     * database, the server list, a full test that puts every one of them into a single
+     * probe config - not its characters, so this is the cap rather than the list length.
+     */
+    const val MAX_NODES_PER_LIST = 1000
+
+    fun parse(input: String): List<Node> = parseWithCount(input).nodes
+
+    /**
+     * There is no cap on the size of the whole list: the old 64 KiB one turned a list of
+     * ~190 or more links into zero nodes ("Subscription returned no supported nodes")
+     * although every line in it was fine. A subscription body is already capped at 5 MB
+     * by SubscriptionRepository, a single line still at [MAX_URI_CHARS_PER_LINE], and the
+     * node count at [MAX_NODES_PER_LIST] - the first nodes are kept, the rest counted.
+     */
+    fun parseWithCount(input: String): ParsedNodes {
         var candidateLines = 0
+        var skipped = 0
         var firstFailure: Throwable? = null
-        val result = input.lineSequence()
-        .map(String::trim)
-        .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith(";") }
-        .flatMap { line ->
+        val result = ArrayList<Node>()
+        for (rawLine in input.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) continue
             candidateLines++
-            if (line.length > MAX_URI_CHARS_PER_LINE) {
-                emptyList()
-            } else {
-                runCatching { parseUri(line) }
-                    .onFailure { if (firstFailure == null) firstFailure = it }
-                    .getOrNull()?.let(::listOf) ?: emptyList()
+            if (result.size >= MAX_NODES_PER_LIST) {
+                skipped++
+                continue
+            }
+            if (line.length > MAX_URI_CHARS_PER_LINE) continue
+            runCatching { parseUri(line) }
+                .onFailure { if (firstFailure == null) firstFailure = it }
+                .getOrNull()?.let(result::add)
+        }
+        if (skipped > 0) {
+            runCatching {
+                android.util.Log.w(TAG, "parse: kept the first $MAX_NODES_PER_LIST nodes, $skipped more line(s) not read")
             }
         }
-        .toList()
         if (result.isEmpty() && candidateLines > 0) {
             // Never log the line/URI itself - it carries live UUIDs/passwords. Counts and the
             // first exception's type/message are enough to tell "every line failed to parse"
@@ -40,7 +68,7 @@ object SubscriptionParser {
                 )
             }
         }
-        return result
+        return ParsedNodes(result, skipped)
     }
 
     private fun parseUri(value: String): Node? {
@@ -279,7 +307,6 @@ object SubscriptionParser {
         Node(name = name, protocol = protocol, server = server, port = port, uuid = uuid, password = password, rawConfig = raw)
 
     private const val TAG = "SubscriptionParser"
-    private const val MAX_URI_LIST_CHARS = 64 * 1024
     private const val MAX_URI_CHARS_PER_LINE = 64 * 1024
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
     private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)

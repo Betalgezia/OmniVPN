@@ -6,9 +6,9 @@ import com.betalgezia.omnivpn.data.local.OmniVpnDatabase
 import androidx.room.withTransaction
 import com.betalgezia.omnivpn.data.local.toDomain
 import com.betalgezia.omnivpn.data.local.toEntity
-import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.vpn.ConfigParser
+import com.betalgezia.omnivpn.vpn.ParsedNodes
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -68,11 +68,12 @@ class SubscriptionRepository @Inject constructor(
         dao.rename(subscription.id, trimmed)
     }
 
-    suspend fun refresh(subscription: Subscription): List<Node> = withContext(Dispatchers.IO) {
+    /** [ParsedNodes.skipped] is non-zero when the list was longer than the per-list node cap. */
+    suspend fun refresh(subscription: Subscription): ParsedNodes = withContext(Dispatchers.IO) {
         require(subscription.id > 0) { "Subscription must be persisted before refresh" }
         val body = fetch(subscription.url)
-        val parsed = ConfigParser.parse(body)
-        if (parsed.isEmpty()) {
+        val parsed = ConfigParser.parseWithCount(body)
+        if (parsed.nodes.isEmpty()) {
             // Not logging the full body (it may contain live UUIDs/passwords), just enough
             // to tell apart the failure modes: an empty/near-empty response (dead or expired
             // subscription), an HTML error/login page (wrong URL, needs auth, blocked by a
@@ -86,9 +87,9 @@ class SubscriptionRepository @Inject constructor(
                 )
             }
         }
-        require(parsed.isNotEmpty()) { "Subscription returned no supported nodes" }
+        require(parsed.nodes.isNotEmpty()) { "Subscription returned no supported nodes" }
         database.withTransaction {
-            nodes.replaceSubscription(subscription.id, parsed)
+            nodes.replaceSubscription(subscription.id, parsed.nodes)
             dao.markUpdated(subscription.id, System.currentTimeMillis())
         }
         parsed

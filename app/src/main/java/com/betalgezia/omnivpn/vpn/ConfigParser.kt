@@ -10,20 +10,25 @@ import org.yaml.snakeyaml.constructor.SafeConstructor
 import java.nio.charset.StandardCharsets
 
 object ConfigParser {
-    fun parse(input: String): List<Node> {
+    fun parse(input: String): List<Node> = parseWithCount(input).nodes
+
+    /** Like [parse], plus how many URI-list entries were cut off (see [ParsedNodes]). */
+    fun parseWithCount(input: String): ParsedNodes {
         val text = decodeBase64IfNeeded(input)
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return emptyList()
+        if (trimmed.isEmpty()) return ParsedNodes(emptyList())
         if (trimmed.contains("://") && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
-            val uriNodes = SubscriptionParser.parse(trimmed)
-            if (uriNodes.isNotEmpty()) return uriNodes
+            val uriNodes = SubscriptionParser.parseWithCount(trimmed)
+            if (uriNodes.nodes.isNotEmpty()) return uriNodes
         }
-        if (looksLikeWireguardIni(trimmed)) return parseWireguardIni(trimmed)
+        if (looksLikeWireguardIni(trimmed)) return ParsedNodes(parseWireguardIni(trimmed))
 
-        return when {
-            trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
-            else -> parseYaml(trimmed)
-        }
+        return ParsedNodes(
+            when {
+                trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
+                else -> parseYaml(trimmed)
+            }
+        )
     }
 
     private fun looksLikeWireguardIni(text: String): Boolean {
