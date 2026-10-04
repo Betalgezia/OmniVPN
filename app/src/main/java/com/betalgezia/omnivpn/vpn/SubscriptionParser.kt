@@ -235,17 +235,66 @@ object SubscriptionParser {
                 query["host"]?.let { put("host", it) }
             }
             "xhttp" -> JSONObject().put("type", "xhttp").apply {
+                // Xray share links keep host, path and mode at the top level and every other
+                // xhttp setting in `extra`, a JSON object; it used to be ignored, losing xmux
+                // (connection reuse - speed and stability) and the request-shape settings
+                // some servers/CDNs need. A setting also given at the top level wins.
+                val extra = parseXhttpExtra(query["extra"])
+                fun fromExtra(key: String): Any? = extra?.opt(key)?.takeUnless { it == JSONObject.NULL }
                 query["path"]?.let { put("path", it) }
                 query["host"]?.let { put("host", it) }
-                // Both checked, not copied as-is: a value the core rejects would fail every
-                // node tested alongside this one (see OutboundFieldRules).
+                // Checked, not copied as-is: a value the core rejects would fail every node
+                // tested alongside this one (see OutboundFieldRules).
                 OutboundFieldRules.xhttpMode(query["mode"])?.let { put("mode", it) }
-                OutboundFieldRules.range("x_padding_bytes", query["xPaddingBytes"] ?: query["x-padding-bytes"])
-                    ?.let { put("x_padding_bytes", it) }
-                (query["noGRPCHeader"] ?: query["no-grpc-header"])?.let { if (isTrue(it)) put("no_grpc_header", true) }
+                OutboundFieldRules.range(
+                    "x_padding_bytes",
+                    query["xPaddingBytes"] ?: query["x-padding-bytes"] ?: fromExtra("xPaddingBytes")
+                )?.let { put("x_padding_bytes", it) }
+                val noGrpcHeader = (query["noGRPCHeader"] ?: query["no-grpc-header"])?.let(::isTrue)
+                    ?: (fromExtra("noGRPCHeader")?.toString()?.let(::isTrue) ?: false)
+                if (noGrpcHeader) put("no_grpc_header", true)
+                (fromExtra("xmux") as? JSONObject)
+                    ?.let { xmux -> OutboundFieldRules.xmux { key -> xmux.opt(key)?.takeUnless { it == JSONObject.NULL } } }
+                    ?.let { put("xmux", it) }
             }
             else -> null
         }
+    }
+
+    /**
+     * The xhttp `extra` parameter as a JSON object; null if absent, "null" or unreadable.
+     *
+     * Some generators form-encode it, so its spaces arrive as `+`, and parseQuery keeps
+     * `+` literal (it is data in passwords and paths) - leaving `{"a":+1,+"b":+true}`.
+     * Valid JSON never has a `+` outside a string except in an exponent, so one there
+     * means the whole thing was form-encoded and every `+` in it is a space. Checking that
+     * up front, rather than only retrying after a parse error, matters because org.json is
+     * lenient: `{"noGRPCHeader":+true}` "parses" with the string "+true" in it.
+     */
+    private fun parseXhttpExtra(raw: String?): JSONObject? {
+        val text = raw?.trim()?.takeIf { it.isNotEmpty() && it != "null" } ?: return null
+        val json = if (hasPlusOutsideJsonStrings(text)) text.replace('+', ' ') else text
+        return runCatching { JSONObject(json) }.getOrNull()
+            ?: runCatching { JSONObject(text.replace('+', ' ')) }.getOrNull()
+    }
+
+    private fun hasPlusOutsideJsonStrings(text: String): Boolean {
+        var inString = false
+        var escaped = false
+        for ((index, c) in text.withIndex()) {
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else if (c == '"') {
+                inString = true
+            } else if (c == '+' && (index == 0 || text[index - 1] !in "eE")) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun buildHysteriaObfs(query: Map<String, String>): JSONObject? {

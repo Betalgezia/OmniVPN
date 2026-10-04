@@ -322,6 +322,44 @@ class SubscriptionParserTest {
         java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(size) { (it * 7).toByte() })
 
     @Test
+    fun readsXhttpExtra() {
+        val uri = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=xhttp&security=tls&sni=example.com&path=%2Fx&mode=auto&extra=%7B%22xmux%22%3A%7B%22maxConcurrency%22%3A%2216-32%22%7D%2C%22noGRPCHeader%22%3Atrue%7D#t"
+        val transport = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("16-32", transport.getJSONObject("xmux").getString("max_concurrency"))
+        assertTrue(transport.getBoolean("no_grpc_header"))
+        assertEquals("/x", transport.getString("path"))
+        assertEquals("auto", transport.getString("mode"))
+    }
+
+    @Test
+    fun readsXhttpExtraWhoseSpacesArriveAsPlus() {
+        // 2 of the 3 real links with xPaddingBytes in `extra` form-encode its spaces.
+        val uri = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=xhttp&security=tls&sni=example.com&path=%2Fx" +
+            "&extra=%7B%22xPaddingBytes%22%3A+%22100-1000%22%2C+%22noGRPCHeader%22%3A+true%2C+%22xmux%22%3A+%7B%22hKeepAlivePeriod%22%3A+0%7D%7D#t"
+        val transport = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("100-1000", transport.getString("x_padding_bytes"))
+        assertTrue(transport.getBoolean("no_grpc_header"))
+        assertEquals(0L, transport.getJSONObject("xmux").getLong("h_keep_alive_period"))
+    }
+
+    @Test
+    fun aLoneFormEncodedBooleanInExtraIsNotMisread() {
+        // org.json alone would accept {"noGRPCHeader":+true} with the string "+true" in it.
+        val uri = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=xhttp&security=tls&sni=example.com&extra=%7B%22noGRPCHeader%22%3A+true%7D#t"
+        assertTrue(JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport").getBoolean("no_grpc_header"))
+    }
+
+    @Test
+    fun topLevelXhttpSettingsWinOverExtraAndNullExtraIsIgnored() {
+        val withBoth = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=xhttp&security=tls&sni=example.com&xPaddingBytes=200-300&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D#t"
+        assertEquals("200-300", JSONObject(SubscriptionParser.parse(withBoth).single().rawConfig!!).getJSONObject("transport").getString("x_padding_bytes"))
+        val nullExtra = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=xhttp&security=tls&sni=example.com&path=%2Fx&extra=null#t"
+        val transport = JSONObject(SubscriptionParser.parse(nullExtra).single().rawConfig!!).getJSONObject("transport")
+        assertFalse(transport.has("xmux"))
+        assertEquals("/x", transport.getString("path"))
+    }
+
+    @Test
     fun fallsBackToHostPortNameWhenRemarkIsBlank() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
         val node = SubscriptionParser.parse(uri).single()
