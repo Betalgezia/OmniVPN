@@ -55,9 +55,34 @@ class SubscriptionParserTest {
         assertEquals(443, node.port)
     }
     @Test
-    fun enablesDefaultTlsForVless443WithoutSecurityParameter() {
+    fun vlessWithoutSecurityHasNoTlsEvenOn443() {
+        // No `security` means no TLS for VLESS (the XTLS share-link standard, v2rayN).
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
         val raw = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!)
+        assertFalse(raw.has("tls"))
+    }
+
+    @Test
+    fun vlessWithoutSecurityIgnoresPortAndSni() {
+        // The two such links in Relay's sample: TLS used to come on because of the port,
+        // and because of an sni on Cloudflare's plain-HTTP port 2052.
+        val grpc = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:2085?type=grpc&serviceName=s#a"
+        val ws = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:2052?type=ws&path=%2F&sni=cdn.example.com#b"
+        for (uri in listOf(grpc, ws)) {
+            assertFalse(JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).has("tls"), uri)
+        }
+    }
+
+    @Test
+    fun vlessRealityKeyAloneStillMeansReality() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?sni=cdn.example.com&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA#r"
+        val tls = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("tls")
+        assertTrue(tls.getJSONObject("reality").getBoolean("enabled"))
+    }
+
+    @Test
+    fun trojanStillDefaultsToTls() {
+        val raw = JSONObject(SubscriptionParser.parse("trojan://secret@example.com:443#t").single().rawConfig!!)
         assertTrue(raw.getJSONObject("tls").getBoolean("enabled"))
     }
 

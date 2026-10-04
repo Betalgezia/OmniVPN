@@ -118,7 +118,7 @@ object SubscriptionParser {
             flow = "xtls-rprx-vision"
             packetEncoding = "xudp"
         }
-        val tls = buildTls(query, server, defaultEnabled = isTlsSecurity(query, port), defaultFingerprint = "random")
+        val tls = buildTls(query, server, defaultEnabled = vlessAsksForTls(query), defaultFingerprint = "random", inferFromTlsParams = false)
         val transport = buildTransport(query)
         val visionWithTransport = flow == "xtls-rprx-vision" && transport != null
         val visionValid = flow == "xtls-rprx-vision" && !visionWithTransport && tls != null
@@ -191,11 +191,26 @@ object SubscriptionParser {
         return node(remark ?: "$server:$port", Protocol.HYSTERIA2, server, port, password = password, raw = raw.toString())
     }
 
-    private fun buildTls(query: Map<String, String>, server: String, defaultEnabled: Boolean, defaultFingerprint: String): JSONObject? {
+    /**
+     * [inferFromTlsParams]: whether sni/alpn/fp/insecure alone turn TLS on. False for VLESS,
+     * whose links say TLS only through `security` (see [vlessAsksForTls]).
+     */
+    private fun buildTls(
+        query: Map<String, String>,
+        server: String,
+        defaultEnabled: Boolean,
+        defaultFingerprint: String,
+        inferFromTlsParams: Boolean = true
+    ): JSONObject? {
         val security = query["security"]?.lowercase()
         if (security == "none") return null
         val reality = security == "reality" || !query["pbk"].isNullOrBlank() || !query["public-key"].isNullOrBlank()
-        val enabled = defaultEnabled || security == "tls" || reality || query["sni"] != null || query["servername"] != null || query["alpn"] != null || query["insecure"] != null || query["allowInsecure"] != null || query["fp"] != null || query["fingerprint"] != null
+        val impliedByParams = inferFromTlsParams && (
+            query["sni"] != null || query["servername"] != null || query["alpn"] != null ||
+                query["insecure"] != null || query["allowInsecure"] != null ||
+                query["fp"] != null || query["fingerprint"] != null
+            )
+        val enabled = defaultEnabled || security == "tls" || reality || impliedByParams
         if (!enabled) return null
         return JSONObject().put("enabled", true).put("server_name", query["sni"] ?: query["servername"] ?: server).apply {
             val insecure = query["insecure"] ?: query["allowInsecure"] ?: query["allow-insecure"]
@@ -380,12 +395,16 @@ object SubscriptionParser {
         return number.toInt().takeIf { it > 0 }
     }
 
-    private fun isTlsSecurity(query: Map<String, String>, port: Int): Boolean = when (query["security"]?.lowercase()) {
-        "none" -> false
-        "tls", "reality" -> true
-        null, "" -> port !in PLAINTEXT_VLESS_PORTS
-        else -> true
-    }
+    /**
+     * A VLESS link without `security` means no TLS - that is the XTLS share-link standard,
+     * and what v2rayN and other clients do. This used to turn TLS on for any port outside
+     * a short list of HTTP ports, and for any sni/fp/alpn parameter (e.g. an `sni` on
+     * Cloudflare's plain-HTTP port 2052), so such nodes opened TLS to a server that never
+     * spoke it. Now only security=tls|reality asks for it; a Reality key (pbk) still means
+     * Reality. Trojan and Hysteria2 keep TLS by default, which is their standard.
+     */
+    private fun vlessAsksForTls(query: Map<String, String>): Boolean =
+        query["security"]?.trim()?.lowercase() in setOf("tls", "reality")
 
     private fun isTrue(value: String): Boolean = value.lowercase() in setOf("true", "1", "yes")
 
@@ -414,7 +433,6 @@ object SubscriptionParser {
     private const val URI_ASCII_SYMBOLS = "-_.!~*'();/?:@&=\$,[]"
     private const val HEX_DIGITS = "0123456789ABCDEF"
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
-    private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)
     private val VALID_FINGERPRINTS = setOf(
         "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
         "chrome_pq", "chrome_pq_psk", "chrome", "firefox", "edge",
