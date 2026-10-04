@@ -86,7 +86,7 @@ object SubscriptionParser {
         val hashIndex = normalized.indexOf('#')
         val uriPart = if (hashIndex >= 0) normalized.substring(0, hashIndex) else normalized
         val rawRemark = if (hashIndex >= 0) normalized.substring(hashIndex + 1) else null
-        val uri = runCatching { URI(encodePlus(uriPart)) }.getOrNull() ?: return null
+        val uri = runCatching { URI(escapeForUri(uriPart)) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase() ?: return null
         val remark = rawRemark?.let(::decode)?.takeIf { it.isNotBlank() }
         return when (scheme) {
@@ -258,7 +258,45 @@ object SubscriptionParser {
         runCatching { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) }.getOrDefault(it)
     }.orEmpty()
 
-    private fun encodePlus(value: String): String = value.replace("+", "%2B")
+    /**
+     * Makes a share link acceptable to java.net.URI without changing what it says.
+     *
+     * URI is strict and throws on characters other clients take as they are - `{ } " | \ ^`
+     * and the backtick, `< >`, spaces, control characters, and a `%` that isn't followed by
+     * two hex digits - and parseUri() then drops the node without a word. Real lists carry
+     * them: `fm={"tcp":...}` on Cloudflare Workers nodes, `host=%`. Each such character
+     * becomes its %XX form, which parseQuery()/decode() turn straight back into the same
+     * character, so the values that end up in the config are exactly the link's.
+     *
+     * `+` is escaped as well, as before: URLDecoder would read it as a space, and in these
+     * links it is data (passwords, paths, base64). `[`/`]` are left alone - URI accepts
+     * them, and they are how an IPv6 host is written.
+     */
+    private fun escapeForUri(value: String): String {
+        val out = StringBuilder(value.length + 16)
+        for ((index, c) in value.withIndex()) {
+            when {
+                c == '+' -> out.append("%2B")
+                c == '%' -> if (isPercentEscape(value, index)) out.append(c) else out.append("%25")
+                c.code < 0x80 -> if (c.isLetterOrDigit() || c in URI_ASCII_SYMBOLS) out.append(c) else appendPercentEncoded(out, c)
+                Character.isISOControl(c) || Character.isSpaceChar(c) -> appendPercentEncoded(out, c)
+                else -> out.append(c)
+            }
+        }
+        return out.toString()
+    }
+
+    private fun isPercentEscape(value: String, index: Int): Boolean =
+        index + 2 < value.length && isHexDigit(value[index + 1]) && isHexDigit(value[index + 2])
+
+    private fun isHexDigit(c: Char): Boolean = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
+
+    private fun appendPercentEncoded(out: StringBuilder, c: Char) {
+        for (byte in c.toString().toByteArray(StandardCharsets.UTF_8)) {
+            val v = byte.toInt() and 0xFF
+            out.append('%').append(HEX_DIGITS[v shr 4]).append(HEX_DIGITS[v and 0x0F])
+        }
+    }
 
     private fun decodeResidualPercent(value: String): String {
         var current = value
@@ -308,6 +346,10 @@ object SubscriptionParser {
 
     private const val TAG = "SubscriptionParser"
     private const val MAX_URI_CHARS_PER_LINE = 64 * 1024
+    // ASCII punctuation java.net.URI accepts unescaped: RFC 2396 marks and reserved
+    // characters, plus the brackets RFC 2732 added. '%' and '+' are handled separately.
+    private const val URI_ASCII_SYMBOLS = "-_.!~*'();/?:@&=\$,[]"
+    private const val HEX_DIGITS = "0123456789ABCDEF"
     private val VALID_PACKET_ENCODINGS = setOf("xudp")
     private val PLAINTEXT_VLESS_PORTS = setOf(80, 8080, 8880, 2052, 2082, 2086, 2095)
     private val VALID_FINGERPRINTS = setOf(

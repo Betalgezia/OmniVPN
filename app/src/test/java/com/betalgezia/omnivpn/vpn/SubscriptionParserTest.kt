@@ -223,6 +223,38 @@ class SubscriptionParserTest {
     }
 
     @Test
+    fun parsesLinkWithJsonInAQueryValue() {
+        // Cloudflare Workers nodes carry fm={"tcp":...}: java.net.URI rejected the raw
+        // braces and quotes, and the node silently disappeared from the list.
+        val uri = """vless://00000000-0000-0000-0000-000000000000@example.com:443?type=ws&security=tls&sni=example.com&path=%2F&fm={"tcp":1}#t"""
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals("t", node.name)
+        assertEquals("/", JSONObject(node.rawConfig!!).getJSONObject("transport").getString("path"))
+    }
+
+    @Test
+    fun parsesLinkWithALonePercentSign() {
+        val uri = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=ws&security=tls&sni=example.com&path=%2F&host=%#t"
+        val node = SubscriptionParser.parse(uri).single()
+        val headers = JSONObject(node.rawConfig!!).getJSONObject("transport").getJSONObject("headers")
+        assertEquals("%", headers.getString("Host"))
+    }
+
+    @Test
+    fun escapedCharactersReachTheConfigUnchanged() {
+        val uri = "trojan://p{a}ss|w^rd@example.com:443?security=tls&sni=example.com&type=ws&path=/a b\"c#t"
+        val node = SubscriptionParser.parse(uri).single()
+        assertEquals("p{a}ss|w^rd", node.password)
+        assertEquals("/a b\"c", JSONObject(node.rawConfig!!).getJSONObject("transport").getString("path"))
+    }
+
+    @Test
+    fun ipv6HostStillParses() {
+        val uri = "vless://00000000-0000-0000-0000-000000000000@[2001:db8::1]:8443?security=tls&sni=example.com#v6"
+        assertEquals(8443, SubscriptionParser.parse(uri).single().port)
+    }
+
+    @Test
     fun fallsBackToHostPortNameWhenRemarkIsBlank() {
         val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443"
         val node = SubscriptionParser.parse(uri).single()
