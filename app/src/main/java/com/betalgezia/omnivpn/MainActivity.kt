@@ -518,7 +518,7 @@ private fun heroVisualsFor(
         ActiveConnection.None -> null
     }
     val protoLabel = when (active) {
-        is ActiveConnection.Server -> active.node.protocol.name
+        is ActiveConnection.Server -> protocolLabel(active.node.protocol)
         ActiveConnection.Warp -> "WARP"
         ActiveConnection.None -> null
     }
@@ -1311,7 +1311,7 @@ private fun ServerRow(
 private fun ProtocolChip(protocol: Protocol) {
     val color = protocolColor(protocol)
     Text(
-        protocol.name,
+        protocolLabel(protocol),
         fontSize = 10.sp,
         color = color,
         modifier = Modifier
@@ -1361,6 +1361,16 @@ private fun protocolColor(protocol: Protocol): Color = when (protocol) {
     Protocol.HYSTERIA2 -> Nocturne.hysteria2
     Protocol.AMNEZIAWG -> Nocturne.amneziaWg
     Protocol.WARP -> Nocturne.warp
+    Protocol.SHADOWSOCKS -> Nocturne.shadowsocks
+    Protocol.VMESS -> Nocturne.vmess
+    Protocol.TUIC -> Nocturne.tuic
+}
+
+// The protocol badge's text: the enum name, except SHADOWSOCKS - too long for the chip,
+// and "SS" is what every client calls it anyway.
+private fun protocolLabel(protocol: Protocol): String = when (protocol) {
+    Protocol.SHADOWSOCKS -> "SS"
+    else -> protocol.name
 }
 
 // ============================ Swipe-to-delete ==========================

@@ -86,15 +86,200 @@ object SubscriptionParser {
         val hashIndex = normalized.indexOf('#')
         val uriPart = if (hashIndex >= 0) normalized.substring(0, hashIndex) else normalized
         val rawRemark = if (hashIndex >= 0) normalized.substring(hashIndex + 1) else null
+        val remark = rawRemark?.let(::decode)?.takeIf { it.isNotBlank() }
+        // vmess:// and ss:// carry base64, which can contain '/' - java.net.URI would read
+        // that as the start of a path - so those two are taken apart by hand.
+        when (uriPart.substringBefore("://", "").lowercase()) {
+            "vmess" -> return parseVmess(uriPart.substringAfter("://"), remark)
+            "ss" -> return parseShadowsocks(uriPart.substringAfter("://"), remark)
+        }
         val uri = runCatching { URI(escapeForUri(uriPart)) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase() ?: return null
-        val remark = rawRemark?.let(::decode)?.takeIf { it.isNotBlank() }
         return when (scheme) {
             "vless" -> parseVless(uri, remark)
             "trojan" -> parseTrojan(uri, remark)
             "hysteria2", "hy2" -> parseHysteria2(uri, remark)
+            "tuic" -> parseTuic(uri, remark)
             else -> null
         }
+    }
+
+    /**
+     * `ss://` in both shapes in use. SIP002: `ss://userinfo@host:port/?plugin=...`, where
+     * userinfo is base64 of `method:password`, or the two percent-encoded as they are (how
+     * Shadowsocks 2022 links write it). The older shape: everything after `ss://` is base64
+     * of `method:password@host:port`.
+     *
+     * A link the core couldn't run is skipped rather than kept: an unknown method, a
+     * Shadowsocks 2022 key of the wrong size, or a plugin the core doesn't have - the server
+     * expects that plugin, so without it the node can only fail.
+     */
+    private fun parseShadowsocks(body: String, remark: String?): Node? {
+        val main = body.substringBefore('?')
+        val query = if ('?' in body) parseQuery(body.substringAfter('?')) else emptyMap()
+        val credentialsAndAddress = if ('@' in main) {
+            val at = main.lastIndexOf('@')
+            val userInfo = percentDecode(main.substring(0, at))
+            val credentials = if (':' in userInfo) userInfo else decodeBase64Text(userInfo) ?: return null
+            // The address may end in the "/" SIP002 puts before "?"; parseHostPort drops it.
+            "$credentials@${main.substring(at + 1)}"
+        } else {
+            // Not trimmed up front: '/' is a base64 character, and can end the string.
+            val encoded = percentDecode(main)
+            decodeBase64Text(encoded) ?: decodeBase64Text(encoded.trimEnd('/')) ?: return null
+        }
+        val at = credentialsAndAddress.lastIndexOf('@').takeIf { it > 0 } ?: return null
+        val credentials = credentialsAndAddress.substring(0, at)
+        val (server, port) = parseHostPort(credentialsAndAddress.substring(at + 1)) ?: return null
+        val method = OutboundFieldRules.shadowsocksMethod(credentials.substringBefore(':'))
+            ?: return skipped("Shadowsocks method the core doesn't have")
+        val password = credentials.substringAfter(':', "")
+        if (!OutboundFieldRules.isValidShadowsocksPassword(method, password)) {
+            return skipped("Shadowsocks password/key the core won't take for $method")
+        }
+        val plugin = query["plugin"]?.trim()?.takeIf { it.isNotEmpty() }?.let { spec ->
+            OutboundFieldRules.shadowsocksPlugin(spec.substringBefore(';'), spec.substringAfter(';', ""))
+                ?: return skipped("Shadowsocks plugin the core doesn't have: ${spec.substringBefore(';')}")
+        }
+        val raw = JSONObject()
+            .put("type", "shadowsocks")
+            .put("server", server)
+            .put("server_port", port)
+            .put("method", method)
+            .put("password", password)
+            .apply {
+                plugin?.let { (name, options) ->
+                    put("plugin", name)
+                    if (options.isNotEmpty()) put("plugin_opts", options)
+                }
+            }
+        return node(remark ?: "$server:$port", Protocol.SHADOWSOCKS, server, port, password = password, raw = raw.toString())
+    }
+
+    /**
+     * `vmess://` in v2rayN's format, the one in practical use: base64 of a JSON object with
+     * add, port, id, aid, scy, net, type, host, path, tls, sni, alpn, fp. Transports the core
+     * has are taken (tcp, ws, grpc, h2/http, httpupgrade, xhttp); a node on mKCP, QUIC or
+     * TCP with an HTTP header is skipped, as it could only fail.
+     */
+    private fun parseVmess(body: String, remark: String?): Node? {
+        val json = decodeBase64Text(percentDecode(body))?.trim()?.takeIf { it.startsWith("{") } ?: return null
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        fun field(key: String): String =
+            obj.opt(key)?.takeUnless { it == JSONObject.NULL }?.toString()?.trim().orEmpty()
+        val server = field("add").takeIf { it.isNotEmpty() } ?: return null
+        val port = field("port").toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+        val uuid = field("id").takeIf { it.isNotEmpty() } ?: return null
+        val net = field("net").lowercase().ifEmpty { "tcp" }
+        val headerType = field("type").lowercase()
+        val host = field("host")
+        val path = field("path")
+        val tlsOn = field("tls").lowercase() == "tls"
+        // Put into the shape a VLESS/Trojan link's query has, so the same transport and
+        // TLS builders apply.
+        val query = linkedMapOf<String, String>()
+        when (net) {
+            "tcp" -> if (headerType == "http") return skipped("VMess over TCP with an HTTP header")
+            "ws", "websocket", "httpupgrade", "http-upgrade", "h2", "http", "xhttp" -> query["type"] = net
+            "grpc" -> {
+                query["type"] = "grpc"
+                if (path.isNotEmpty()) query["serviceName"] = path
+            }
+            else -> return skipped("VMess transport the core doesn't have: $net")
+        }
+        if (path.isNotEmpty() && net != "grpc") query["path"] = path
+        if (host.isNotEmpty()) query["host"] = host
+        if (net == "xhttp" && headerType.isNotEmpty()) query["mode"] = headerType
+        if (tlsOn) {
+            // No sni: the host header's name, not the address - behind a CDN `add` is often
+            // just an IP of the CDN.
+            field("sni").ifEmpty { host.substringBefore(',').trim() }.takeIf { it.isNotEmpty() }?.let { query["sni"] = it }
+            field("alpn").takeIf { it.isNotEmpty() }?.let { query["alpn"] = it }
+            field("fp").takeIf { it.isNotEmpty() }?.let { query["fp"] = it }
+            if (isTrue(field("allowInsecure")) || isTrue(field("insecure"))) query["insecure"] = "1"
+        }
+        val raw = JSONObject()
+            .put("type", "vmess")
+            .put("server", server)
+            .put("server_port", port)
+            .put("uuid", uuid)
+            .put("security", OutboundFieldRules.vmessSecurity(field("scy")))
+            .put("alter_id", field("aid").toIntOrNull()?.takeIf { it >= 0 } ?: 0)
+            .apply {
+                buildTls(query, server, defaultEnabled = tlsOn, defaultFingerprint = "", inferFromTlsParams = false)
+                    ?.let { put("tls", it) }
+                buildTransport(query)?.let { put("transport", it) }
+            }
+        val name = remark ?: field("ps").takeIf { it.isNotEmpty() } ?: "$server:$port"
+        return node(name, Protocol.VMESS, server, port, uuid = uuid, raw = raw.toString())
+    }
+
+    /**
+     * `tuic://uuid:password@host:port?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=...`
+     * (TUIC v5, the only version the core speaks). TUIC runs over QUIC, so TLS is always on,
+     * without uTLS (it doesn't apply to QUIC), and with ALPN h3 unless the link names one -
+     * QUIC can't complete a handshake without an ALPN.
+     */
+    private fun parseTuic(uri: URI, remark: String?): Node? {
+        val server = uri.host?.takeIf { it.isNotBlank() } ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: return null
+        val userInfo = decode(uri.rawUserInfo)
+        val uuid = userInfo.substringBefore(':').trim().takeIf { it.isNotEmpty() } ?: return null
+        val password = userInfo.substringAfter(':', "").takeIf { it.isNotEmpty() } ?: return null
+        val query = parseQuery(uri.rawQuery)
+        val tls = (buildTls(query, server, defaultEnabled = true, defaultFingerprint = "")
+            ?: JSONObject().put("enabled", true).put("server_name", server)).apply {
+            remove("utls")
+            remove("reality")
+            if (!has("alpn")) put("alpn", JSONArray().put("h3"))
+            if ((query["allow_insecure"] ?: query["allow-insecure"])?.let(::isTrue) == true) put("insecure", true)
+            if ((query["disable_sni"] ?: query["disable-sni"])?.let(::isTrue) == true) put("disable_sni", true)
+        }
+        val raw = JSONObject()
+            .put("type", "tuic")
+            .put("server", server)
+            .put("server_port", port)
+            .put("uuid", uuid)
+            .put("password", password)
+            .put("tls", tls)
+            .apply {
+                OutboundFieldRules.tuicCongestionControl(
+                    query["congestion_control"] ?: query["congestion-control"] ?: query["congestion_controller"]
+                )?.let { put("congestion_control", it) }
+                OutboundFieldRules.tuicUdpRelayMode(query["udp_relay_mode"] ?: query["udp-relay-mode"])
+                    ?.let { put("udp_relay_mode", it) }
+            }
+        return node(remark ?: "$server:$port", Protocol.TUIC, server, port, uuid = uuid, password = password, raw = raw.toString())
+    }
+
+    /** `host:port` or `[ipv6]:port`; null unless both are there and the port is valid. */
+    private fun parseHostPort(text: String): Pair<String, Int>? {
+        val value = text.trim().trimEnd('/')
+        val (host, portText) = if (value.startsWith("[")) {
+            val close = value.indexOf(']').takeIf { it > 1 } ?: return null
+            value.substring(1, close) to value.substring(close + 1).removePrefix(":")
+        } else {
+            value.substringBeforeLast(':', "") to value.substringAfterLast(':', "")
+        }
+        val port = portText.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+        return host.trim().takeIf { it.isNotEmpty() && it.none(Char::isWhitespace) }?.let { it to port }
+    }
+
+    /** Base64 (standard or URL-safe, padded or not) as UTF-8 text; null if it isn't. */
+    private fun decodeBase64Text(value: String): String? {
+        val compact = value.filterNot(Char::isWhitespace)
+        if (compact.isEmpty()) return null
+        return runCatching { Base64Compat.decode(compact).toString(StandardCharsets.UTF_8) }.getOrNull()
+    }
+
+    /** Percent-decoding that leaves '+' alone - it is data in base64 and passwords. */
+    private fun percentDecode(value: String): String =
+        if ('%' !in value) value else decode(value.replace("+", "%2B"))
+
+    // Never logs the link itself (it carries credentials) - only why it was left out.
+    private fun skipped(reason: String): Node? {
+        runCatching { android.util.Log.w(TAG, "skipped a link: $reason") }
+        return null
     }
 
     private fun parseVless(uri: URI, remark: String?): Node? {
@@ -248,6 +433,13 @@ object SubscriptionParser {
             "httpupgrade", "http-upgrade" -> JSONObject().put("type", "httpupgrade").apply {
                 query["path"]?.let { put("path", decodeResidualPercent(it)) }
                 query["host"]?.let { put("host", it) }
+            }
+            // HTTP/2 - what Xray links call type=http (and VMess net=h2). Used to fall through
+            // to "no transport", which can only fail against such a server.
+            "http", "h2" -> JSONObject().put("type", "http").apply {
+                query["path"]?.let { put("path", decodeResidualPercent(it)) }
+                query["host"]?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.takeIf { it.isNotEmpty() }
+                    ?.let { put("host", JSONArray(it)) }
             }
             "xhttp" -> JSONObject().put("type", "xhttp").apply {
                 // Xray share links keep host, path and mode at the top level and every other

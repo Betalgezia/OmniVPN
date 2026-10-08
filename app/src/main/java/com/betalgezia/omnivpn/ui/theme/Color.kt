@@ -34,6 +34,12 @@ val ProtocolHysteria2Light = Color(0xFF9A6400)
 val ProtocolHysteria2Dark = Color(0xFFFFC658)
 val ProtocolAmneziaWgLight = Color(0xFF157A5C)
 val ProtocolAmneziaWgDark = Color(0xFF6EE7B7)
+val ProtocolShadowsocksLight = Color(0xFF0E7C91)
+val ProtocolShadowsocksDark = Color(0xFF5CD0E6)
+val ProtocolVmessLight = Color(0xFF5E7A12)
+val ProtocolVmessDark = Color(0xFFBFE36B)
+val ProtocolTuicLight = Color(0xFFB23A62)
+val ProtocolTuicDark = Color(0xFFFF8FB8)
 
 // Dark theme surfaces - retuned 2026-09 to the Nocturne v2 palette
 // (--color-bg / --color-surface / --color-neutral-900 / …).
@@ -98,6 +104,9 @@ object Nocturne {
     val trojan = Color(0xFFE88AE0)
     val hysteria2 = Color(0xFFFFC658)
     val amneziaWg = Color(0xFF6EE7B7)
+    val shadowsocks = Color(0xFF5CD0E6)
+    val vmess = Color(0xFFBFE36B)
+    val tuic = Color(0xFFFF8FB8)
     val warp = Color(0xFFFF9B4A)
     val warpAmber = Color(0xFFFFC658)
     val warpPink = Color(0xFFE88AE0)

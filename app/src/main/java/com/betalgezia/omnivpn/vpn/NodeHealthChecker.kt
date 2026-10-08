@@ -395,7 +395,7 @@ class NodeHealthChecker @Inject constructor(
 
     /**
      * Socket-level reachability, no core involved. TCP protocols get a connect;
-     * UDP ones (Hysteria2, AmneziaWG) get a connected-socket probe where only an
+     * UDP ones (Hysteria2, TUIC, AmneziaWG) get a connected-socket probe where only an
      * ICMP port-unreachable is conclusive - those protocols drop unsolicited
      * packets by design, so silence proves nothing and is reported as reachable.
      */
@@ -409,7 +409,7 @@ class NodeHealthChecker @Inject constructor(
         fun elapsed() = (System.nanoTime() - start) / 1_000_000
         try {
             when (node.protocol) {
-                Protocol.VLESS, Protocol.TROJAN -> {
+                Protocol.VLESS, Protocol.TROJAN, Protocol.SHADOWSOCKS, Protocol.VMESS -> {
                     java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), QUICK_TIMEOUT_MS) }
                     NodeHealth.Reachable(elapsed())
                 }

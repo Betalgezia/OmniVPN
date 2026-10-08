@@ -343,6 +343,214 @@ class SubscriptionParserTest {
         assertFalse(JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).has("encryption"))
     }
 
+    // ---- Shadowsocks ----
+
+    @Test
+    fun parsesSip002ShadowsocksWithBase64Userinfo() {
+        val userInfo = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("aes-256-gcm:pass".toByteArray())
+        val node = SubscriptionParser.parse("ss://$userInfo@1.2.3.4:8388#SS").single()
+        assertEquals(Protocol.SHADOWSOCKS, node.protocol)
+        assertEquals("SS", node.name)
+        assertEquals("1.2.3.4", node.server)
+        assertEquals(8388, node.port)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("shadowsocks", raw.getString("type"))
+        assertEquals("aes-256-gcm", raw.getString("method"))
+        assertEquals("pass", raw.getString("password"))
+        assertFalse(raw.has("plugin"))
+    }
+
+    @Test
+    fun parsesShadowsocksUserinfoInStandardBase64WithSlashAndPlus() {
+        // Plain base64 has '/' and '+', which java.net.URI would read as a path and a space.
+        val userInfo = java.util.Base64.getEncoder().encodeToString("chacha20-ietf-poly1305:~~~???".toByteArray())
+        assertTrue('/' in userInfo && '+' in userInfo)
+        val raw = JSONObject(SubscriptionParser.parse("ss://$userInfo@example.com:443#x").single().rawConfig!!)
+        assertEquals("chacha20-ietf-poly1305", raw.getString("method"))
+        assertEquals("~~~???", raw.getString("password"))
+    }
+
+    @Test
+    fun parsesPlainSip002Shadowsocks2022OnIpv6() {
+        val key = java.util.Base64.getEncoder().encodeToString(ByteArray(16) { it.toByte() })
+        val encodedKey = java.net.URLEncoder.encode(key, "UTF-8")
+        val node = SubscriptionParser.parse("ss://2022-blake3-aes-128-gcm:$encodedKey@[2001:db8::1]:443#v6").single()
+        assertEquals("2001:db8::1", node.server)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("2022-blake3-aes-128-gcm", raw.getString("method"))
+        assertEquals(key, raw.getString("password"))
+    }
+
+    @Test
+    fun parsesLegacyAllBase64Shadowsocks() {
+        val body = java.util.Base64.getEncoder().encodeToString("aes-128-gcm:pa@ss@example.com:8388".toByteArray())
+        val node = SubscriptionParser.parse("ss://$body#old").single()
+        assertEquals("example.com", node.server)
+        assertEquals(8388, node.port)
+        assertEquals("pa@ss", JSONObject(node.rawConfig!!).getString("password"))
+        assertEquals("old", node.name)
+    }
+
+    @Test
+    fun parsesShadowsocksPluginsTheCoreHas() {
+        val userInfo = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("aes-128-gcm:pass".toByteArray())
+        val obfs = JSONObject(SubscriptionParser.parse(
+            "ss://$userInfo@example.com:8388/?plugin=simple-obfs%3Bobfs%3Dhttp%3Bobfs-host%3Dwww.bing.com#o"
+        ).single().rawConfig!!)
+        assertEquals("obfs-local", obfs.getString("plugin"))
+        assertEquals("obfs=http;obfs-host=www.bing.com", obfs.getString("plugin_opts"))
+        val v2ray = JSONObject(SubscriptionParser.parse(
+            "ss://$userInfo@example.com:8388?plugin=v2ray-plugin%3Bmode%3Dwebsocket%3Bhost%3Dcdn.example.com%3Btls#v"
+        ).single().rawConfig!!)
+        assertEquals("v2ray-plugin", v2ray.getString("plugin"))
+        assertEquals("mode=websocket;host=cdn.example.com;tls", v2ray.getString("plugin_opts"))
+    }
+
+    @Test
+    fun skipsShadowsocksLinksTheCoreCouldNotRun() {
+        fun ss(credentials: String, query: String = "") =
+            "ss://" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(credentials.toByteArray()) + "@example.com:8388$query#x"
+        val shortKey = java.util.Base64.getEncoder().encodeToString(ByteArray(8))
+        val bad = listOf(
+            ss("aes-128-gcmx:pass"),
+            ss("aes-256-gcm:"),
+            ss("2022-blake3-aes-256-gcm:$shortKey"),
+            ss("aes-128-gcm:pass", "?plugin=kcptun%3Bmode%3Dfast"),
+            ss("aes-128-gcm:pass", "?plugin=obfs-local%3Bobfs%3Dwebsocket"),
+            ss("aes-128-gcm:pass", "?plugin=v2ray-plugin%3Bmode%3Dquic")
+        )
+        for (link in bad) assertEquals(0, SubscriptionParser.parse(link).size, link)
+    }
+
+    @Test
+    fun acceptsShadowsocksMethodAliasAndCase() {
+        val userInfo = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("CHACHA20-POLY1305:pass".toByteArray())
+        val raw = JSONObject(SubscriptionParser.parse("ss://$userInfo@example.com:8388#x").single().rawConfig!!)
+        assertEquals("chacha20-ietf-poly1305", raw.getString("method"))
+    }
+
+    // ---- VMess ----
+
+    private fun vmess(json: JSONObject, urlSafe: Boolean = false): String =
+        "vmess://" + (if (urlSafe) java.util.Base64.getUrlEncoder().withoutPadding() else java.util.Base64.getEncoder())
+            .encodeToString(json.toString().toByteArray())
+
+    @Test
+    fun parsesV2rayNVmessOverWebsocketAndTls() {
+        val link = vmess(JSONObject()
+            .put("v", "2").put("ps", "vm").put("add", "104.16.1.1").put("port", "443")
+            .put("id", "00000000-0000-0000-0000-000000000001").put("aid", "0").put("scy", "auto")
+            .put("net", "ws").put("type", "none").put("host", "cdn.example.com").put("path", "/ws")
+            .put("tls", "tls").put("sni", ""))
+        val node = SubscriptionParser.parse(link).single()
+        assertEquals(Protocol.VMESS, node.protocol)
+        assertEquals("vm", node.name)
+        assertEquals("00000000-0000-0000-0000-000000000001", node.uuid)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("vmess", raw.getString("type"))
+        assertEquals("auto", raw.getString("security"))
+        assertEquals(0, raw.getInt("alter_id"))
+        // Behind a CDN `add` is an IP of the CDN; the name to present is the host's.
+        assertEquals("cdn.example.com", raw.getJSONObject("tls").getString("server_name"))
+        val transport = raw.getJSONObject("transport")
+        assertEquals("ws", transport.getString("type"))
+        assertEquals("/ws", transport.getString("path"))
+        assertEquals("cdn.example.com", transport.getJSONObject("headers").getString("Host"))
+    }
+
+    @Test
+    fun parsesVmessGrpcWithNumbersAndNoTls() {
+        val link = vmess(JSONObject()
+            .put("add", "example.com").put("port", 8443).put("id", "00000000-0000-0000-0000-000000000002")
+            .put("aid", 2).put("scy", "weird").put("net", "grpc").put("path", "svc").put("tls", ""), urlSafe = true)
+        val raw = JSONObject(SubscriptionParser.parse(link).single().rawConfig!!)
+        assertEquals(8443, raw.getInt("server_port"))
+        assertEquals(2, raw.getInt("alter_id"))
+        assertEquals("auto", raw.getString("security"))
+        assertFalse(raw.has("tls"))
+        assertEquals("grpc", raw.getJSONObject("transport").getString("type"))
+        assertEquals("svc", raw.getJSONObject("transport").getString("service_name"))
+    }
+
+    @Test
+    fun parsesVmessHttp2Transport() {
+        val link = vmess(JSONObject()
+            .put("add", "example.com").put("port", "443").put("id", "00000000-0000-0000-0000-000000000003")
+            .put("net", "h2").put("host", "a.example.com, b.example.com").put("path", "/h2").put("tls", "tls"))
+        val transport = JSONObject(SubscriptionParser.parse(link).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("http", transport.getString("type"))
+        assertEquals("/h2", transport.getString("path"))
+        assertEquals(2, transport.getJSONArray("host").length())
+    }
+
+    @Test
+    fun skipsVmessTheCoreCouldNotRun() {
+        val base = JSONObject().put("add", "example.com").put("port", "443").put("id", "00000000-0000-0000-0000-000000000004")
+        val bad = listOf(
+            vmess(JSONObject(base.toString()).put("net", "tcp").put("type", "http")),
+            vmess(JSONObject(base.toString()).put("net", "kcp")),
+            vmess(JSONObject(base.toString()).put("port", "0")),
+            "vmess://not-base64-json"
+        )
+        for (link in bad) assertEquals(0, SubscriptionParser.parse(link).size, link)
+    }
+
+    @Test
+    fun aRemarkAfterHashNamesAVmessNode() {
+        val link = vmess(JSONObject().put("ps", "inside").put("add", "example.com").put("port", "443")
+            .put("id", "00000000-0000-0000-0000-000000000005")) + "#outside"
+        assertEquals("outside", SubscriptionParser.parse(link).single().name)
+    }
+
+    // ---- TUIC ----
+
+    @Test
+    fun parsesTuicV5() {
+        val node = SubscriptionParser.parse(
+            "tuic://00000000-0000-0000-0000-000000000006:p%40ss@example.com:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=sni.example.com&allow_insecure=1#t"
+        ).single()
+        assertEquals(Protocol.TUIC, node.protocol)
+        assertEquals("p@ss", node.password)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("tuic", raw.getString("type"))
+        assertEquals("00000000-0000-0000-0000-000000000006", raw.getString("uuid"))
+        assertEquals("bbr", raw.getString("congestion_control"))
+        assertEquals("native", raw.getString("udp_relay_mode"))
+        val tls = raw.getJSONObject("tls")
+        assertTrue(tls.getBoolean("enabled"))
+        assertEquals("sni.example.com", tls.getString("server_name"))
+        assertTrue(tls.getBoolean("insecure"))
+        assertEquals("h3", tls.getJSONArray("alpn").getString(0))
+    }
+
+    @Test
+    fun tuicDefaultsAlpnDropsUnknownValuesAndNeverUsesUtls() {
+        val raw = JSONObject(SubscriptionParser.parse(
+            "tuic://00000000-0000-0000-0000-000000000007:pass@example.com:443?congestion_control=hybla&udp_relay_mode=foo&fp=chrome#t"
+        ).single().rawConfig!!)
+        assertFalse(raw.has("congestion_control"))
+        assertFalse(raw.has("udp_relay_mode"))
+        val tls = raw.getJSONObject("tls")
+        assertEquals("h3", tls.getJSONArray("alpn").getString(0))
+        assertFalse(tls.has("utls"))
+        assertEquals("new_reno", JSONObject(SubscriptionParser.parse(
+            "tuic://00000000-0000-0000-0000-000000000007:pass@example.com:443?congestion_control=new-reno#t"
+        ).single().rawConfig!!).getString("congestion_control"))
+    }
+
+    @Test
+    fun skipsTuicWithoutAPassword() {
+        assertEquals(0, SubscriptionParser.parse("tuic://00000000-0000-0000-0000-000000000008@example.com:443#t").size)
+    }
+
+    @Test
+    fun vlessHttpTransportIsBuiltNow() {
+        val uri = "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&type=http&host=edge.example.com&path=%2Fh2#h"
+        val transport = JSONObject(SubscriptionParser.parse(uri).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("http", transport.getString("type"))
+        assertEquals("edge.example.com", transport.getJSONArray("host").getString(0))
+    }
+
     private fun base64Url(size: Int): String =
         java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(size) { (it * 7).toByte() })
 
