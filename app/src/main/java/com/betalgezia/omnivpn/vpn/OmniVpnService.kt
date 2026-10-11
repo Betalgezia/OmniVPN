@@ -46,6 +46,15 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var recoveryJob: kotlinx.coroutines.Job? = null
 
+    // A start that arrived while another start was still in progress: the
+    // newer config is already in configStore, so reload it once that start ends.
+    private val pendingReload = AtomicBoolean(false)
+    private var trafficJob: kotlinx.coroutines.Job? = null
+
+    // Shown in the notification ("Подключено · <label>"), from EXTRA_LABEL.
+    @Volatile
+    private var connectionLabel: String? = null
+
     override fun onCreate() {
         super.onCreate()
 
@@ -66,6 +75,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         )
         return when (intent?.action) {
             ACTION_START, null -> {
+                intent?.getStringExtra(EXTRA_LABEL)?.let { connectionLabel = it }
                 startVpn()
                 START_NOT_STICKY
             }
@@ -81,12 +91,18 @@ class OmniVpnService : VpnService(), CommandServerHandler {
 
     private fun startVpn() {
         android.util.Log.i(TAG, "startVpn: requested")
+        // A start while the tunnel is up is a switch to the config VpnController
+        // just wrote (another server, or WARP) - it used to be dropped as a
+        // "duplicate start", so picking another server did nothing until the
+        // user disconnected by hand.
         if (engine.isRunning()) {
-            android.util.Log.w(TAG, "startVpn: engine already running, ignoring duplicate start")
+            android.util.Log.i(TAG, "startVpn: engine running - switching via hot reload")
+            reloadVpn()
             return
         }
         if (!startInProgress.compareAndSet(false, true)) {
-            android.util.Log.w(TAG, "startVpn: another start is already in progress")
+            android.util.Log.i(TAG, "startVpn: start in progress - will reload the newer config after it")
+            pendingReload.set(true)
             return
         }
         val generation = operationGeneration.incrementAndGet()
@@ -146,7 +162,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 }
 
                 android.util.Log.i(TAG, "startVpn: SingBoxEngine completed, engineRunning=${engine.isRunning()}")
-                publishNotification("Подключено")
+                publishNotification(connectedText(TrafficStatus.CHECKING))
+                startTrafficCheck(generation)
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startVpn: service startup failed", t)
                 if (operationGeneration.get() == generation) {
@@ -168,6 +185,9 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 }
             } finally {
                 startInProgress.set(false)
+                if (pendingReload.getAndSet(false) && engine.isRunning() && !stopping.get()) {
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { reloadVpn() }
+                }
             }
         }
     }
@@ -177,6 +197,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         operationGeneration.incrementAndGet()
         recoveryJob?.cancel()
         recoveryJob = null
+        trafficJob?.cancel()
+        pendingReload.set(false)
 
         serviceScope.launch {
             runCatching { engine.stop() }
@@ -202,6 +224,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         stopping.set(true)
         recoveryJob?.cancel()
         recoveryJob = null
+        trafficJob?.cancel()
+        pendingReload.set(false)
 
         // Revoke is a terminal Android lifecycle callback. Do the native
         // engine/TUN teardown synchronously so onDestroy cannot cancel an
@@ -221,6 +245,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         unregisterNetworkCallback()
         recoveryJob?.cancel()
         recoveryJob = null
+        trafficJob?.cancel()
+        pendingReload.set(false)
         engine.closeNow()
         closeTun()
 
@@ -233,6 +259,74 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         serviceScope.cancel()
         android.util.Log.i(TAG, "onDestroy: cleanup complete, state=${eventBus.state.value}")
         super.onDestroy()
+    }
+
+    /**
+     * Switches a running tunnel to whatever config VpnController just wrote,
+     * without tearing the VPN down: sing-box's startOrReloadService closes the
+     * old box and starts the new one in the same command server, and the new
+     * TUN replaces the old fd through replaceTun(). This is how a tap on
+     * another server (or on WARP) moves the connection over instead of being
+     * ignored as a "duplicate start". If the hot reload fails, falls back to a
+     * full stop + start so the user still ends up on the server they picked.
+     */
+    private fun reloadVpn() {
+        if (stopping.get()) {
+            android.util.Log.w(TAG, "reloadVpn: stop in progress, ignoring")
+            return
+        }
+        val generation = operationGeneration.incrementAndGet()
+        trafficJob?.cancel()
+        serviceScope.launch {
+            try {
+                eventBus.emit(VpnEvent.Connecting)
+                publishNotification("Переключение…")
+                val config = configStore.read() ?: error("No active sing-box configuration")
+                android.util.Log.i(TAG, "reloadVpn: hot-reloading engine (${config.length} chars)")
+                engine.reload(config)
+                if (operationGeneration.get() != generation || stopping.get()) return@launch
+                eventBus.emit(VpnEvent.Connected)
+                publishNotification(connectedText(TrafficStatus.CHECKING))
+                startTrafficCheck(generation)
+                android.util.Log.i(TAG, "reloadVpn: done")
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                if (operationGeneration.get() != generation || stopping.get()) return@launch
+                android.util.Log.e(TAG, "reloadVpn: hot reload failed, restarting the engine", t)
+                runCatching { engine.stop(emitDisconnected = false) }
+                closeTun()
+                withContext(Dispatchers.Main) { startVpn() }
+            }
+        }
+    }
+
+    /**
+     * Confirms traffic actually flows (see TrafficProbe) and reports it on the
+     * event bus (app + tile) and in the notification. Dropped if another
+     * start/reload/stop happened meanwhile.
+     */
+    private fun startTrafficCheck(generation: Long) {
+        trafficJob?.cancel()
+        eventBus.setTraffic(TrafficStatus.CHECKING)
+        trafficJob = serviceScope.launch {
+            // Give a WireGuard/AWG peer a moment for its first handshake.
+            delay(TRAFFIC_CHECK_DELAY_MS)
+            val ok = TrafficProbe.check()
+            if (operationGeneration.get() != generation || stopping.get() || !engine.isRunning()) return@launch
+            val status = if (ok) TrafficStatus.OK else TrafficStatus.NONE
+            android.util.Log.i(TAG, "traffic check: $status (label=$connectionLabel)")
+            eventBus.setTraffic(status)
+            publishNotification(connectedText(status))
+        }
+    }
+
+    private fun connectedText(traffic: TrafficStatus): String {
+        val suffix = connectionLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
+        return when (traffic) {
+            TrafficStatus.NONE -> "Нет трафика — сервер не отвечает$suffix"
+            TrafficStatus.OK -> "Подключено$suffix"
+            else -> "Проверка соединения…$suffix"
+        }
     }
 
     override fun serviceReload() {
@@ -382,6 +476,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     companion object {
         const val ACTION_START = "com.betalgezia.omnivpn.action.START"
         const val ACTION_STOP = "com.betalgezia.omnivpn.action.STOP"
+        const val EXTRA_LABEL = "com.betalgezia.omnivpn.extra.LABEL"
+        private const val TRAFFIC_CHECK_DELAY_MS = 1_500L
         private const val TAG = "OmniVpnService"
     }
 }

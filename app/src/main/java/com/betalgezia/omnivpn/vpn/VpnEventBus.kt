@@ -19,8 +19,13 @@ class VpnEventBus @Inject constructor() {
 
     private val _state = MutableStateFlow(VpnState.DISCONNECTED)
 
+    // Result of the post-connect probe (see TrafficProbe). Only meaningful
+    // while state is CONNECTED; every other transition resets it.
+    private val _traffic = MutableStateFlow(TrafficStatus.UNKNOWN)
+
     val events: SharedFlow<VpnEvent> = _events.asSharedFlow()
     val state: StateFlow<VpnState> = _state.asStateFlow()
+    val traffic: StateFlow<TrafficStatus> = _traffic.asStateFlow()
 
     fun emit(event: VpnEvent) {
         when (event) {
@@ -30,6 +35,11 @@ class VpnEventBus @Inject constructor() {
             VpnEvent.Disconnected -> _state.value = VpnState.DISCONNECTED
             VpnEvent.Revoked -> _state.value = VpnState.REVOKED
         }
+        if (event != VpnEvent.Connected) _traffic.value = TrafficStatus.UNKNOWN
         _events.tryEmit(event)
+    }
+
+    fun setTraffic(status: TrafficStatus) {
+        _traffic.value = status
     }
 }
