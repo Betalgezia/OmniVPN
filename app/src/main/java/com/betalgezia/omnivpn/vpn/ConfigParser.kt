@@ -10,20 +10,25 @@ import org.yaml.snakeyaml.constructor.SafeConstructor
 import java.nio.charset.StandardCharsets
 
 object ConfigParser {
-    fun parse(input: String): List<Node> {
+    fun parse(input: String): List<Node> = parseWithCount(input).nodes
+
+    /** Like [parse], plus how many URI-list entries were cut off (see [ParsedNodes]). */
+    fun parseWithCount(input: String): ParsedNodes {
         val text = decodeBase64IfNeeded(input)
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return emptyList()
+        if (trimmed.isEmpty()) return ParsedNodes(emptyList())
         if (trimmed.contains("://") && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
-            val uriNodes = SubscriptionParser.parse(trimmed)
-            if (uriNodes.isNotEmpty()) return uriNodes
+            val uriNodes = SubscriptionParser.parseWithCount(trimmed)
+            if (uriNodes.nodes.isNotEmpty()) return uriNodes
         }
-        if (looksLikeWireguardIni(trimmed)) return parseWireguardIni(trimmed)
+        if (looksLikeWireguardIni(trimmed)) return ParsedNodes(parseWireguardIni(trimmed))
 
-        return when {
-            trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
-            else -> parseYaml(trimmed)
-        }
+        return ParsedNodes(
+            when {
+                trimmed.startsWith("{") || trimmed.startsWith("[") -> parseJson(trimmed)
+                else -> parseYaml(trimmed)
+            }
+        )
     }
 
     private fun looksLikeWireguardIni(text: String): Boolean {
@@ -131,6 +136,9 @@ object ConfigParser {
                 "vless" -> parseVlessMap(raw)
                 "trojan" -> parseTrojanMap(raw)
                 "hysteria2", "hy2" -> parseHysteria2Map(raw)
+                "ss", "shadowsocks" -> parseShadowsocksMap(raw)
+                "vmess" -> parseVmessMap(raw)
+                "tuic" -> parseTuicMap(raw)
                 "wireguard", "wg", "awg" -> parseWireguardMap(raw)
                 else -> null
             }
@@ -146,6 +154,13 @@ object ConfigParser {
             .put("server", server)
             .put("server_port", port)
             .put("uuid", uuid)
+        // Same rule as SubscriptionParser.parseVless: carried when the core can parse it,
+        // the entry skipped when it can't.
+        val encryption = string(raw, "encryption")?.trim().orEmpty()
+        if (encryption.isNotEmpty() && !encryption.equals("none", ignoreCase = true)) {
+            if (!OutboundFieldRules.isValidVlessEncryption(encryption)) return null
+            canonical.put("encryption", encryption)
+        }
         val flow = string(raw, "flow")?.trim().orEmpty()
         val transportType = string(raw, "network")?.lowercase()
         val hasTransport = raw["transport"] is Map<*, *> || (transportType != null && transportType != "tcp")
@@ -164,6 +179,7 @@ object ConfigParser {
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, "random"))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "random")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
+        canonical.optJSONObject("transport")?.let(OutboundFieldRules::sanitizeXhttpTransport)
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.VLESS, server, port, uuid = uuid, raw = canonical.toString())
     }
@@ -179,6 +195,7 @@ object ConfigParser {
         if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
         if (!canonical.has("tls")) buildMihomoTls(raw, server, "")?.let { canonical.put("tls", it) }
         putMapIfPresent(raw, canonical, "transport")
+        canonical.optJSONObject("transport")?.let(OutboundFieldRules::sanitizeXhttpTransport)
         if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
         return node(name(raw, server, port), Protocol.TROJAN, server, port, password = password, raw = canonical.toString())
     }
@@ -192,12 +209,138 @@ object ConfigParser {
         int(raw, "up_mbps", "up")?.let { canonical.put("up_mbps", it) }
         int(raw, "down_mbps", "down")?.let { canonical.put("down_mbps", it) }
         copyNetworkField(raw, canonical)
-        copy(raw, canonical, setOf("domain_resolver", "bbr_profile", "disable_chrome_parrot"))
+        copy(raw, canonical, setOf("domain_resolver"))
+        // Checked rather than copied: an unknown bbr_profile, or a non-boolean
+        // disable_chrome_parrot, stops the core from starting at all.
+        OutboundFieldRules.bbrProfile(raw["bbr_profile"])?.let { canonical.put("bbr_profile", it) }
+        if (isTrue(raw["disable_chrome_parrot"])) canonical.put("disable_chrome_parrot", true)
         putMapIfPresent(raw, canonical, "obfs")
         if (!canonical.has("obfs")) buildHysteriaObfs(raw)?.let { canonical.put("obfs", it) }
         putTlsMapIfPresent(raw, canonical, "")
         if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server, ""))
         return node(name(raw, server, port), Protocol.HYSTERIA2, server, port, password = password, raw = canonical.toString())
+    }
+
+    /**
+     * sing-box (`type: shadowsocks`, method, plugin/plugin_opts) and Mihomo (`type: ss`,
+     * cipher, plugin/plugin-opts). Same rules as SubscriptionParser's ss:// - an entry the
+     * core couldn't run (unknown cipher, wrong-size 2022 key, a plugin it doesn't have) is
+     * skipped.
+     */
+    private fun parseShadowsocksMap(raw: Map<*, *>): Node? {
+        val server = string(raw, "server") ?: return null
+        val port = int(raw, "server_port", "port") ?: return null
+        val method = OutboundFieldRules.shadowsocksMethod(string(raw, "method", "cipher")) ?: return null
+        val password = raw["password"]?.toString().orEmpty()
+        if (!OutboundFieldRules.isValidShadowsocksPassword(method, password)) return null
+        val canonical = JSONObject()
+            .put("type", "shadowsocks")
+            .put("server", server)
+            .put("server_port", port)
+            .put("method", method)
+            .put("password", password)
+        string(raw, "plugin")?.let { plugin ->
+            val options = (raw["plugin_opts"] as? String)
+                ?: mihomoPluginOptions(plugin, raw["plugin-opts"] as? Map<*, *>)
+            // Mihomo calls simple-obfs/obfs-local just "obfs".
+            val name = if (plugin.equals("obfs", ignoreCase = true)) "obfs-local" else plugin
+            val (corePlugin, coreOptions) = OutboundFieldRules.shadowsocksPlugin(name, options) ?: return null
+            canonical.put("plugin", corePlugin)
+            if (coreOptions.isNotEmpty()) canonical.put("plugin_opts", coreOptions)
+        }
+        copyNetworkField(raw, canonical)
+        if (isTrue(raw["udp_over_tcp"]) || isTrue(raw["udp-over-tcp"])) canonical.put("udp_over_tcp", true)
+        copy(raw, canonical, setOf("multiplex", "domain_resolver"))
+        return node(name(raw, server, port), Protocol.SHADOWSOCKS, server, port, password = password, raw = canonical.toString())
+    }
+
+    /** Mihomo's plugin-opts map as the `k=v;k=v` string the core's plugins take. */
+    private fun mihomoPluginOptions(plugin: String, options: Map<*, *>?): String? {
+        options ?: return null
+        val parts = when (plugin.lowercase()) {
+            "obfs" -> listOfNotNull(
+                string(options, "mode")?.let { "obfs=$it" },
+                string(options, "host")?.let { "obfs-host=$it" }
+            )
+            "v2ray-plugin" -> listOfNotNull(
+                string(options, "mode")?.let { "mode=$it" },
+                "tls".takeIf { isTrue(options["tls"]) },
+                string(options, "host")?.let { "host=$it" },
+                string(options, "path")?.let { "path=$it" }
+            )
+            else -> emptyList()
+        }
+        return parts.joinToString(";")
+    }
+
+    /**
+     * sing-box (security, alter_id, tls and transport objects) and Mihomo (cipher, alterId,
+     * tls/servername, network with ws-opts/grpc-opts/h2-opts). Mihomo's `network: http` is
+     * TCP with an HTTP header, which the core doesn't have - such an entry is skipped. TLS
+     * only when the entry says so (`tls: true` or a tls object), as Mihomo itself does.
+     */
+    private fun parseVmessMap(raw: Map<*, *>): Node? {
+        val server = string(raw, "server") ?: return null
+        val port = int(raw, "server_port", "port") ?: return null
+        val uuid = string(raw, "uuid") ?: return null
+        if (raw["transport"] !is Map<*, *> && string(raw, "network")?.lowercase() == "http") return null
+        val canonical = JSONObject()
+            .put("type", "vmess")
+            .put("server", server)
+            .put("server_port", port)
+            .put("uuid", uuid)
+            .put("security", OutboundFieldRules.vmessSecurity(string(raw, "security", "cipher")))
+            .put("alter_id", int(raw, "alter_id", "alterId", "aid")?.takeIf { it >= 0 } ?: 0)
+        copyNetworkField(raw, canonical)
+        copy(raw, canonical, setOf("multiplex", "domain_resolver"))
+        string(raw, "packet_encoding", "packet-encoding")?.lowercase()
+            ?.takeIf { it == "packetaddr" || it == "xudp" }?.let { canonical.put("packet_encoding", it) }
+        if (isTrue(raw["global_padding"]) || isTrue(raw["global-padding"])) canonical.put("global_padding", true)
+        if (isTrue(raw["authenticated_length"]) || isTrue(raw["authenticated-length"])) canonical.put("authenticated_length", true)
+        putTlsMapIfPresent(raw, canonical, "")
+        if (!canonical.has("tls") && isTrue(raw["tls"])) canonical.put("tls", buildTls(raw, server, ""))
+        putMapIfPresent(raw, canonical, "transport")
+        canonical.optJSONObject("transport")?.let(OutboundFieldRules::sanitizeXhttpTransport)
+        if (!canonical.has("transport")) buildMihomoTransport(raw)?.let { canonical.put("transport", it) }
+        return node(name(raw, server, port), Protocol.VMESS, server, port, uuid = uuid, raw = canonical.toString())
+    }
+
+    /**
+     * sing-box (`type: tuic`) and Mihomo (congestion-controller, udp-relay-mode, reduce-rtt,
+     * sni, alpn, disable-sni). TUIC v5 only - the core has no v4 (token) client - so an
+     * entry without uuid and password is skipped. TLS always on, no uTLS (QUIC), ALPN h3
+     * unless the entry gives one.
+     */
+    private fun parseTuicMap(raw: Map<*, *>): Node? {
+        val server = string(raw, "server") ?: return null
+        val port = int(raw, "server_port", "port") ?: return null
+        val uuid = string(raw, "uuid") ?: return null
+        val password = string(raw, "password") ?: return null
+        val canonical = JSONObject()
+            .put("type", "tuic")
+            .put("server", server)
+            .put("server_port", port)
+            .put("uuid", uuid)
+            .put("password", password)
+        OutboundFieldRules.tuicCongestionControl(
+            raw["congestion_control"] ?: raw["congestion-controller"] ?: raw["congestion-control"]
+        )?.let { canonical.put("congestion_control", it) }
+        OutboundFieldRules.tuicUdpRelayMode(raw["udp_relay_mode"] ?: raw["udp-relay-mode"])
+            ?.let { canonical.put("udp_relay_mode", it) }
+        if (isTrue(raw["zero_rtt_handshake"]) || isTrue(raw["reduce-rtt"])) canonical.put("zero_rtt_handshake", true)
+        if (isTrue(raw["udp_over_stream"]) || isTrue(raw["udp-over-stream"])) canonical.put("udp_over_stream", true)
+        copyNetworkField(raw, canonical)
+        copy(raw, canonical, setOf("domain_resolver"))
+        putTlsMapIfPresent(raw, canonical, "")
+        if (!canonical.has("tls")) canonical.put("tls", buildTls(raw, server, ""))
+        canonical.getJSONObject("tls").apply {
+            put("enabled", true)
+            remove("utls")
+            remove("reality")
+            if (isTrue(raw["disable-sni"]) || isTrue(raw["disable_sni"])) put("disable_sni", true)
+            if ((optJSONArray("alpn")?.length() ?: 0) == 0) put("alpn", JSONArray().put("h3"))
+        }
+        return node(name(raw, server, port), Protocol.TUIC, server, port, uuid = uuid, password = password, raw = canonical.toString())
     }
 
     private fun parseWireguardMap(raw: Map<*, *>): Node? {
@@ -306,12 +449,24 @@ object ConfigParser {
             "ws" -> (raw["ws-opts"] as? Map<*, *>)?.let { ws -> JSONObject().put("type", "ws").apply { string(ws, "path")?.let { put("path", it) }; (ws["headers"] as? Map<*, *>)?.let { headers -> put("headers", toJsonValue(headers)) } } }
             "grpc" -> (raw["grpc-opts"] as? Map<*, *>)?.let { g -> JSONObject().put("type", "grpc").put("service_name", string(g, "grpc-service-name", "service-name") ?: "") }
             "httpupgrade" -> (raw["http-upgrade-opts"] as? Map<*, *>)?.let { h -> JSONObject().put("type", "httpupgrade").apply { string(h, "path")?.let { put("path", it) }; string(h, "host")?.let { put("host", it) } } }
+            // HTTP/2. Used to fall through to "no transport", which can only fail.
+            "h2" -> JSONObject().put("type", "http").apply {
+                (raw["h2-opts"] as? Map<*, *>)?.let { h ->
+                    list(h, "host")?.let { put("host", JSONArray(it)) }
+                    string(h, "path")?.let { put("path", it) }
+                }
+            }
             "xhttp" -> (raw["xhttp-opts"] as? Map<*, *>)?.let { x ->
                 JSONObject().put("type", "xhttp").apply {
                     putXHttpString(this, x, "host", "host")
                     putXHttpString(this, x, "path", "path")
-                    putXHttpString(this, x, "mode", "mode")
-                    putXHttpString(this, x, "x_padding_bytes", "x-padding-bytes", "xPaddingBytes", "x-padding_bytes")
+                    // mode, x_padding_bytes and xmux are checked rather than copied: a value
+                    // the core rejects fails every node tested with this one (OutboundFieldRules).
+                    OutboundFieldRules.xhttpMode(x["mode"])?.let { put("mode", it) }
+                    OutboundFieldRules.range(
+                        "x_padding_bytes",
+                        listOf("x-padding-bytes", "xPaddingBytes", "x-padding_bytes", "x_padding_bytes").firstNotNullOfOrNull { x[it] }
+                    )?.let { put("x_padding_bytes", it) }
                     putXHttpString(this, x, "session_placement", "session-placement", "sessionPlacement")
                     putXHttpString(this, x, "session_key", "session-key", "sessionKey")
                     putXHttpString(this, x, "seq_placement", "seq-placement", "seqPlacement")
@@ -331,7 +486,8 @@ object ConfigParser {
                     if (isTrue(x["x-padding-obfs-mode"]) || isTrue(x["x_padding_obfs_mode"]) || isTrue(x["xPaddingObfsMode"])) put("x_padding_obfs_mode", true)
                     if (isTrue(x["no-grpc-header"]) || isTrue(x["no_grpc_header"]) || isTrue(x["noGRPCHeader"])) put("no_grpc_header", true)
                     (x["headers"] as? Map<*, *>)?.let { put("headers", toJsonValue(it)) }
-                    (x["xmux"] as? Map<*, *>)?.let { put("xmux", buildXHttpXmux(it)) }
+                    (x["xmux"] as? Map<*, *>)?.let { source -> OutboundFieldRules.xmux { key -> source[key] } }
+                        ?.let { put("xmux", it) }
                 }
             }
             else -> null
@@ -382,19 +538,6 @@ object ConfigParser {
         string(raw, *sourceKeys)?.let { target.put(targetKey, it) }
     }
 
-    private fun buildXHttpXmux(raw: Map<*, *>): JSONObject = JSONObject().apply {
-        val fields = mapOf(
-            "max_concurrency" to arrayOf("max_concurrency", "max-concurrency", "maxConcurrency"),
-            "max_connections" to arrayOf("max_connections", "max-connections", "maxConnections"),
-            "c_max_reuse_times" to arrayOf("c_max_reuse_times", "c-max-reuse-times", "cMaxReuseTimes"),
-            "h_max_request_times" to arrayOf("h_max_request_times", "h-max-request-times", "hMaxRequestTimes"),
-            "h_max_reusable_secs" to arrayOf("h_max_reusable_secs", "h-max-reusable-secs", "hMaxReusableSecs"),
-            "h_keep_alive_period" to arrayOf("h_keep_alive_period", "h-keep-alive-period", "hKeepAlivePeriod")
-        )
-        for ((targetKey, sourceKeys) in fields) {
-            sourceKeys.firstNotNullOfOrNull { raw[it] }?.let { put(targetKey, toJsonValue(it)) }
-        }
-    }
     private fun putMapIfPresent(raw: Map<*, *>, target: JSONObject, field: String) {
         val value = raw[field] as? Map<*, *> ?: return
         target.put(field, toJsonValue(value))

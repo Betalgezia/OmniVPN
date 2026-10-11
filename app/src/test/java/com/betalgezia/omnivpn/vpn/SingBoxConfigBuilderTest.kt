@@ -479,6 +479,96 @@ class SingBoxConfigBuilderTest {
         assertEquals("firefox", utls.getString("fingerprint"))
     }
 
+    @Test fun vlessEncryptionReachesTheOutbound() {
+        val encryption = "mlkem768x25519plus.native.0rtt." +
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 1 })
+        val node = SubscriptionParser.parse(
+            "vless://00000000-0000-0000-0000-000000000001@edge.example.com:443?security=tls&sni=edge.example.com&encryption=$encryption#e"
+        ).single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals(encryption, outbound.getString("encryption"))
+    }
+
+    @Test fun hysteria2KeepsObfsAndBandwidthFromTheLink() {
+        val node = SubscriptionParser.parse(
+            "hysteria2://pass@example.com:443?sni=example.com&obfs=salamander&obfs-password=secret&up=50&down=200#t"
+        ).single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("salamander", outbound.getJSONObject("obfs").getString("type"))
+        assertEquals("secret", outbound.getJSONObject("obfs").getString("password"))
+        assertEquals(50, outbound.getInt("up_mbps"))
+        assertEquals(200, outbound.getInt("down_mbps"))
+    }
+
+    @Test fun hysteria2KeepsKnownBbrProfilesAndDropsOthers() {
+        fun outboundFor(profile: String): JSONObject {
+            val raw = JSONObject().put("type", "hysteria2").put("server", "example.com").put("server_port", 443)
+                .put("password", "secret").put("bbr_profile", profile).put("disable_chrome_parrot", true).toString()
+            val node = Node(name = "h", protocol = Protocol.HYSTERIA2, server = "example.com", port = 443, password = "secret", rawConfig = raw)
+            return JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        }
+        assertEquals("aggressive", outboundFor("aggressive").getString("bbr_profile"))
+        assertTrue(outboundFor("aggressive").getBoolean("disable_chrome_parrot"))
+        // "unsupported BBR profile: zzz" would stop the core outright.
+        assertFalse(outboundFor("zzz").has("bbr_profile"))
+    }
+
+    @Test fun shadowsocksOutboundCarriesMethodPasswordAndPlugin() {
+        val userInfo = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("aes-128-gcm:pass".toByteArray())
+        val node = SubscriptionParser.parse("ss://$userInfo@example.com:8388?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dbing.com#s").single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", outbound.getString("type"))
+        assertEquals("example.com", outbound.getString("server"))
+        assertEquals(8388, outbound.getInt("server_port"))
+        assertEquals("aes-128-gcm", outbound.getString("method"))
+        assertEquals("pass", outbound.getString("password"))
+        assertEquals("obfs-local", outbound.getString("plugin"))
+        assertEquals("obfs=tls;obfs-host=bing.com", outbound.getString("plugin_opts"))
+        assertFalse(outbound.has("tls"))
+    }
+
+    @Test fun vmessOutboundGetsABrowserFingerprintOverTls() {
+        val json = JSONObject().put("add", "example.com").put("port", "443").put("id", "00000000-0000-0000-0000-000000000001")
+            .put("aid", "0").put("scy", "chacha20-poly1305").put("net", "ws").put("path", "/ws").put("host", "example.com").put("tls", "tls")
+        val node = SubscriptionParser.parse("vmess://" + java.util.Base64.getEncoder().encodeToString(json.toString().toByteArray())).single()
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("vmess", outbound.getString("type"))
+        assertEquals("00000000-0000-0000-0000-000000000001", outbound.getString("uuid"))
+        assertEquals("chacha20-poly1305", outbound.getString("security"))
+        assertEquals(0, outbound.getInt("alter_id"))
+        assertEquals("ws", outbound.getJSONObject("transport").getString("type"))
+        assertEquals("chrome", outbound.getJSONObject("tls").getJSONObject("utls").getString("fingerprint"))
+    }
+
+    @Test fun tuicOutboundAlwaysHasTlsWithAlpnAndNoUtls() {
+        val raw = JSONObject().put("type", "tuic").put("server", "example.com").put("server_port", 443)
+            .put("uuid", "00000000-0000-0000-0000-000000000001").put("password", "pass")
+            .put("tls", JSONObject().put("enabled", true).put("server_name", "example.com")
+                .put("utls", JSONObject().put("enabled", true).put("fingerprint", "chrome")))
+            .toString()
+        val node = Node(name = "t", protocol = Protocol.TUIC, server = "example.com", port = 443,
+            uuid = "00000000-0000-0000-0000-000000000001", password = "pass", rawConfig = raw)
+        val outbound = JSONObject(SingBoxConfigBuilder.build(node)).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("tuic", outbound.getString("type"))
+        assertEquals("pass", outbound.getString("password"))
+        val tls = outbound.getJSONObject("tls")
+        assertTrue(tls.getBoolean("enabled"))
+        assertFalse(tls.has("utls"))
+        assertEquals("h3", tls.getJSONArray("alpn").getString(0))
+    }
+
+    @Test fun probeConfigTakesTheNewProtocols() {
+        val ss = SubscriptionParser.parse("ss://" + java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString("aes-128-gcm:pass".toByteArray()) + "@one.example:8388#a").single().copy(id = 1)
+        val vm = SubscriptionParser.parse("vmess://" + java.util.Base64.getEncoder().encodeToString(
+            JSONObject().put("add", "two.example").put("port", "443").put("id", "00000000-0000-0000-0000-000000000002").toString().toByteArray()
+        )).single().copy(id = 2)
+        val tuic = SubscriptionParser.parse("tuic://00000000-0000-0000-0000-000000000003:pass@three.example:443#c").single().copy(id = 3)
+        val probe = SingBoxConfigBuilder.buildProbeConfig(listOf(ss, vm, tuic))
+        assertTrue(probe.buildErrors.isEmpty(), probe.buildErrors.toString())
+        assertEquals(setOf(1L, 2L, 3L), probe.tagsByNodeId.keys)
+    }
+
     @Test fun hysteria2IsLeftAloneBecauseUtlsDoesNotApplyToQuic() {
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="h", protocol=Protocol.HYSTERIA2, server="example.com", port=443, password="secret")))
         val tls = config.getJSONArray("outbounds").getJSONObject(0).getJSONObject("tls")

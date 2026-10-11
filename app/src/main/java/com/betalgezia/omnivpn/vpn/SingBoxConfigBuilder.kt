@@ -440,6 +440,9 @@ object SingBoxConfigBuilder {
         Protocol.VLESS -> buildVless(node, tag)
         Protocol.TROJAN -> buildTrojan(node, tag)
         Protocol.HYSTERIA2 -> buildHysteria2(node, tag)
+        Protocol.SHADOWSOCKS -> buildShadowsocks(node, tag)
+        Protocol.VMESS -> buildVmess(node, tag)
+        Protocol.TUIC -> buildTuic(node, tag)
         else -> error("Protocol ${node.protocol} is not a proxy outbound")
     }
 
@@ -501,12 +504,75 @@ object SingBoxConfigBuilder {
 
     private fun buildHysteria2(node: Node, tag: String = PROXY_TAG): JSONObject {
         require(node.password.orEmpty().isNotBlank()) { "Hysteria2 password is required" }
-        return baseOutbound(node, "hysteria2", setOf("password", "network", "tls", "transport", "multiplex", "domain_resolver"), tag)
+        // obfs, up/down and the rest used to be parsed and then dropped right here: a
+        // server with salamander/gecko obfs never answered the plain QUIC this sent, and
+        // without up/down the client ran BBR instead of the Brutal the link asked for.
+        val fields = setOf(
+            "password", "network", "tls", "transport", "multiplex", "domain_resolver",
+            "obfs", "up_mbps", "down_mbps", "disable_chrome_parrot", "bbr_profile"
+        )
+        return baseOutbound(node, "hysteria2", fields, tag)
             .apply {
                 put("server", node.server.requireServer())
                 put("server_port", node.port.requirePort())
                 put("password", node.password)
                 if (!has("tls")) put("tls", JSONObject().put("enabled", true).put("server_name", node.server))
+                // An unknown profile stops the core at start ("unsupported BBR profile");
+                // left out, it uses its default.
+                if (has("bbr_profile")) {
+                    val profile = OutboundFieldRules.bbrProfile(opt("bbr_profile"))
+                    if (profile == null) remove("bbr_profile") else put("bbr_profile", profile)
+                }
+            }
+    }
+
+    private fun buildShadowsocks(node: Node, tag: String = PROXY_TAG): JSONObject {
+        val fields = setOf(
+            "method", "password", "plugin", "plugin_opts", "network", "udp_over_tcp", "multiplex", "domain_resolver"
+        )
+        return baseOutbound(node, "shadowsocks", fields, tag)
+            .apply {
+                put("server", node.server.requireServer())
+                put("server_port", node.port.requirePort())
+                require(optString("method").isNotBlank()) { "Shadowsocks method is required" }
+                node.password?.let { put("password", it) }
+                if (!has("password")) put("password", "")
+            }
+    }
+
+    private fun buildVmess(node: Node, tag: String = PROXY_TAG): JSONObject {
+        require(node.uuid.orEmpty().isNotBlank()) { "VMess UUID is required" }
+        val fields = setOf(
+            "uuid", "security", "alter_id", "global_padding", "authenticated_length", "network", "tls",
+            "transport", "packet_encoding", "multiplex", "domain_resolver"
+        )
+        return baseOutbound(node, "vmess", fields, tag)
+            .apply {
+                put("server", node.server.requireServer())
+                put("server_port", node.port.requirePort())
+                put("uuid", node.uuid)
+                enforceBrowserTlsFingerprint(this)
+            }
+    }
+
+    private fun buildTuic(node: Node, tag: String = PROXY_TAG): JSONObject {
+        require(node.uuid.orEmpty().isNotBlank()) { "TUIC UUID is required" }
+        val fields = setOf(
+            "uuid", "password", "congestion_control", "udp_relay_mode", "udp_over_stream",
+            "zero_rtt_handshake", "heartbeat", "network", "tls", "domain_resolver"
+        )
+        return baseOutbound(node, "tuic", fields, tag)
+            .apply {
+                put("server", node.server.requireServer())
+                put("server_port", node.port.requirePort())
+                put("uuid", node.uuid)
+                node.password?.takeIf { it.isNotEmpty() }?.let { put("password", it) }
+                // QUIC: TLS is not optional, uTLS doesn't apply, and without an ALPN the
+                // handshake can't complete - h3 is what TUIC servers use.
+                val tls = optJSONObject("tls") ?: JSONObject().put("server_name", node.server).also { put("tls", it) }
+                tls.put("enabled", true)
+                tls.remove("utls")
+                if ((tls.optJSONArray("alpn")?.length() ?: 0) == 0) tls.put("alpn", JSONArray().put("h3"))
             }
     }
 

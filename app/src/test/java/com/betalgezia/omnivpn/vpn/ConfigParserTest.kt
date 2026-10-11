@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class ConfigParserTest {
     @Test
@@ -234,6 +235,272 @@ class ConfigParserTest {
         assertEquals(true, x.getBoolean("no_grpc_header"))
         assertEquals("1-1", x.getJSONObject("xmux").getString("max_concurrency"))
     }
+    @Test
+    fun dropsMihomoXhttpValuesTheCoreWouldRefuse() {
+        val yaml = """
+            proxies:
+              - name: X
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                network: xhttp
+                xhttp-opts:
+                  mode: bogus
+                  path: /x
+                  x-padding-bytes: abc
+                  xmux:
+                    max-concurrency: 16
+                    max-connections: nope
+        """.trimIndent()
+        val x = JSONObject(ConfigParser.parse(yaml).single().rawConfig!!).getJSONObject("transport")
+        assertFalse(x.has("mode"))
+        assertFalse(x.has("x_padding_bytes"))
+        assertEquals("16", x.getJSONObject("xmux").getString("max_concurrency"))
+        assertFalse(x.getJSONObject("xmux").has("max_connections"))
+    }
+
+    @Test
+    fun sanitizesXhttpTransportInSingBoxJson() {
+        val json = JSONObject().put("type", "vless").put("server", "edge.example.com").put("server_port", 443)
+            .put("uuid", "00000000-0000-0000-0000-000000000001")
+            .put("transport", JSONObject().put("type", "xhttp").put("path", "/x").put("mode", "bogus"))
+        val x = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("/x", x.getString("path"))
+        assertFalse(x.has("mode"))
+    }
+
+    @Test
+    fun carriesValidVlessEncryptionFromYamlAndSkipsAnInvalidOne() {
+        val key = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 2 })
+        fun yaml(encryption: String) = """
+            proxies:
+              - name: E
+                type: vless
+                server: edge.example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                tls: true
+                encryption: $encryption
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt.$key")).single().rawConfig!!)
+        assertEquals("mlkem768x25519plus.random.1rtt.$key", raw.getString("encryption"))
+        assertEquals(0, ConfigParser.parse(yaml("mlkem768x25519plus.random.1rtt")).size)
+    }
+
+    @Test
+    fun checksHysteria2BbrProfileAndChromeParrotOnImport() {
+        fun imported(profile: String, parrot: Any) = JSONObject(
+            ConfigParser.parse(
+                JSONObject().put("type", "hysteria2").put("server", "example.com").put("server_port", 443)
+                    .put("password", "secret").put("bbr_profile", profile).put("disable_chrome_parrot", parrot)
+                    .toString()
+            ).single().rawConfig!!
+        )
+        assertEquals("conservative", imported("Conservative", true).getString("bbr_profile"))
+        assertTrue(imported("conservative", "true").getBoolean("disable_chrome_parrot"))
+        assertFalse(imported("zzz", false).has("bbr_profile"))
+        assertFalse(imported("zzz", false).has("disable_chrome_parrot"))
+    }
+
+    @Test
+    fun parsesMihomoShadowsocksWithObfs() {
+        val yaml = """
+            proxies:
+              - name: SS
+                type: ss
+                server: 1.2.3.4
+                port: 8388
+                cipher: aes-256-gcm
+                password: pass
+                plugin: obfs
+                plugin-opts:
+                  mode: http
+                  host: bing.com
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        assertEquals(Protocol.SHADOWSOCKS, node.protocol)
+        assertEquals("SS", node.name)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("aes-256-gcm", raw.getString("method"))
+        assertEquals("pass", raw.getString("password"))
+        assertEquals("obfs-local", raw.getString("plugin"))
+        assertEquals("obfs=http;obfs-host=bing.com", raw.getString("plugin_opts"))
+    }
+
+    @Test
+    fun parsesMihomoShadowsocksWithV2rayPluginAndSkipsUnsupportedPlugins() {
+        val v2ray = """
+            proxies:
+              - name: SS
+                type: ss
+                server: example.com
+                port: 443
+                cipher: chacha20-ietf-poly1305
+                password: pass
+                plugin: v2ray-plugin
+                plugin-opts:
+                  mode: websocket
+                  tls: true
+                  host: cdn.example.com
+                  path: /ws
+        """.trimIndent()
+        val raw = JSONObject(ConfigParser.parse(v2ray).single().rawConfig!!)
+        assertEquals("v2ray-plugin", raw.getString("plugin"))
+        assertEquals("mode=websocket;tls;host=cdn.example.com;path=/ws", raw.getString("plugin_opts"))
+        val shadowTls = """
+            proxies:
+              - name: SS
+                type: ss
+                server: example.com
+                port: 443
+                cipher: chacha20-ietf-poly1305
+                password: pass
+                plugin: shadow-tls
+                plugin-opts:
+                  host: cdn.example.com
+                  password: x
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(shadowTls).size)
+    }
+
+    @Test
+    fun parsesSingBoxShadowsocks() {
+        val json = JSONObject().put("type", "shadowsocks").put("tag", "s").put("server", "example.com").put("server_port", 8388)
+            .put("method", "2022-blake3-aes-256-gcm").put("password", java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 3 }))
+            .put("plugin", "obfs-local").put("plugin_opts", "obfs=tls;obfs-host=bing.com")
+        val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
+        assertEquals("2022-blake3-aes-256-gcm", raw.getString("method"))
+        assertEquals("obfs=tls;obfs-host=bing.com", raw.getString("plugin_opts"))
+    }
+
+    @Test
+    fun parsesMihomoVmessOverWebsocketWithTls() {
+        val yaml = """
+            proxies:
+              - name: VM
+                type: vmess
+                server: example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                alterId: 0
+                cipher: auto
+                tls: true
+                servername: cdn.example.com
+                network: ws
+                ws-opts:
+                  path: /ws
+                  headers:
+                    Host: cdn.example.com
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        assertEquals(Protocol.VMESS, node.protocol)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("auto", raw.getString("security"))
+        assertEquals("cdn.example.com", raw.getJSONObject("tls").getString("server_name"))
+        assertEquals("ws", raw.getJSONObject("transport").getString("type"))
+        assertEquals("/ws", raw.getJSONObject("transport").getString("path"))
+    }
+
+    @Test
+    fun parsesMihomoVmessH2AndSkipsTcpWithAnHttpHeader() {
+        val h2 = """
+            proxies:
+              - name: VM
+                type: vmess
+                server: example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                cipher: auto
+                tls: true
+                network: h2
+                h2-opts:
+                  host:
+                    - a.example.com
+                  path: /h2
+        """.trimIndent()
+        val transport = JSONObject(ConfigParser.parse(h2).single().rawConfig!!).getJSONObject("transport")
+        assertEquals("http", transport.getString("type"))
+        assertEquals("a.example.com", transport.getJSONArray("host").getString(0))
+        val tcpHttp = """
+            proxies:
+              - name: VM
+                type: vmess
+                server: example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                cipher: auto
+                network: http
+                http-opts:
+                  path:
+                    - /
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(tcpHttp).size)
+    }
+
+    @Test
+    fun parsesSingBoxVmess() {
+        val json = JSONObject().put("type", "vmess").put("server", "example.com").put("server_port", 443)
+            .put("uuid", "00000000-0000-0000-0000-000000000001").put("security", "aes-128-gcm").put("alter_id", 0)
+            .put("tls", JSONObject().put("enabled", true).put("server_name", "example.com"))
+            .put("transport", JSONObject().put("type", "grpc").put("service_name", "svc"))
+        val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
+        assertEquals("aes-128-gcm", raw.getString("security"))
+        assertEquals("svc", raw.getJSONObject("transport").getString("service_name"))
+        assertTrue(raw.getJSONObject("tls").getBoolean("enabled"))
+    }
+
+    @Test
+    fun parsesMihomoTuic() {
+        val yaml = """
+            proxies:
+              - name: T
+                type: tuic
+                server: example.com
+                port: 443
+                uuid: 00000000-0000-0000-0000-000000000001
+                password: pass
+                alpn: [h3]
+                congestion-controller: bbr
+                udp-relay-mode: native
+                reduce-rtt: true
+                sni: sni.example.com
+                skip-cert-verify: true
+        """.trimIndent()
+        val node = ConfigParser.parse(yaml).single()
+        assertEquals(Protocol.TUIC, node.protocol)
+        val raw = JSONObject(node.rawConfig!!)
+        assertEquals("bbr", raw.getString("congestion_control"))
+        assertEquals("native", raw.getString("udp_relay_mode"))
+        assertTrue(raw.getBoolean("zero_rtt_handshake"))
+        val tls = raw.getJSONObject("tls")
+        assertEquals("sni.example.com", tls.getString("server_name"))
+        assertTrue(tls.getBoolean("insecure"))
+        assertEquals("h3", tls.getJSONArray("alpn").getString(0))
+        assertFalse(tls.has("utls"))
+    }
+
+    @Test
+    fun skipsTuicV4AndKeepsSingBoxTuic() {
+        val v4 = """
+            proxies:
+              - name: T4
+                type: tuic
+                server: example.com
+                port: 443
+                token: secret
+        """.trimIndent()
+        assertEquals(0, ConfigParser.parse(v4).size)
+        val json = JSONObject().put("type", "tuic").put("server", "example.com").put("server_port", 443)
+            .put("uuid", "00000000-0000-0000-0000-000000000001").put("password", "pass")
+            .put("congestion_control", "cubic")
+            .put("tls", JSONObject().put("enabled", true).put("server_name", "example.com").put("alpn", JSONArray().put("h3")))
+        val raw = JSONObject(ConfigParser.parse(json.toString()).single().rawConfig!!)
+        assertEquals("cubic", raw.getString("congestion_control"))
+        assertEquals("h3", raw.getJSONObject("tls").getJSONArray("alpn").getString(0))
+    }
+
     @Test
     fun dropsVisionFlowWhenMihomoTransportIsPresent() {
         val yaml = """

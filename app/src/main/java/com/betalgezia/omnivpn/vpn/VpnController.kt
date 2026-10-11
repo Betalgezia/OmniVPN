@@ -74,6 +74,11 @@ class VpnController @Inject constructor(
     suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
         android.util.Log.i(tag, "startWarp: begin forceNew=${forceNew}, endpointOverride=${!endpoint.isNullOrBlank()}, licenseProvided=${!licenseKey.isNullOrBlank()}")
         val storage = WarpStorage(context)
+        val settings = WarpSettings(context)
+        // Per-network tuned junk/decoy profile if the user ran the autotuner
+        // on this network, else the built-in default (see WarpObfuscationStore
+        // / WarpObfuscationTuner).
+        val obfuscation = WarpObfuscationStore(context).currentOrDefault()
         val client = CloudflareWarpClient()
         var account = if (!forceNew) storage.get() else null
         android.util.Log.d(tag, "startWarp: cachedAccount=${account != null}")
@@ -99,13 +104,15 @@ class VpnController @Inject constructor(
         // never completes. Never overrides an endpoint the caller explicitly
         // asked for, even if it's a hostname.
         val effectiveEndpoint = normalizedEndpoint
+            ?: obfuscation.endpoint?.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
             ?: account.endpoint.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
             ?: WarpAccount.DEFAULT_ENDPOINT
         account = account.copy(endpoint = effectiveEndpoint)
         storage.set(account)
         android.util.Log.d(tag, "startWarp: account cached, starting VPN")
 
-        start(account.toNode()).getOrThrow()
+        android.util.Log.d(tag, "startWarp: ipv6Enabled=${settings.ipv6Enabled}, obfuscation jc=${obfuscation.jc} jmin=${obfuscation.jmin} jmax=${obfuscation.jmax} tuned=${obfuscation.tunedLatencyMs != null}")
+        start(account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation)).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
         Unit
     }.onFailure {

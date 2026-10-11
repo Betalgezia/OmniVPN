@@ -5,5 +5,9 @@ enum class Protocol {
     TROJAN,
     HYSTERIA2,
     AMNEZIAWG,
-    WARP
+    WARP,
+    // Stored in Room by name (see Converters), so adding values needs no migration.
+    SHADOWSOCKS,
+    VMESS,
+    TUIC
 }

@@ -105,13 +105,13 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 ServiceCompat.startForeground(
                     this,
                     VpnNotification.NOTIFICATION_ID,
-                    VpnNotification.build(this, "Connecting…"),
+                    VpnNotification.build(this, "Подключение…"),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
                 )
             } else {
                 startForeground(
                     VpnNotification.NOTIFICATION_ID,
-                    VpnNotification.build(this, "Connecting…")
+                    VpnNotification.build(this, "Подключение…")
                 )
             }
         }.onFailure {
@@ -146,7 +146,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 }
 
                 android.util.Log.i(TAG, "startVpn: SingBoxEngine completed, engineRunning=${engine.isRunning()}")
-                publishNotification("Connected")
+                publishNotification("Подключено")
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startVpn: service startup failed", t)
                 if (operationGeneration.get() == generation) {
@@ -241,7 +241,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
                 engine.reload(config)
-                publishNotification("Connected")
+                publishNotification("Подключено")
             }.onFailure {
                 android.util.Log.e(TAG, "CommandServer serviceReload failed", it)
                 eventBus.emit(

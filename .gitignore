@@ -12,3 +12,4 @@ app/libs/*.aar.bak
 app/libs/.libbox.version
 *.log
 *.bundle
+Claude outputs/

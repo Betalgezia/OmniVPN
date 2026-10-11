@@ -22,4 +22,7 @@ interface SubscriptionDao {
 
     @Query("UPDATE subscriptions SET lastUpdatedAt = :updatedAt WHERE id = :id")
     suspend fun markUpdated(id: Long, updatedAt: Long)
+
+    @Query("UPDATE subscriptions SET name = :name WHERE id = :id")
+    suspend fun rename(id: Long, name: String)
 }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.app.PendingIntent
 import androidx.core.app.NotificationCompat
+import com.betalgezia.omnivpn.R
 
 object VpnNotification {
 
@@ -35,12 +36,12 @@ object VpnNotification {
         )
 
         return NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_qs_tile)
             .setContentTitle("OmniVPN")
             .setContentText(text)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stopPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отключить", stopPendingIntent)
             .build()
     }
 }
