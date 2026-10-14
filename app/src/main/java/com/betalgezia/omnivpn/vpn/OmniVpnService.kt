@@ -50,6 +50,11 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     // newer config is already in configStore, so reload it once that start ends.
     private val pendingReload = AtomicBoolean(false)
     private var trafficJob: kotlinx.coroutines.Job? = null
+    private var watchdog: TrafficWatchdog? = null
+
+    // Outbound/endpoint tag the active config routes through (route.final).
+    @Volatile
+    private var probeTag: String? = null
 
     // Shown in the notification ("Подключено · <label>"), from EXTRA_LABEL.
     @Volatile
@@ -149,6 +154,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
                 android.util.Log.d(TAG, "startVpn: active configuration loaded (${config.length} chars)")
+                probeTag = probeTagOf(config)
 
                 android.util.Log.i(TAG, "startVpn: starting SingBoxEngine")
                 engine.start(config, platformInterface, this@OmniVpnService) {
@@ -198,6 +204,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         recoveryJob?.cancel()
         recoveryJob = null
         trafficJob?.cancel()
+        stopWatchdog()
         pendingReload.set(false)
 
         serviceScope.launch {
@@ -225,6 +232,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         recoveryJob?.cancel()
         recoveryJob = null
         trafficJob?.cancel()
+        stopWatchdog()
         pendingReload.set(false)
 
         // Revoke is a terminal Android lifecycle callback. Do the native
@@ -246,6 +254,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         recoveryJob?.cancel()
         recoveryJob = null
         trafficJob?.cancel()
+        stopWatchdog()
         pendingReload.set(false)
         engine.closeNow()
         closeTun()
@@ -277,11 +286,13 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         }
         val generation = operationGeneration.incrementAndGet()
         trafficJob?.cancel()
+        stopWatchdog()
         serviceScope.launch {
             try {
                 eventBus.emit(VpnEvent.Connecting)
                 publishNotification("Переключение…")
                 val config = configStore.read() ?: error("No active sing-box configuration")
+                probeTag = probeTagOf(config)
                 android.util.Log.i(TAG, "reloadVpn: hot-reloading engine (${config.length} chars)")
                 engine.reload(config)
                 if (operationGeneration.get() != generation || stopping.get()) return@launch
@@ -301,36 +312,103 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     }
 
     /**
-     * Confirms traffic actually flows (see TrafficProbe) and reports it on the
-     * event bus (app + tile) and in the notification. Dropped if another
-     * start/reload/stop happened meanwhile.
+     * Confirms traffic actually flows and reports it on the event bus (app,
+     * tile, ConnectionManager's auto-switch) and in the notification. While
+     * traffic is OK a [TrafficWatchdog] keeps watching; while it is not, the
+     * tunnel is re-checked every [TRAFFIC_RECHECK_DELAY_MS] so a hiccup heals
+     * by itself. Everything here is dropped if another start/reload/stop
+     * happened meanwhile.
      */
     private fun startTrafficCheck(generation: Long) {
         trafficJob?.cancel()
+        stopWatchdog()
         eventBus.setTraffic(TrafficStatus.CHECKING)
         trafficJob = serviceScope.launch {
-            // No up-front pause: the probe's own retries cover a WireGuard/AWG
-            // peer that is still finishing its first handshake.
-            var status = TrafficProbe.check(this@OmniVpnService).toStatus()
+            val status = probeTraffic(initial = true)
             if (!stillCurrent(generation)) return@launch
             android.util.Log.i(TAG, "traffic check: $status (label=$connectionLabel)")
-            eventBus.setTraffic(status)
-            publishNotification(connectedText(status))
+            reportTraffic(status, generation)
+        }
+    }
 
-            // The check is capped at a few seconds, so a merely slow network can
-            // be marked dead; one quiet re-check fixes that without the user
-            // having to reconnect.
-            if (status != TrafficStatus.OK) {
-                delay(TRAFFIC_RECHECK_DELAY_MS)
-                if (!stillCurrent(generation)) return@launch
-                status = TrafficProbe.check(this@OmniVpnService).toStatus()
-                if (!stillCurrent(generation)) return@launch
-                android.util.Log.i(TAG, "traffic re-check: $status (label=$connectionLabel)")
-                eventBus.setTraffic(status)
-                publishNotification(connectedText(status))
+    private suspend fun reportTraffic(status: TrafficStatus, generation: Long) {
+        eventBus.setTraffic(status)
+        publishNotification(connectedText(status))
+        if (status == TrafficStatus.OK) {
+            startWatchdog(generation)
+            return
+        }
+        // Not OK: keep re-checking quietly. A switch to another server (auto
+        // or by hand) bumps the generation and ends this loop.
+        while (stillCurrent(generation)) {
+            delay(TRAFFIC_RECHECK_DELAY_MS)
+            if (!stillCurrent(generation)) return
+            val again = probeTraffic(initial = false)
+            if (!stillCurrent(generation)) return
+            if (again != eventBus.traffic.value) {
+                android.util.Log.i(TAG, "traffic re-check: $again (label=$connectionLabel)")
+                eventBus.setTraffic(again)
+                publishNotification(connectedText(again))
+            }
+            if (again == TrafficStatus.OK) {
+                startWatchdog(generation)
+                return
             }
         }
     }
+
+    /**
+     * Primary check: through sing-box's own outbound ([CoreProbe]), immune to
+     * Android routing. Falls back to [TrafficProbe] (HTTP over the VPN network)
+     * only if the core can't test this tag.
+     */
+    private suspend fun probeTraffic(initial: Boolean): TrafficStatus {
+        val tag = probeTag
+        if (tag != null) {
+            val outcome = if (initial) {
+                CoreProbe.check(tag)
+            } else {
+                CoreProbe.check(tag, retryTimeoutMs = 0)
+            }
+            when (outcome) {
+                is CoreProbe.Outcome.Ok -> return TrafficStatus.OK
+                is CoreProbe.Outcome.Dead -> return TrafficStatus.NONE
+                is CoreProbe.Outcome.Unsupported ->
+                    android.util.Log.w(TAG, "core probe can't test '$tag' (${outcome.reason}) - using HTTP probe")
+            }
+        }
+        return TrafficProbe.check(this).toStatus()
+    }
+
+    private fun startWatchdog(generation: Long) {
+        stopWatchdog()
+        if (!stillCurrent(generation)) return
+        watchdog = TrafficWatchdog(
+            context = this,
+            scope = serviceScope,
+            probe = {
+                // A stale watchdog must never declare the NEW tunnel dead.
+                !stillCurrent(generation) || probeTraffic(initial = false) == TrafficStatus.OK
+            },
+            onDead = {
+                if (stillCurrent(generation)) {
+                    android.util.Log.w(TAG, "watchdog: traffic stopped (label=$connectionLabel)")
+                    trafficJob?.cancel()
+                    trafficJob = serviceScope.launch { reportTraffic(TrafficStatus.NONE, generation) }
+                }
+            }
+        ).also { it.start() }
+    }
+
+    private fun stopWatchdog() {
+        watchdog?.stop()
+        watchdog = null
+    }
+
+    /** The tag that carries the tunnel's traffic: the config's route.final. */
+    private fun probeTagOf(config: String): String? = runCatching {
+        org.json.JSONObject(config).optJSONObject("route")?.optString("final")?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     private fun stillCurrent(generation: Long): Boolean =
         operationGeneration.get() == generation && !stopping.get() && engine.isRunning()
@@ -499,7 +577,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         const val ACTION_START = "com.betalgezia.omnivpn.action.START"
         const val ACTION_STOP = "com.betalgezia.omnivpn.action.STOP"
         const val EXTRA_LABEL = "com.betalgezia.omnivpn.extra.LABEL"
-        private const val TRAFFIC_RECHECK_DELAY_MS = 12_000L
+        private const val TRAFFIC_RECHECK_DELAY_MS = 15_000L
         private const val TAG = "OmniVpnService"
     }
 }

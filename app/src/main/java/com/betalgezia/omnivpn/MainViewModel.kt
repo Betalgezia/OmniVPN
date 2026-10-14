@@ -108,6 +108,16 @@ class MainViewModel @Inject constructor(
         _quickTileStartsWarp.value = startsWarp
     }
 
+    // Auto-switch to another server of the same subscription when the current
+    // one stops passing traffic (see ConnectionManager.onTunnelDead).
+    private val _autoSwitchEnabled = MutableStateFlow(warpSettings.autoSwitchEnabled)
+    val autoSwitchEnabled: StateFlow<Boolean> = _autoSwitchEnabled.asStateFlow()
+
+    fun setAutoSwitchEnabled(enabled: Boolean) {
+        warpSettings.autoSwitchEnabled = enabled
+        _autoSwitchEnabled.value = enabled
+    }
+
     // True only while connectFastest() is probing - distinct from _busy (which
     // is also true during a manual "Check all"/WARP endpoint search) so the
     // hero button can show "Searching…" only for its own action.
@@ -333,6 +343,10 @@ class MainViewModel @Inject constructor(
                     null
                 }
             }
+        }
+        // Auto-switch progress / "WARP is down" from ConnectionManager.
+        viewModelScope.launch {
+            connectionManager.notices.collect { _message.value = it }
         }
     }
 

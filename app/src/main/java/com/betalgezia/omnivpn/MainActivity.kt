@@ -1527,6 +1527,7 @@ private fun SettingsSheet(
     val testMode by viewModel.testMode.collectAsStateWithLifecycle()
     val ipv6Enabled by viewModel.ipv6Enabled.collectAsStateWithLifecycle()
     val quickTileStartsWarp by viewModel.quickTileStartsWarp.collectAsStateWithLifecycle()
+    val autoSwitchEnabled by viewModel.autoSwitchEnabled.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -1645,6 +1646,32 @@ private fun SettingsSheet(
                 if (quickTileStartsWarp) "Нажатие на плитку включает Cloudflare WARP."
                 else "Плитка быстро проверяет серверы подписок и подключается к самому быстрому.",
                 fontSize = 12.sp, color = Nocturne.neutral500
+            )
+
+            // 4b. Auto-switch when a server stops passing traffic
+            Spacer(Modifier.height(14.dp))
+            SettingsCardRow(
+                glyph = { LightningGlyph(color = Nocturne.vless, modifier = Modifier.size(18.dp)) },
+                tint = Nocturne.vless,
+                title = "Автопереключение",
+                subtitle = if (autoSwitchEnabled) {
+                    "Если сервер перестал пропускать трафик, перейти на другой из той же подписки. WARP — только сообщить."
+                } else {
+                    "Выкл — только сообщать, что сервер не отвечает"
+                },
+                trailing = {
+                    Switch(
+                        checked = autoSwitchEnabled,
+                        onCheckedChange = { viewModel.setAutoSwitchEnabled(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFFF3F5FE),
+                            checkedTrackColor = Nocturne.vless,
+                            uncheckedThumbColor = Color(0xFFF3F5FE),
+                            uncheckedTrackColor = Nocturne.neutral800,
+                            uncheckedBorderColor = Color.Transparent
+                        )
+                    )
+                }
             )
 
             // 5. Subscriptions
