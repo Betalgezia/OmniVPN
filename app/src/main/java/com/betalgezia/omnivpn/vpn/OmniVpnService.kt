@@ -311,7 +311,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         trafficJob = serviceScope.launch {
             // No up-front pause: the probe's own retries cover a WireGuard/AWG
             // peer that is still finishing its first handshake.
-            var status = TrafficProbe.check().toStatus()
+            var status = TrafficProbe.check(this@OmniVpnService).toStatus()
             if (!stillCurrent(generation)) return@launch
             android.util.Log.i(TAG, "traffic check: $status (label=$connectionLabel)")
             eventBus.setTraffic(status)
@@ -323,7 +323,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
             if (status != TrafficStatus.OK) {
                 delay(TRAFFIC_RECHECK_DELAY_MS)
                 if (!stillCurrent(generation)) return@launch
-                status = TrafficProbe.check().toStatus()
+                status = TrafficProbe.check(this@OmniVpnService).toStatus()
                 if (!stillCurrent(generation)) return@launch
                 android.util.Log.i(TAG, "traffic re-check: $status (label=$connectionLabel)")
                 eventBus.setTraffic(status)
