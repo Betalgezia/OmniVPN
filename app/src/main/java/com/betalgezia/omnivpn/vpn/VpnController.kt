@@ -32,7 +32,7 @@ class VpnController @Inject constructor(
      * this as a switch and hot-reloads the new config (OmniVpnService.reloadVpn).
      * [label] is what the notification shows next to "Подключено".
      */
-    suspend fun start(node: Node, label: String = node.name): Result<Unit> = runCatching {
+    suspend fun start(node: Node, label: String = node.name, quickCheck: Boolean = false): Result<Unit> = runCatching {
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val config = withContext(Dispatchers.Default) {
@@ -41,14 +41,19 @@ class VpnController @Inject constructor(
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")
-        startConfig(config, label).getOrThrow()
+        startConfig(config, label, quickCheck).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit
     }.onFailure {
         android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
     }
 
-    suspend fun startConfig(config: String, label: String? = null): Result<Unit> = runCatching {
+    /**
+     * [quickCheck]: verify the new tunnel with a single short probe instead of
+     * probe + patient retry - used by auto-switch, where a dead candidate
+     * should cost ~5 s, not ~11 s.
+     */
+    suspend fun startConfig(config: String, label: String? = null, quickCheck: Boolean = false): Result<Unit> = runCatching {
         check(config.isNotBlank()) { "VPN config is empty" }
         android.util.Log.d(tag, "startConfig: checking VPN permission")
         withContext(Dispatchers.Main.immediate) {
@@ -69,6 +74,7 @@ class VpnController @Inject constructor(
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
                 if (label != null) putExtra(OmniVpnService.EXTRA_LABEL, label)
+                putExtra(OmniVpnService.EXTRA_QUICK_CHECK, quickCheck)
             }
             android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
             context.startService(intent)

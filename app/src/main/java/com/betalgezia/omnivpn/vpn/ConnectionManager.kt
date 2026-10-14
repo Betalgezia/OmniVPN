@@ -109,8 +109,8 @@ class ConnectionManager @Inject constructor(
         return startNode(node)
     }
 
-    private suspend fun startNode(node: Node): Result<Unit> =
-        vpnController.start(node).onSuccess {
+    private suspend fun startNode(node: Node, quickCheck: Boolean = false): Result<Unit> =
+        vpnController.start(node, quickCheck = quickCheck).onSuccess {
             _activeConnection.value = ActiveConnection.Server(node)
         }
 
@@ -181,7 +181,7 @@ class ConnectionManager @Inject constructor(
             roundAttempts++
             android.util.Log.i(TAG, "auto-switch #$roundAttempts: ${dead.name} -> ${next.name}")
             _notices.tryEmit("«${dead.name}» не пропускает трафик — переключаюсь на «${next.name}»")
-            startNode(next).onFailure {
+            startNode(next, quickCheck = true).onFailure {
                 android.util.Log.e(TAG, "auto-switch to ${next.name} failed", it)
                 _notices.tryEmit("Не удалось переключиться на «${next.name}»: ${it.message}")
             }

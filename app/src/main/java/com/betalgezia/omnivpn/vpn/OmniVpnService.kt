@@ -56,6 +56,10 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     @Volatile
     private var probeTag: String? = null
 
+    // Set per start from EXTRA_QUICK_CHECK (auto-switch): one short probe.
+    @Volatile
+    private var quickCheckNext = false
+
     // Shown in the notification ("Подключено · <label>"), from EXTRA_LABEL.
     @Volatile
     private var connectionLabel: String? = null
@@ -81,6 +85,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         return when (intent?.action) {
             ACTION_START, null -> {
                 intent?.getStringExtra(EXTRA_LABEL)?.let { connectionLabel = it }
+                quickCheckNext = intent?.getBooleanExtra(EXTRA_QUICK_CHECK, false) ?: false
                 startVpn()
                 START_NOT_STICKY
             }
@@ -323,8 +328,11 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         trafficJob?.cancel()
         stopWatchdog()
         eventBus.setTraffic(TrafficStatus.CHECKING)
+        val quick = quickCheckNext
         trafficJob = serviceScope.launch {
-            val status = probeTraffic(initial = true)
+            // Auto-switch candidates get one short probe (~5 s for a dead one);
+            // a server the user picked gets the patient check (~11 s worst).
+            val status = probeTraffic(initial = !quick)
             if (!stillCurrent(generation)) return@launch
             android.util.Log.i(TAG, "traffic check: $status (label=$connectionLabel)")
             reportTraffic(status, generation)
@@ -577,6 +585,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         const val ACTION_START = "com.betalgezia.omnivpn.action.START"
         const val ACTION_STOP = "com.betalgezia.omnivpn.action.STOP"
         const val EXTRA_LABEL = "com.betalgezia.omnivpn.extra.LABEL"
+        const val EXTRA_QUICK_CHECK = "com.betalgezia.omnivpn.extra.QUICK_CHECK"
         private const val TRAFFIC_RECHECK_DELAY_MS = 15_000L
         private const val TAG = "OmniVpnService"
     }
