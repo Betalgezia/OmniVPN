@@ -533,6 +533,7 @@ private fun heroVisualsFor(
     // be shown even when not a byte got through.
     val connectedTitle = when (traffic) {
         TrafficStatus.NONE -> "Нет трафика"
+        TrafficStatus.DNS_BROKEN -> "Нет DNS"
         TrafficStatus.OK -> "Подключено"
         else -> "Проверка…"
     }
@@ -541,6 +542,11 @@ private fun heroVisualsFor(
         is ActiveConnection.Server -> active.node.name
         ActiveConnection.Warp -> "Cloudflare WARP"
         ActiveConnection.None -> null
+    }
+    val trafficProblem = when (traffic) {
+        TrafficStatus.NONE -> (activeName ?: "Сервер") + " не отвечает · выберите другой"
+        TrafficStatus.DNS_BROKEN -> "Сайты не открываются: не работает DNS"
+        else -> null
     }
     val protoLabel = when (active) {
         is ActiveConnection.Server -> protocolLabel(active.node.protocol)
@@ -581,8 +587,8 @@ private fun heroVisualsFor(
             busy = true, connectedSpin = false,
             showMeta = live, metaColor = metaColor, protoLabel = protoLabel
         )
-        vpnState == VpnState.CONNECTED && traffic == TrafficStatus.NONE -> HeroVisuals(
-            connectedTitle, (activeName ?: "Сервер") + " не отвечает · выберите другой",
+        vpnState == VpnState.CONNECTED && trafficProblem != null -> HeroVisuals(
+            connectedTitle, trafficProblem,
             accent = Nocturne.warning, titleColor = Nocturne.warning,
             ringColors = listOf(Nocturne.warning, Nocturne.warpPink, Nocturne.warning),
             ringAlpha = 1f, glowColor = Nocturne.warning, glowAlpha = 0.28f,

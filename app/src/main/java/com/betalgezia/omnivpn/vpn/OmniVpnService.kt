@@ -309,21 +309,43 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         trafficJob?.cancel()
         eventBus.setTraffic(TrafficStatus.CHECKING)
         trafficJob = serviceScope.launch {
-            // Give a WireGuard/AWG peer a moment for its first handshake.
-            delay(TRAFFIC_CHECK_DELAY_MS)
-            val ok = TrafficProbe.check()
-            if (operationGeneration.get() != generation || stopping.get() || !engine.isRunning()) return@launch
-            val status = if (ok) TrafficStatus.OK else TrafficStatus.NONE
+            // No up-front pause: the probe's own retries cover a WireGuard/AWG
+            // peer that is still finishing its first handshake.
+            var status = TrafficProbe.check().toStatus()
+            if (!stillCurrent(generation)) return@launch
             android.util.Log.i(TAG, "traffic check: $status (label=$connectionLabel)")
             eventBus.setTraffic(status)
             publishNotification(connectedText(status))
+
+            // The check is capped at a few seconds, so a merely slow network can
+            // be marked dead; one quiet re-check fixes that without the user
+            // having to reconnect.
+            if (status != TrafficStatus.OK) {
+                delay(TRAFFIC_RECHECK_DELAY_MS)
+                if (!stillCurrent(generation)) return@launch
+                status = TrafficProbe.check().toStatus()
+                if (!stillCurrent(generation)) return@launch
+                android.util.Log.i(TAG, "traffic re-check: $status (label=$connectionLabel)")
+                eventBus.setTraffic(status)
+                publishNotification(connectedText(status))
+            }
         }
+    }
+
+    private fun stillCurrent(generation: Long): Boolean =
+        operationGeneration.get() == generation && !stopping.get() && engine.isRunning()
+
+    private fun TrafficProbe.Result.toStatus(): TrafficStatus = when (this) {
+        TrafficProbe.Result.OK -> TrafficStatus.OK
+        TrafficProbe.Result.DNS_BROKEN -> TrafficStatus.DNS_BROKEN
+        TrafficProbe.Result.NONE -> TrafficStatus.NONE
     }
 
     private fun connectedText(traffic: TrafficStatus): String {
         val suffix = connectionLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
         return when (traffic) {
             TrafficStatus.NONE -> "Нет трафика — сервер не отвечает$suffix"
+            TrafficStatus.DNS_BROKEN -> "Сайты не открываются: не работает DNS$suffix"
             TrafficStatus.OK -> "Подключено$suffix"
             else -> "Проверка соединения…$suffix"
         }
@@ -477,7 +499,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         const val ACTION_START = "com.betalgezia.omnivpn.action.START"
         const val ACTION_STOP = "com.betalgezia.omnivpn.action.STOP"
         const val EXTRA_LABEL = "com.betalgezia.omnivpn.extra.LABEL"
-        private const val TRAFFIC_CHECK_DELAY_MS = 1_500L
+        private const val TRAFFIC_RECHECK_DELAY_MS = 12_000L
         private const val TAG = "OmniVpnService"
     }
 }

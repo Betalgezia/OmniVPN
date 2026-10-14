@@ -137,6 +137,7 @@ class OmniVpnTileService : TileService() {
                 model.state == VpnState.CONNECTING -> "Подключение…"
                 model.state == VpnState.CONNECTED -> when (model.traffic) {
                     TrafficStatus.NONE -> "Нет трафика" + (name?.let { " · $it" } ?: "")
+                    TrafficStatus.DNS_BROKEN -> "Нет DNS" + (name?.let { " · $it" } ?: "")
                     TrafficStatus.OK -> name ?: "Подключено"
                     else -> "Проверка…" + (name?.let { " · $it" } ?: "")
                 }
