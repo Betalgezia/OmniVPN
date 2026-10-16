@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
@@ -57,6 +58,7 @@ class MainViewModel @Inject constructor(
     private val warpObfuscationTuner: WarpObfuscationTuner,
     private val warpObfuscationStore: WarpObfuscationStore,
     private val autoUpdateScheduler: SubscriptionAutoUpdateScheduler,
+    private val appearance: com.betalgezia.omnivpn.ui.AppearanceSettings,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -105,6 +107,13 @@ class MainViewModel @Inject constructor(
     // last passed check) and why the last start failed.
     val tunnelStats: StateFlow<TunnelStats> = vpnController.stats
     val lastError: StateFlow<String?> = vpnController.lastError
+
+    // Automatic switches (ConnectionManager): the latest one for the home
+    // card, a slow-server measurement in progress, and the journal.
+    val switchNotice: StateFlow<com.betalgezia.omnivpn.vpn.SwitchEvent?> = connectionManager.switchNotice
+    val speedMeasuring: StateFlow<com.betalgezia.omnivpn.vpn.SpeedMeasuring?> = connectionManager.measuring
+    val switchJournal: StateFlow<List<com.betalgezia.omnivpn.vpn.SwitchEvent>> = connectionManager.journal
+    fun dismissSwitchNotice() = connectionManager.dismissSwitchNotice()
 
     private val _quickTileStartsWarp = MutableStateFlow(warpSettings.quickTileStartsWarp)
     val quickTileStartsWarp: StateFlow<Boolean> = _quickTileStartsWarp.asStateFlow()
@@ -386,6 +395,11 @@ class MainViewModel @Inject constructor(
         runNodeCheck(targets, mode, subscriptionTag = subscription.id to mode)
     }
 
+    // First run's three-step intro; null while it isn't known yet (see the
+    // check in the init below). Declared before that init, which writes it.
+    private val _showOnboarding = MutableStateFlow<Boolean?>(if (appearance.onboarded) false else null)
+    val showOnboarding: StateFlow<Boolean?> = _showOnboarding.asStateFlow()
+
     // Session-timer source: stamped in a trailing init (after the backing
     // field above is declared, so no forward reference).
     init {
@@ -403,6 +417,22 @@ class MainViewModel @Inject constructor(
             connectionManager.notices.collect { _message.value = it }
         }
         refreshWarpState()
+        // An update from a version without the intro: whoever already has
+        // servers has been through "first run" - don't show it to them.
+        if (!appearance.onboarded) {
+            viewModelScope.launch {
+                val hasServers = runCatching {
+                    nodeRepository.nodes.first().isNotEmpty() || subscriptionRepository.subscriptions.first().isNotEmpty()
+                }.getOrDefault(false)
+                if (hasServers) appearance.onboarded = true
+                _showOnboarding.value = !hasServers
+            }
+        }
+    }
+
+    fun finishOnboarding() {
+        appearance.onboarded = true
+        _showOnboarding.value = false
     }
 
     fun consumeMessage() { _message.value = null }

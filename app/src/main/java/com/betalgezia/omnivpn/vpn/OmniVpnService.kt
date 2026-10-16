@@ -64,6 +64,13 @@ class OmniVpnService : VpnService(), CommandServerHandler {
     @Volatile
     private var connectionLabel: String? = null
 
+    // The notification's second line («VLESS · host:port») and whether it
+    // offers «Сменить сервер»; from EXTRA_DETAIL / EXTRA_SWITCHABLE.
+    @Volatile
+    private var connectionDetail: String? = null
+    @Volatile
+    private var canSwitchServer = false
+
     override fun onCreate() {
         super.onCreate()
 
@@ -85,6 +92,10 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         return when (intent?.action) {
             ACTION_START, null -> {
                 intent?.getStringExtra(EXTRA_LABEL)?.let { connectionLabel = it }
+                if (intent?.hasExtra(EXTRA_LABEL) == true) {
+                    connectionDetail = intent.getStringExtra(EXTRA_DETAIL)
+                    canSwitchServer = intent.getBooleanExtra(EXTRA_SWITCHABLE, false)
+                }
                 quickCheckNext = intent?.getBooleanExtra(EXTRA_QUICK_CHECK, false) ?: false
                 startVpn()
                 START_NOT_STICKY
@@ -131,13 +142,13 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 ServiceCompat.startForeground(
                     this,
                     VpnNotification.NOTIFICATION_ID,
-                    VpnNotification.build(this, "Подключение…"),
+                    VpnNotification.build(this, "Подключение…", connectionLabel, canSwitchServer = false),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
                 )
             } else {
                 startForeground(
                     VpnNotification.NOTIFICATION_ID,
-                    VpnNotification.build(this, "Подключение…")
+                    VpnNotification.build(this, "Подключение…", connectionLabel, canSwitchServer = false)
                 )
             }
         }.onFailure {
@@ -173,7 +184,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 }
 
                 android.util.Log.i(TAG, "startVpn: SingBoxEngine completed, engineRunning=${engine.isRunning()}")
-                publishNotification(connectedText(TrafficStatus.CHECKING))
+                publishStatus(TrafficStatus.CHECKING)
                 startTrafficCheck(generation)
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startVpn: service startup failed", t)
@@ -295,14 +306,14 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         serviceScope.launch {
             try {
                 eventBus.emit(VpnEvent.Connecting)
-                publishNotification("Переключение…")
+                publish(VpnNotification.build(this@OmniVpnService, "Переключение…", connectionLabel, canSwitchServer = false))
                 val config = configStore.read() ?: error("No active sing-box configuration")
                 probeTag = probeTagOf(config)
                 android.util.Log.i(TAG, "reloadVpn: hot-reloading engine (${config.length} chars)")
                 engine.reload(config)
                 if (operationGeneration.get() != generation || stopping.get()) return@launch
                 eventBus.emit(VpnEvent.Connected)
-                publishNotification(connectedText(TrafficStatus.CHECKING))
+                publishStatus(TrafficStatus.CHECKING)
                 startTrafficCheck(generation)
                 android.util.Log.i(TAG, "reloadVpn: done")
             } catch (t: Throwable) {
@@ -341,7 +352,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
 
     private suspend fun reportTraffic(status: TrafficStatus, generation: Long) {
         eventBus.setTraffic(status)
-        publishNotification(connectedText(status))
+        publishStatus(status)
         if (status == TrafficStatus.OK) {
             startWatchdog(generation)
             return
@@ -358,7 +369,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
             if (again != eventBus.traffic.value) {
                 android.util.Log.i(TAG, "traffic re-check: $again (label=$connectionLabel)")
                 eventBus.setTraffic(again)
-                publishNotification(connectedText(again))
+                publishStatus(again)
             }
             if (again == TrafficStatus.OK) {
                 startWatchdog(generation)
@@ -385,6 +396,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                     // The home screen's latency figure: refreshed by every
                     // check that passes (connect, re-checks, watchdog).
                     eventBus.setLatency(outcome.latencyMs)
+                    // Keep the notification's «· 38 мс» current while traffic is fine.
+                    if (eventBus.traffic.value == TrafficStatus.OK) publishStatus(TrafficStatus.OK)
                     return TrafficStatus.OK
                 }
                 is CoreProbe.Outcome.Dead -> return TrafficStatus.NONE
@@ -440,15 +453,25 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         TrafficProbe.Result.NONE -> TrafficStatus.NONE
     }
 
-    private fun connectedText(traffic: TrafficStatus): String {
-        val suffix = connectionLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
-        return when (traffic) {
-            TrafficStatus.NONE -> "Нет трафика — сервер не отвечает$suffix"
-            TrafficStatus.DNS_BROKEN -> "Сайты не открываются: не работает DNS$suffix"
-            TrafficStatus.OK -> "Подключено$suffix"
-            else -> "Проверка соединения…$suffix"
+    /**
+     * The notification for the tunnel's traffic state (handoff §7):
+     * «Подключено · <name>» over «<detail> · 38 мс». Latency comes from the
+     * last passed check; speed is deliberately not shown.
+     */
+    private fun statusNotification(traffic: TrafficStatus): android.app.Notification {
+        val name = connectionLabel?.takeIf { it.isNotBlank() } ?: "OmniVPN"
+        val latency = eventBus.stats.value.latencyMs
+        val (title, text) = when (traffic) {
+            TrafficStatus.NONE -> "Нет трафика · $name" to "Сервер не отвечает"
+            TrafficStatus.DNS_BROKEN -> "Нет DNS · $name" to "Сайты не открываются: не работает DNS"
+            TrafficStatus.OK -> "Подключено · $name" to
+                listOfNotNull(connectionDetail, latency?.let { "$it мс" }).joinToString(" · ")
+            else -> "Проверка соединения · $name" to connectionDetail
         }
+        return VpnNotification.build(this, title, text, canSwitchServer)
     }
+
+    private fun publishStatus(traffic: TrafficStatus) = publish(statusNotification(traffic))
 
     override fun serviceReload() {
         serviceScope.launch {
@@ -456,7 +479,7 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 val config = configStore.read()
                     ?: error("No active sing-box configuration")
                 engine.reload(config)
-                publishNotification("Подключено")
+                publishStatus(eventBus.traffic.value)
             }.onFailure {
                 android.util.Log.e(TAG, "CommandServer serviceReload failed", it)
                 eventBus.emit(
@@ -507,11 +530,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         activeTun.getAndSet(null)?.runCatching { close() }
     }
 
-    private fun publishNotification(text: String) {
-        NotificationManagerCompat.from(this).notify(
-            VpnNotification.NOTIFICATION_ID,
-            VpnNotification.build(this, text)
-        )
+    private fun publish(notification: android.app.Notification) {
+        NotificationManagerCompat.from(this).notify(VpnNotification.NOTIFICATION_ID, notification)
     }
 
     private fun registerNetworkCallback() {
@@ -599,6 +619,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
         const val ACTION_STOP = "com.betalgezia.omnivpn.action.STOP"
         const val EXTRA_LABEL = "com.betalgezia.omnivpn.extra.LABEL"
         const val EXTRA_QUICK_CHECK = "com.betalgezia.omnivpn.extra.QUICK_CHECK"
+        const val EXTRA_DETAIL = "com.betalgezia.omnivpn.extra.DETAIL"
+        const val EXTRA_SWITCHABLE = "com.betalgezia.omnivpn.extra.SWITCHABLE"
         private const val TRAFFIC_RECHECK_DELAY_MS = 15_000L
         private const val TAG = "OmniVpnService"
     }

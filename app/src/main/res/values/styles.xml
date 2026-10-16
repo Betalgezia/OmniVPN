@@ -3,6 +3,9 @@
     <style name="Theme.OmniVPN" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
+        <!-- The Organic ground, so the window doesn't flash white (or dark)
+             before Compose draws; values-night has the dark one. -->
+        <item name="android:windowBackground">@color/organic_bg</item>
     </style>
     <!-- android:windowLightStatusBar is intentionally left unset here - status
          bar icon contrast follows the actual Compose theme (light/dark) via

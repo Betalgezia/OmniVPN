@@ -30,7 +30,15 @@ class AppearanceSettings @Inject constructor(@ApplicationContext context: Contex
     private fun read(): ThemeChoice? =
         prefs.getString(KEY_THEME, null)?.let { runCatching { ThemeChoice.valueOf(it) }.getOrNull() }
 
+    /** The first-run intro is done (or skipped); see MainViewModel.showOnboarding. */
+    var onboarded: Boolean
+        get() = prefs.getBoolean(KEY_ONBOARDED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_ONBOARDED, value).apply()
+        }
+
     private companion object {
         const val KEY_THEME = "theme"
+        const val KEY_ONBOARDED = "onboarded"
     }
 }

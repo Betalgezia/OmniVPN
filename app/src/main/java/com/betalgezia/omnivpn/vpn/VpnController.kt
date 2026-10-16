@@ -40,7 +40,11 @@ class VpnController @Inject constructor(
         node: Node,
         label: String = node.name,
         quickCheck: Boolean = false,
-        alternates: List<Node> = emptyList()
+        alternates: List<Node> = emptyList(),
+        // The notification's second line («VLESS · host:port») and whether it
+        // offers «Сменить сервер» (not for WARP).
+        detail: String = VpnNotification.serverDetail(node),
+        switchable: Boolean = true
     ): Result<Unit> = runCatching {
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
@@ -63,7 +67,7 @@ class VpnController @Inject constructor(
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")
-        startConfig(config, label, quickCheck).getOrThrow()
+        startConfig(config, label, quickCheck, detail, switchable).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit
     }.onFailure {
@@ -75,7 +79,13 @@ class VpnController @Inject constructor(
      * probe + patient retry - used by auto-switch, where a dead candidate
      * should cost ~5 s, not ~11 s.
      */
-    suspend fun startConfig(config: String, label: String? = null, quickCheck: Boolean = false): Result<Unit> = runCatching {
+    suspend fun startConfig(
+        config: String,
+        label: String? = null,
+        quickCheck: Boolean = false,
+        detail: String? = null,
+        switchable: Boolean = true
+    ): Result<Unit> = runCatching {
         check(config.isNotBlank()) { "VPN config is empty" }
         android.util.Log.d(tag, "startConfig: checking VPN permission")
         withContext(Dispatchers.Main.immediate) {
@@ -96,6 +106,8 @@ class VpnController @Inject constructor(
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
                 if (label != null) putExtra(OmniVpnService.EXTRA_LABEL, label)
+                if (detail != null) putExtra(OmniVpnService.EXTRA_DETAIL, detail)
+                putExtra(OmniVpnService.EXTRA_SWITCHABLE, switchable)
                 putExtra(OmniVpnService.EXTRA_QUICK_CHECK, quickCheck)
             }
             android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
@@ -149,7 +161,9 @@ class VpnController @Inject constructor(
         android.util.Log.d(tag, "startWarp: ipv6Enabled=${settings.ipv6Enabled}, obfuscation jc=${obfuscation.jc} jmin=${obfuscation.jmin} jmax=${obfuscation.jmax} tuned=${obfuscation.tunedLatencyMs != null}")
         start(
             account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation),
-            label = "Cloudflare WARP"
+            label = "Cloudflare WARP",
+            detail = account.endpoint,
+            switchable = false
         ).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
         Unit

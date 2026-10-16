@@ -3,35 +3,18 @@ package com.betalgezia.omnivpn.ui.screens
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -47,14 +30,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -68,11 +48,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.betalgezia.omnivpn.MainViewModel
 import com.betalgezia.omnivpn.addErrorText
 import com.betalgezia.omnivpn.ui.organic.ButtonKind
+import com.betalgezia.omnivpn.ui.organic.OrganicBottomSheet
 import com.betalgezia.omnivpn.ui.organic.OrganicButton
-import com.betalgezia.omnivpn.ui.organic.OrganicIconButton
 import com.betalgezia.omnivpn.ui.organic.OrganicIcons
 import com.betalgezia.omnivpn.ui.organic.OrganicTextField
 import com.betalgezia.omnivpn.ui.organic.Segmented
+import com.betalgezia.omnivpn.ui.organic.SheetHeader
 import com.betalgezia.omnivpn.ui.theme.Organic
 import com.betalgezia.omnivpn.ui.theme.OrganicShapes
 import com.betalgezia.omnivpn.ui.theme.OrganicType
@@ -155,144 +136,98 @@ fun AddServerSheet(
         }
     }
 
-    BackHandler(enabled = visible, onBack = onDismiss)
+    OrganicBottomSheet(visible = visible, onDismiss = onDismiss) {
+        SheetHeader("Добавить сервер", onClose = onDismiss)
+        Segmented(
+            options = AddMode.entries.map { it.label },
+            selectedIndex = mode.ordinal,
+            onSelect = {
+                mode = AddMode.entries[it]
+                text = ""
+                error = null
+            },
+            enabled = !adding && !readingFile
+        )
 
-    Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible, enter = fadeIn(tween(250)), exit = fadeOut(tween(200))) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(if (c.isDark) Color.Black.copy(alpha = 0.55f) else c.neutral900.copy(alpha = 0.45f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClickLabel = "Закрыть",
-                        onClick = onDismiss
+        when (mode) {
+            AddMode.SUBSCRIPTION -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel("Ссылка на подписку")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OrganicTextField(
+                        value = text,
+                        onValueChange = {
+                            text = it
+                            error = null
+                        },
+                        modifier = Modifier.weight(1f),
+                        placeholder = "https://…",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                        enabled = !adding
                     )
-            )
-        }
-        AnimatedVisibility(
-            visible,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically(tween(250)) { it },
-            exit = slideOutVertically(tween(200)) { it }
-        ) {
-            val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .shadow(16.dp, sheetShape, ambientColor = c.shadow, spotColor = c.shadow)
-                    .clip(sheetShape)
-                    .background(c.bg)
-                    // Taps on the sheet itself must not reach the scrim below.
-                    .pointerInput(Unit) { detectTapGestures { } }
-                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                    .padding(start = 22.dp, end = 22.dp, top = 10.dp, bottom = 26.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Box(
-                    Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .size(40.dp, 5.dp)
-                        .clip(OrganicShapes.pill)
-                        .background(c.neutral300)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Добавить сервер", style = OrganicType.pageTitle, color = c.text, modifier = Modifier.weight(1f))
-                    OrganicIconButton(OrganicIcons.X, onClick = onDismiss, contentDescription = "Закрыть", iconSize = 20.dp)
+                    OrganicButton("Вставить", onClick = paste, kind = ButtonKind.Secondary, enabled = !adding)
                 }
-                Segmented(
-                    options = AddMode.entries.map { it.label },
-                    selectedIndex = mode.ordinal,
-                    onSelect = {
-                        mode = AddMode.entries[it]
-                        text = ""
+                Text(
+                    "Только HTTPS. Серверы подписки участвуют в поиске быстрейшего и автопереключении.",
+                    style = OrganicType.meta,
+                    color = c.neutral600
+                )
+            }
+            AddMode.CONFIG -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel("Ссылка или текст конфигурации")
+                OrganicTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
                         error = null
                     },
-                    enabled = !adding && !readingFile
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                    placeholder = "vless://… · trojan://… · hy2://… · JSON · YAML",
+                    singleLine = false,
+                    mono = true,
+                    minHeight = 110.dp,
+                    enabled = !adding
                 )
-
-                when (mode) {
-                    AddMode.SUBSCRIPTION -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FieldLabel("Ссылка на подписку")
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OrganicTextField(
-                                value = text,
-                                onValueChange = {
-                                    text = it
-                                    error = null
-                                },
-                                modifier = Modifier.weight(1f),
-                                placeholder = "https://…",
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-                                enabled = !adding
-                            )
-                            OrganicButton("Вставить", onClick = paste, kind = ButtonKind.Secondary, enabled = !adding)
-                        }
-                        Text(
-                            "Только HTTPS. Серверы подписки участвуют в поиске быстрейшего и автопереключении.",
-                            style = OrganicType.meta,
-                            color = c.neutral600
-                        )
-                    }
-                    AddMode.CONFIG -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FieldLabel("Ссылка или текст конфигурации")
-                        OrganicTextField(
-                            value = text,
-                            onValueChange = {
-                                text = it
-                                error = null
-                            },
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
-                            placeholder = "vless://… · trojan://… · hy2://… · JSON · YAML",
-                            singleLine = false,
-                            mono = true,
-                            minHeight = 110.dp,
-                            enabled = !adding
-                        )
-                        // Ghost buttons carry 8dp side padding; line the label up with the field.
-                        OrganicButton(
-                            "Вставить",
-                            onClick = paste,
-                            kind = ButtonKind.Ghost,
-                            enabled = !adding,
-                            modifier = Modifier.offset(x = (-8).dp)
-                        )
-                    }
-                    AddMode.FILE -> FileZone(
-                        busy = adding || readingFile,
-                        onPick = { picker.launch(arrayOf("*/*")) }
-                    )
-                }
-
-                error?.let {
-                    Text(
-                        it,
-                        style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-                        color = c.accent800,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(OrganicShapes.md)
-                            .background(c.accent100)
-                            .padding(horizontal = 14.dp, vertical = 8.dp)
-                    )
-                }
-
-                if (mode != AddMode.FILE) {
-                    OrganicButton(
-                        text = when {
-                            mode == AddMode.SUBSCRIPTION && adding -> "Загружаем подписку…"
-                            mode == AddMode.SUBSCRIPTION -> "Добавить подписку"
-                            adding -> "Импортируем…"
-                            else -> "Импортировать"
-                        },
-                        onClick = submit,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !adding,
-                        large = true
-                    )
-                }
+                // Ghost buttons carry 8dp side padding; line the label up with the field.
+                OrganicButton(
+                    "Вставить",
+                    onClick = paste,
+                    kind = ButtonKind.Ghost,
+                    enabled = !adding,
+                    modifier = Modifier.offset(x = (-8).dp)
+                )
             }
+            AddMode.FILE -> FileZone(
+                busy = adding || readingFile,
+                onPick = { picker.launch(arrayOf("*/*")) }
+            )
+        }
+
+        error?.let {
+            Text(
+                it,
+                style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+                color = c.accent800,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(OrganicShapes.md)
+                    .background(c.accent100)
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            )
+        }
+
+        if (mode != AddMode.FILE) {
+            OrganicButton(
+                text = when {
+                    mode == AddMode.SUBSCRIPTION && adding -> "Загружаем подписку…"
+                    mode == AddMode.SUBSCRIPTION -> "Добавить подписку"
+                    adding -> "Импортируем…"
+                    else -> "Импортировать"
+                },
+                onClick = submit,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !adding,
+                large = true
+            )
         }
     }
 }

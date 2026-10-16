@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -39,10 +40,12 @@ import com.betalgezia.omnivpn.ui.rememberVpnActions
 import com.betalgezia.omnivpn.ui.screens.AddMode
 import com.betalgezia.omnivpn.ui.screens.AddServerSheet
 import com.betalgezia.omnivpn.ui.screens.HomeScreen
+import com.betalgezia.omnivpn.ui.screens.OnboardingScreen
 import com.betalgezia.omnivpn.ui.screens.ServersScreen
 import com.betalgezia.omnivpn.ui.screens.SettingsPage
 import com.betalgezia.omnivpn.ui.screens.SettingsPageScreen
 import com.betalgezia.omnivpn.ui.screens.SettingsScreen
+import com.betalgezia.omnivpn.ui.screens.SwitchJournalSheet
 import com.betalgezia.omnivpn.ui.theme.Organic
 import com.betalgezia.omnivpn.ui.theme.OrganicTheme
 import com.betalgezia.omnivpn.vpn.VpnState
@@ -64,12 +67,16 @@ class MainActivity : ComponentActivity() {
     // per Settings) through the consent flow.
     private val tileStart = mutableStateOf(false)
 
+    // A tab to show, asked for by the notification («Сменить сервер»).
+    private val openTab = mutableStateOf<String?>(null)
+
     @Inject lateinit var appearance: AppearanceSettings
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         if (intent?.getBooleanExtra(EXTRA_TILE_START, false) == true) tileStart.value = true
+        openTab.value = intent?.getStringExtra(EXTRA_OPEN_TAB)
         setContent {
             val choice by appearance.theme.collectAsStateWithLifecycle()
             val dark = choice?.let { it == ThemeChoice.DARK } ?: isSystemInDarkTheme()
@@ -80,6 +87,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra(EXTRA_TILE_START, false)) tileStart.value = true
+        intent.getStringExtra(EXTRA_OPEN_TAB)?.let { openTab.value = it }
     }
 
     @Composable
@@ -93,7 +101,10 @@ class MainActivity : ComponentActivity() {
         var page by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
         var addSheet by rememberSaveable { mutableStateOf(false) }
         var addMode by remember { mutableStateOf<AddMode?>(null) }
+        var journalSheet by rememberSaveable { mutableStateOf(false) }
         val message by viewModel.message.collectAsStateWithLifecycle()
+        val journal by viewModel.switchJournal.collectAsStateWithLifecycle()
+        val onboarding by viewModel.showOnboarding.collectAsStateWithLifecycle()
         val actions = rememberVpnActions(viewModel)
 
         LaunchedEffect(tileStart.value) {
@@ -110,9 +121,38 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        LaunchedEffect(openTab.value) {
+            if (openTab.value == TAB_SERVERS) {
+                tab = AppTab.SERVERS
+                page = null
+            }
+            openTab.value = null
+        }
+
+        // First run: the three-step intro instead of the tabs (null = still
+        // checking whether this is really a first run, see showOnboarding).
+        when (onboarding) {
+            null -> {
+                Box(Modifier.fillMaxSize().background(c.bg))
+                return
+            }
+            true -> {
+                Box(Modifier.fillMaxSize()) {
+                    OnboardingScreen(viewModel)
+                    OrganicSnackbarHost(
+                        message = message,
+                        onShown = viewModel::consumeMessage,
+                        modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp)
+                    )
+                }
+                return
+            }
+            false -> Unit
+        }
+
         // System back on a settings page returns to the settings list (the
         // sheet, when open, handles back itself).
-        BackHandler(enabled = page != null && !addSheet) { page = null }
+        BackHandler(enabled = page != null && !addSheet && !journalSheet) { page = null }
 
         val openAdd: (AddMode?) -> Unit = { mode ->
             addMode = mode
@@ -129,7 +169,8 @@ class MainActivity : ComponentActivity() {
                                 AppTab.HOME -> HomeScreen(
                                     viewModel = viewModel,
                                     actions = actions,
-                                    onOpenServers = { tab = AppTab.SERVERS }
+                                    onOpenServers = { tab = AppTab.SERVERS },
+                                    onOpenJournal = { journalSheet = true }
                                 )
                                 AppTab.SERVERS -> ServersScreen(
                                     viewModel = viewModel,
@@ -185,6 +226,7 @@ class MainActivity : ComponentActivity() {
                 },
                 startMode = addMode
             )
+            SwitchJournalSheet(visible = journalSheet, events = journal, onDismiss = { journalSheet = false })
         }
     }
 
@@ -201,5 +243,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TILE_START = "com.betalgezia.omnivpn.TILE_START"
+        const val EXTRA_OPEN_TAB = "com.betalgezia.omnivpn.OPEN_TAB"
+        const val TAB_SERVERS = "servers"
     }
 }

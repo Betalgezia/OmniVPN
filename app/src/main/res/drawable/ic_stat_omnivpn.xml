@@ -1,0 +1,9 @@
+<!-- Notification small icon + Quick Settings tile icon. White silhouette; the system tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="3.2" android:strokeLineCap="round"
+        android:fillColor="#00000000" android:pathData="M19,12A7,7 0,1 1,12 5"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M16.95,7.05m-2.4,0a2.4,2.4 0,1 1,4.8 0a2.4,2.4 0,1 1,-4.8 0"/>
+</vector>

@@ -117,7 +117,12 @@ private fun heroLook(kind: HeroKind, warp: Boolean): HeroLook {
 }
 
 @Composable
-fun HomeScreen(viewModel: MainViewModel, actions: VpnActions, onOpenServers: () -> Unit) {
+fun HomeScreen(
+    viewModel: MainViewModel,
+    actions: VpnActions,
+    onOpenServers: () -> Unit,
+    onOpenJournal: () -> Unit
+) {
     val c = Organic.colors
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val searching by viewModel.searchingFastest.collectAsStateWithLifecycle()
@@ -132,6 +137,9 @@ fun HomeScreen(viewModel: MainViewModel, actions: VpnActions, onOpenServers: () 
     val autoSwitch by viewModel.autoSwitchEnabled.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val connectedSince by viewModel.connectedSince.collectAsStateWithLifecycle()
+    val switchNotice by viewModel.switchNotice.collectAsStateWithLifecycle()
+    val measuring by viewModel.speedMeasuring.collectAsStateWithLifecycle()
+    val journal by viewModel.switchJournal.collectAsStateWithLifecycle()
 
     // What «Подключиться» searches: subscription servers only (see connectFastest).
     val candidates = remember(nodes) {
@@ -230,12 +238,27 @@ fun HomeScreen(viewModel: MainViewModel, actions: VpnActions, onOpenServers: () 
                 Counters(
                     protocol = server?.protocol,
                     stats = stats,
+                    measuring = measuring != null,
                     modifier = Modifier.offset(x = 200.dp, y = 52.dp).width(100.dp)
                 )
             }
         }
 
         val slide = with(LocalDensity.current) { 16.dp.roundToPx() }
+        val tunnelUp = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING
+        AnimatedVisibility(
+            visible = tunnelUp && (switchNotice != null || measuring != null || journal.isNotEmpty()),
+            enter = fadeIn(tween(300)) + slideInVertically(tween(300)) { slide },
+            exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { slide }
+        ) {
+            SwitchCard(
+                notice = switchNotice,
+                measuring = measuring,
+                journalSize = journal.size,
+                onDismiss = viewModel::dismissSwitchNotice,
+                onOpenJournal = onOpenJournal
+            )
+        }
         AnimatedVisibility(
             visible = kind == HeroKind.NO_TRAFFIC || kind == HeroKind.NO_DNS,
             enter = fadeIn(tween(300)) + slideInVertically(tween(300)) { slide },
@@ -403,7 +426,7 @@ private val Tabular = TextStyle(fontFeatureSettings = "tnum")
 
 /** Protocol, latency with bars, ↓ and ↑ - straight on the blob, no frames. */
 @Composable
-private fun Counters(protocol: Protocol?, stats: TunnelStats, modifier: Modifier) {
+private fun Counters(protocol: Protocol?, stats: TunnelStats, measuring: Boolean, modifier: Modifier) {
     val c = Organic.colors
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (protocol != null) ProtocolTag(protocol) else Tag("WARP", TagTone.Accent)
@@ -420,18 +443,25 @@ private fun Counters(protocol: Protocol?, stats: TunnelStats, modifier: Modifier
                     LatencyBars(active = 0, activeColor = dim, inactiveColor = dim)
                 }
             }
-            RateRow(OrganicIcons.ArrowDown, formatMbps(stats.downBps))
+            // While a slow-server measurement runs, the download figure is what's in question.
+            RateRow(OrganicIcons.ArrowDown, formatMbps(stats.downBps), highlight = measuring && stats.downBps != null)
             RateRow(OrganicIcons.ArrowUp, formatMbps(stats.upBps))
         }
     }
 }
 
 @Composable
-private fun RateRow(icon: ImageVector, value: String) {
+private fun RateRow(icon: ImageVector, value: String, highlight: Boolean = false) {
     val c = Organic.colors
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(12.dp), tint = c.neutral700)
-        Text(value, style = Tabular.merge(TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)), color = c.text, maxLines = 1, softWrap = false)
+        Text(
+            value,
+            style = Tabular.merge(TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)),
+            color = if (highlight) c.accent700 else c.text,
+            maxLines = 1,
+            softWrap = false
+        )
         Text("Мбит/с", style = TextStyle(fontSize = 11.sp), color = c.neutral700, maxLines = 1, softWrap = false)
     }
 }

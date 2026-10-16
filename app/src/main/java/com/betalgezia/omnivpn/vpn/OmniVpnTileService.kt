@@ -121,11 +121,10 @@ class OmniVpnTileService : TileService() {
 
     private fun render(model: TileModel) {
         val tile = qsTile ?: return
-        val startsWarp = deps.warpSettings().quickTileStartsWarp
         val live = model.state == VpnState.CONNECTED || model.state == VpnState.CONNECTING
         tile.state = if (live || model.searching) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "OmniVPN"
-        tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_tile)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_omnivpn)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val name = when (val active = model.active) {
                 ActiveConnection.Warp -> "WARP"
@@ -143,7 +142,7 @@ class OmniVpnTileService : TileService() {
                 }
                 model.notice != null -> model.notice
                 model.state == VpnState.ERROR -> "Ошибка · нажмите ещё раз"
-                else -> if (startsWarp) "Нажмите — WARP" else "Нажмите — быстрый сервер"
+                else -> "Выкл"
             }
         }
         tile.updateTile()
