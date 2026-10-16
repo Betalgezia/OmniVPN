@@ -128,7 +128,6 @@ dependencies {
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.ui:ui-text-google-fonts")
     implementation("androidx.compose.material3:material3")
     // Subscription auto-update (see SubscriptionAutoUpdateWorker) - a plain
     // CoroutineWorker reached over a Hilt EntryPoint, so no hilt-work needed.

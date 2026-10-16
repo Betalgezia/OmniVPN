@@ -53,6 +53,8 @@ fun SettingsScreen(
     val autoUpdateMinutes by viewModel.autoUpdateIntervalMinutes.collectAsStateWithLifecycle()
     val ipv6 by viewModel.ipv6Enabled.collectAsStateWithLifecycle()
     val obfCustom by viewModel.obfuscationIsCustom.collectAsStateWithLifecycle()
+    val obfuscation by viewModel.currentObfuscation.collectAsStateWithLifecycle()
+    val warpInfo by viewModel.warpInfo.collectAsStateWithLifecycle()
     val coreVersion = remember { runCatching { Libbox.version() }.getOrNull() }
 
     Column(
@@ -136,7 +138,7 @@ fun SettingsScreen(
                 plate = c.accent200,
                 iconTint = c.accent800,
                 title = "Cloudflare WARP",
-                summary = if (ipv6) "IPv6 вкл" else "IPv6 выкл",
+                summary = warpSummary(ipv6, warpInfo.endpoint),
                 onClick = { onOpenPage(SettingsPage.WARP) }
             )
             RowDivider()
@@ -145,7 +147,7 @@ fun SettingsScreen(
                 plate = c.neutral300,
                 iconTint = c.neutral800,
                 title = "Обфускация AmneziaWG",
-                summary = if (obfCustom) "Подобранные" else "Стандартные",
+                summary = obfuscationSummary(obfCustom, obfuscation.tunedLatencyMs),
                 onClick = { onOpenPage(SettingsPage.OBFUSCATION) }
             )
         }

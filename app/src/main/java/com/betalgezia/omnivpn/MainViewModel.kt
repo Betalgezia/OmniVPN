@@ -225,6 +225,34 @@ class MainViewModel @Inject constructor(
         _obfuscationIsCustom.value = warpObfuscationStore.load() != null
     }
 
+    /** What the WARP page and the Settings summary show about the saved account. */
+    data class WarpInfo(val accountSaved: Boolean, val endpoint: String)
+
+    private val _warpInfo = MutableStateFlow(WarpInfo(accountSaved = false, endpoint = WarpAccount.DEFAULT_ENDPOINT))
+    val warpInfo: StateFlow<WarpInfo> = _warpInfo.asStateFlow()
+
+    /**
+     * Re-reads the WARP account and this network's obfuscation profile (both
+     * can change underneath: a connect registers the account, the profile is
+     * per network). The endpoint is the one a plain «Подключить WARP» would
+     * use - same precedence as VpnController.startWarp without an override.
+     */
+    fun refreshWarpState() {
+        refreshObfuscationState()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val account = runCatching { WarpStorage(appContext).get() }.getOrNull()
+            val obfuscation = warpObfuscationStore.currentOrDefault()
+            val endpoint = obfuscation.endpoint?.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
+                ?: account?.endpoint?.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
+                ?: WarpAccount.DEFAULT_ENDPOINT
+            _warpInfo.value = WarpInfo(accountSaved = account != null, endpoint = endpoint)
+        }
+    }
+
+    /** True while «Найти рабочий endpoint» runs. */
+    private val _endpointScanning = MutableStateFlow(false)
+    val endpointScanning: StateFlow<Boolean> = _endpointScanning.asStateFlow()
+
     /**
      * Manual obfuscation autotune (see WarpObfuscationTuner). Requires the VPN
      * to be disconnected for the same single-engine reason as every other
@@ -232,12 +260,12 @@ class MainViewModel @Inject constructor(
      */
     fun startTune() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before tuning obfuscation"
+            _message.value = "Отключите VPN перед подбором обфускации"
             return
         }
         val account = WarpStorage(appContext).get()
         if (account == null) {
-            _message.value = "Register WARP first (tap Cloudflare WARP), then tune"
+            _message.value = "Сначала подключите WARP один раз — тогда можно подбирать параметры"
             return
         }
         tuneJob?.cancel()
@@ -256,7 +284,7 @@ class MainViewModel @Inject constructor(
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startTune: failed", t)
                 _tuneState.value = TuneState.Idle
-                _message.value = t.message ?: "Tuning failed"
+                _message.value = t.message ?: "Подбор не удался"
             } finally {
                 _busy.value = false
             }
@@ -267,16 +295,16 @@ class MainViewModel @Inject constructor(
         tuneJob?.cancel()
         tuneJob = null
         _tuneState.value = TuneState.Idle
-        _message.value = "Tuning stopped - parameters unchanged"
+        _message.value = "Подбор остановлен — параметры не изменены"
     }
 
     fun applyTune() {
         val found = _tuneState.value as? TuneState.Found ?: return
         viewModelScope.launch {
             warpObfuscationTuner.apply(found.best)
-            refreshObfuscationState()
+            refreshWarpState()
             _tuneState.value = TuneState.Idle
-            _message.value = "Obfuscation applied for this network"
+            _message.value = "Обфускация применена для этой сети"
         }
     }
 
@@ -284,9 +312,9 @@ class MainViewModel @Inject constructor(
 
     fun resetObfuscation() {
         warpObfuscationTuner.reset()
-        refreshObfuscationState()
+        refreshWarpState()
         _tuneState.value = TuneState.Idle
-        _message.value = "Reverted to default obfuscation"
+        _message.value = "Возвращены стандартные параметры"
     }
 
     fun refreshAll() {
@@ -374,6 +402,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             connectionManager.notices.collect { _message.value = it }
         }
+        refreshWarpState()
     }
 
     fun consumeMessage() { _message.value = null }
@@ -485,10 +514,12 @@ class MainViewModel @Inject constructor(
 
     fun delete(subscription: Subscription) {
         viewModelScope.launch {
-            runCatching { subscriptionRepository.delete(subscription) }.onFailure {
-                android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
-                _message.value = it.message
-            }
+            runCatching { subscriptionRepository.delete(subscription) }
+                .onSuccess { _message.value = "Подписка «${subscription.name}» удалена" }
+                .onFailure {
+                    android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
+                    _message.value = "Не удалось удалить подписку «${subscription.name}»"
+                }
         }
     }
 
@@ -690,26 +721,35 @@ class MainViewModel @Inject constructor(
     fun findWarpEndpoint() {
         // Same single-engine constraint as the server test - see NodeHealthChecker.
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before searching for a WARP endpoint"
+            _message.value = "Отключите VPN перед поиском endpoint"
             return
         }
         testJob?.cancel()
         testJob = viewModelScope.launch {
             _busy.value = true
-            _message.value = "Trying WARP endpoints…"
+            _endpointScanning.value = true
             try {
                 warpEndpointScanner.findWorkingEndpoint()
                     .onSuccess {
-                        _message.value = "WARP endpoint ${it.endpoint} works (${it.latencyMs} ms) and is now saved"
+                        _message.value = "Endpoint ${it.endpoint} работает · ${it.latencyMs} мс, сохранён"
+                        refreshWarpState()
                     }
                     .onFailure {
                         android.util.Log.e(TAG, "findWarpEndpoint: failed", it)
-                        _message.value = it.message ?: "No working WARP endpoint found"
+                        val text = it.message.orEmpty()
+                        _message.value = when {
+                            text.startsWith("Register WARP first") ->
+                                "Сначала подключите WARP один раз — тогда можно искать endpoint"
+                            text.startsWith("None of the") ->
+                                "Ни один адрес Cloudflare не пропустил трафик"
+                            else -> text.ifBlank { "Рабочий endpoint не найден" }
+                        }
                     }
             } catch (cancelled: CancellationException) {
-                _message.value = "Endpoint search cancelled"
+                _message.value = "Поиск endpoint остановлен"
                 throw cancelled
             } finally {
+                _endpointScanning.value = false
                 _busy.value = false
             }
         }
@@ -749,6 +789,8 @@ class MainViewModel @Inject constructor(
                         normalizedEndpoint != null -> "WARP · endpoint $normalizedEndpoint"
                         else -> null
                     }?.let { _message.value = it }
+                    // The account / endpoint the WARP page shows may be new now.
+                    refreshWarpState()
                 }
             _warpStarting.value = false
             _busy.value = false

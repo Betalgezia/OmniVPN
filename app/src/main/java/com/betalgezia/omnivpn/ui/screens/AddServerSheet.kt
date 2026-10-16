@@ -94,7 +94,9 @@ fun AddServerSheet(
     visible: Boolean,
     viewModel: MainViewModel,
     onDismiss: () -> Unit,
-    onAdded: () -> Unit
+    onAdded: () -> Unit,
+    /** Open on this tab (e.g. «Добавить подписку» on the Подписки page); null keeps the last one. */
+    startMode: AddMode? = null
 ) {
     val c = Organic.colors
     val adding by viewModel.adding.collectAsStateWithLifecycle()
@@ -110,6 +112,7 @@ fun AddServerSheet(
         if (visible) {
             text = ""
             error = null
+            if (startMode != null) mode = startMode
         }
     }
 

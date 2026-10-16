@@ -427,13 +427,17 @@ fun SettingsLinkRow(
     title: String,
     summary: String,
     onClick: () -> Unit,
-    titleColor: Color = Organic.colors.text
+    titleColor: Color = Organic.colors.text,
+    enabled: Boolean = true,
+    /** false for an action row (it does something here rather than open a page). */
+    chevron: Boolean = true
 ) {
     val c = Organic.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(role = Role.Button, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.55f)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -443,8 +447,10 @@ fun SettingsLinkRow(
             Text(title, style = OrganicType.bodyStrong, color = titleColor)
             if (summary.isNotEmpty()) Text(summary, style = OrganicType.secondary, color = c.neutral700)
         }
-        Spacer(Modifier.width(8.dp))
-        Icon(OrganicIcons.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = c.neutral600)
+        if (chevron) {
+            Spacer(Modifier.width(8.dp))
+            Icon(OrganicIcons.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = c.neutral600)
+        }
     }
 }
 

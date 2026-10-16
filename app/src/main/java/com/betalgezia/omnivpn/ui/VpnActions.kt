@@ -15,7 +15,7 @@ import com.betalgezia.omnivpn.data.model.Node
 /** What to start once the system VPN consent dialog comes back with "OK". */
 sealed interface PendingStart {
     data object Fastest : PendingStart
-    data object Warp : PendingStart
+    data class Warp(val endpoint: String? = null, val forceNew: Boolean = false) : PendingStart
     data class ToNode(val node: Node) : PendingStart
 }
 
@@ -34,8 +34,12 @@ class VpnActions internal constructor(
     /** Connect to [node], or switch a running tunnel over to it. */
     fun connectNode(node: Node) = start(PendingStart.ToNode(node)) { viewModel.connect(node) }
 
-    /** One-tap Cloudflare WARP with the saved account and settings. */
-    fun startWarp() = start(PendingStart.Warp) { viewModel.startWarp() }
+    /**
+     * Cloudflare WARP with the saved account and settings; [endpoint] overrides
+     * the endpoint for this start, [forceNew] registers a fresh account.
+     */
+    fun startWarp(endpoint: String? = null, forceNew: Boolean = false) =
+        start(PendingStart.Warp(endpoint, forceNew)) { viewModel.startWarp(endpoint, forceNew) }
 
     fun stop() = viewModel.stop()
 
@@ -59,7 +63,7 @@ fun rememberVpnActions(viewModel: MainViewModel): VpnActions {
         }
         when (action) {
             PendingStart.Fastest -> viewModel.connectFastest()
-            PendingStart.Warp -> viewModel.startWarp()
+            is PendingStart.Warp -> viewModel.startWarp(action.endpoint, action.forceNew)
             is PendingStart.ToNode -> viewModel.connect(action.node)
             null -> Unit
         }
