@@ -118,6 +118,16 @@ class MainViewModel @Inject constructor(
         _autoSwitchEnabled.value = enabled
     }
 
+    // Leave a server whose real downloads stay below ~3 Mbit/s for a faster
+    // one of the same subscription (see ConnectionManager.onSlow).
+    private val _speedSwitchEnabled = MutableStateFlow(warpSettings.speedSwitchEnabled)
+    val speedSwitchEnabled: StateFlow<Boolean> = _speedSwitchEnabled.asStateFlow()
+
+    fun setSpeedSwitchEnabled(enabled: Boolean) {
+        warpSettings.speedSwitchEnabled = enabled
+        _speedSwitchEnabled.value = enabled
+    }
+
     // True only while connectFastest() is probing - distinct from _busy (which
     // is also true during a manual "Check all"/WARP endpoint search) so the
     // hero button can show "Searching…" only for its own action.

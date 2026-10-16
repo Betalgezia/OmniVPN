@@ -1528,6 +1528,7 @@ private fun SettingsSheet(
     val ipv6Enabled by viewModel.ipv6Enabled.collectAsStateWithLifecycle()
     val quickTileStartsWarp by viewModel.quickTileStartsWarp.collectAsStateWithLifecycle()
     val autoSwitchEnabled by viewModel.autoSwitchEnabled.collectAsStateWithLifecycle()
+    val speedSwitchEnabled by viewModel.speedSwitchEnabled.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -1663,6 +1664,32 @@ private fun SettingsSheet(
                     Switch(
                         checked = autoSwitchEnabled,
                         onCheckedChange = { viewModel.setAutoSwitchEnabled(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFFF3F5FE),
+                            checkedTrackColor = Nocturne.vless,
+                            uncheckedThumbColor = Color(0xFFF3F5FE),
+                            uncheckedTrackColor = Nocturne.neutral800,
+                            uncheckedBorderColor = Color.Transparent
+                        )
+                    )
+                }
+            )
+
+            // 4c. Leave a slow server for a faster one
+            Spacer(Modifier.height(10.dp))
+            SettingsCardRow(
+                glyph = { LightningGlyph(color = Nocturne.vless, modifier = Modifier.size(18.dp)) },
+                tint = Nocturne.vless,
+                title = "Уходить с медленного сервера",
+                subtitle = if (speedSwitchEnabled) {
+                    "Если загрузка (видео и т. п.) идёт медленнее 3 Мбит/с, замерить другие серверы подписки (~1 МБ на сервер) и перейти на более быстрый"
+                } else {
+                    "Выкл — оставаться на выбранном сервере, даже если он медленный"
+                },
+                trailing = {
+                    Switch(
+                        checked = speedSwitchEnabled,
+                        onCheckedChange = { viewModel.setSpeedSwitchEnabled(it) },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color(0xFFF3F5FE),
                             checkedTrackColor = Nocturne.vless,

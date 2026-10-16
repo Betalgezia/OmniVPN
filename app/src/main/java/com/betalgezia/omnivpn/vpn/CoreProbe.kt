@@ -59,6 +59,53 @@ object CoreProbe {
         }
     }
 
+    /**
+     * Download speed through [tag] in Mbit/s, or null if it can't be measured.
+     * Fetches [SPEED_TEST_BYTES] (~1 MB) once; the 204 probe just before it
+     * both proves the outbound is alive and gives the connection-setup time
+     * (proxy + TLS handshakes), which is subtracted so a fast server isn't
+     * under-rated by its handshake. Costs ~1 MB of data per call.
+     */
+    suspend fun speedTestMbps(tag: String): Double? {
+        val client = runCatching { connect() }.getOrNull() ?: return null
+        try {
+            val alive = probeOnce(client, tag, FIRST_TIMEOUT_MS) as? Outcome.Ok ?: return null
+            // Wall clock, not just result.elapsedMs(): whether the core's own
+            // figure covers the whole body or only time-to-headers isn't
+            // documented, and only the former is a speed.
+            val started = System.nanoTime()
+            val result = withTimeoutOrNull((SPEED_TIMEOUT_MS + WATCHDOG_GRACE_MS).toLong()) {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        client.getURLViaOutbound(tag, SPEED_TEST_URL, SPEED_TIMEOUT_MS, SPEED_MAX_BYTES, HTTPHeaders())
+                    }
+                }
+            }?.getOrNull() ?: run {
+                android.util.Log.w(TAG, "speed: tag=$tag download failed or timed out")
+                return null
+            }
+            val received = result.content()?.length ?: 0
+            if (result.status() != 200 || received < SPEED_TEST_BYTES / 2) {
+                android.util.Log.w(
+                    TAG,
+                    "speed: tag=$tag unusable result status=${result.status()} len=$received truncated=${result.truncated()}"
+                )
+                return null
+            }
+            val wallMs = (System.nanoTime() - started) / 1_000_000
+            val totalMs = maxOf(wallMs, result.elapsedMs().toLong())
+            val transferMs = (totalMs - alive.latencyMs).coerceAtLeast(MIN_TRANSFER_MS)
+            val mbps = SPEED_TEST_BYTES * 8.0 / (transferMs / 1000.0) / 1_000_000.0
+            android.util.Log.i(
+                TAG,
+                "speed: tag=$tag ${"%.1f".format(mbps)} Mbit/s (wall ${wallMs}ms, core ${result.elapsedMs()}ms, setup ${alive.latencyMs}ms, len=$received)"
+            )
+            return mbps
+        } finally {
+            runCatching { client.disconnect() }
+        }
+    }
+
     private suspend fun probeOnce(client: CommandClient, tag: String, timeoutMs: Int): Outcome {
         val watchdogMs = (timeoutMs + WATCHDOG_GRACE_MS).toLong()
         val started = System.nanoTime()
@@ -141,4 +188,10 @@ object CoreProbe {
     private const val MAX_RESPONSE_BYTES = 8192
     private const val EXPECTED_STATUS = 204
     private const val TEST_URL = "https://www.gstatic.com/generate_204"
+
+    private const val SPEED_TEST_BYTES = 1_000_000
+    private const val SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=$SPEED_TEST_BYTES"
+    private const val SPEED_MAX_BYTES = SPEED_TEST_BYTES + 100_000
+    private const val SPEED_TIMEOUT_MS = 15_000
+    private const val MIN_TRANSFER_MS = 50L
 }

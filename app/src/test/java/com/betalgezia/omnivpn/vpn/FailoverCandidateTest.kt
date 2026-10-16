@@ -49,4 +49,27 @@ class FailoverCandidateTest {
         val dead = mapOf(1L to 999_000L, 3L to 999_000L, 4L to 999_000L)
         assertNull(pickFailoverCandidate(all, node(2, 7), dead, 1_000_000, ttl))
     }
+
+    // ---- pickAlternates (idle outbounds for the slow-server switch) ----
+
+    @Test
+    fun alternatesFollowTheCurrentServerAndWrapAround() {
+        val ids = pickAlternates(all, node(3, 7), emptyMap(), 1_000_000, ttl, 4).map { it.id }
+        assertEquals(listOf(4L, 1L, 2L), ids)
+    }
+
+    @Test
+    fun alternatesAreCappedAndStayInTheSubscription() {
+        val big = (1L..9L).map { node(it, 7) } + subB
+        val ids = pickAlternates(big, node(1, 7), emptyMap(), 1_000_000, ttl, 4).map { it.id }
+        assertEquals(listOf(2L, 3L, 4L, 5L), ids)
+    }
+
+    @Test
+    fun alternatesSkipRecentlyDeadAndNonProxyServers() {
+        val warp = Node(id = 5, name = "w", protocol = Protocol.WARP, server = "x", port = 2408, sourceId = 7)
+        val list = subA + warp
+        val ids = pickAlternates(list, node(1, 7), mapOf(2L to 999_000L), 1_000_000, ttl, 4).map { it.id }
+        assertEquals(listOf(3L, 4L), ids)
+    }
 }

@@ -404,6 +404,9 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                     trafficJob?.cancel()
                     trafficJob = serviceScope.launch { reportTraffic(TrafficStatus.NONE, generation) }
                 }
+            },
+            onSlow = { mbps ->
+                if (stillCurrent(generation)) eventBus.reportSlow(mbps)
             }
         ).also { it.start() }
     }

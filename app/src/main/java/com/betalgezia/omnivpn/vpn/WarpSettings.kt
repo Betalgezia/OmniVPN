@@ -88,6 +88,15 @@ class WarpSettings @Inject constructor(@ApplicationContext context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_AUTO_SWITCH, value).apply()
 
     /**
+     * Leave a subscription server whose real download speed stays under
+     * ThroughputMonitor.SLOW_MBPS for one measured faster in the same
+     * subscription - see ConnectionManager.onSlow. On by default.
+     */
+    var speedSwitchEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SPEED_SWITCH, true)
+        set(value) = prefs.edit().putBoolean(KEY_SPEED_SWITCH, value).apply()
+
+    /**
      * The Settings sheet's "Режим проверки" choice, used by the per-server
      * "Тест" tap. Used to live only in memory and reset to FULL on every
      * launch - so after any restart (including every reinstall) a "Тест" tap
@@ -122,6 +131,7 @@ class WarpSettings @Inject constructor(@ApplicationContext context: Context) {
         private const val KEY_AUTO_UPDATE_INTERVAL = "sub_auto_update_interval_min"
         private const val KEY_QUICK_TILE_WARP = "quick_tile_starts_warp"
         private const val KEY_AUTO_SWITCH = "auto_switch_dead_server"
+        private const val KEY_SPEED_SWITCH = "auto_switch_slow_server"
         private const val KEY_TEST_MODE = "server_test_mode"
         private const val KEY_COLLAPSED_SUBS = "collapsed_subscription_ids"
         private const val KEY_SUB_ORDER = "subscription_order"

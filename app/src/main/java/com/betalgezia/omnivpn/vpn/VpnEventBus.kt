@@ -42,4 +42,13 @@ class VpnEventBus @Inject constructor() {
     fun setTraffic(status: TrafficStatus) {
         _traffic.value = status
     }
+
+    // The watchdog's "this tunnel looks slow" hint (best observed Mbit/s);
+    // ConnectionManager decides whether a faster server exists.
+    private val _slow = MutableSharedFlow<Double>(extraBufferCapacity = 4)
+    val slow: SharedFlow<Double> = _slow.asSharedFlow()
+
+    fun reportSlow(bestSeenMbps: Double) {
+        _slow.tryEmit(bestSeenMbps)
+    }
 }

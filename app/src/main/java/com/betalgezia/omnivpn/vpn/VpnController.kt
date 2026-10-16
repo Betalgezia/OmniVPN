@@ -32,12 +32,30 @@ class VpnController @Inject constructor(
      * this as a switch and hot-reloads the new config (OmniVpnService.reloadVpn).
      * [label] is what the notification shows next to "Подключено".
      */
-    suspend fun start(node: Node, label: String = node.name, quickCheck: Boolean = false): Result<Unit> = runCatching {
+    suspend fun start(
+        node: Node,
+        label: String = node.name,
+        quickCheck: Boolean = false,
+        alternates: List<Node> = emptyList()
+    ): Result<Unit> = runCatching {
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val config = withContext(Dispatchers.Default) {
-            android.util.Log.d(tag, "start(node): building sing-box config")
-            SingBoxConfigBuilder.build(node)
+            android.util.Log.d(tag, "start(node): building sing-box config (${alternates.size} alternates)")
+            val withAlternates = SingBoxConfigBuilder.build(node, alternates)
+            if (alternates.isEmpty()) return@withContext withAlternates
+            // The alternates are a convenience (speed comparison); a single one
+            // the core rejects must never cost the user the connection itself.
+            val ok = runCatching {
+                com.betalgezia.omnivpn.OmniVpnApplication.libboxReady.await()
+                io.nekohasekai.libbox.Libbox.checkConfig(withAlternates)
+            }
+            if (ok.isSuccess) {
+                withAlternates
+            } else {
+                android.util.Log.w(tag, "start(node): config with alternates rejected (${ok.exceptionOrNull()?.message}) - starting without them")
+                SingBoxConfigBuilder.build(node)
+            }
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")
