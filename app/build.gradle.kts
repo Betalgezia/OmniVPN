@@ -62,12 +62,15 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            manifestPlaceholders["appLabel"] = "OmniVPN"
             if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
         }
         debug {
-            // Same key as release when it's available, so a build installed
-            // over USB updates the app from GitHub Releases in place (and the
-            // other way round) instead of failing on a signature mismatch.
+            // USB test builds install as a separate "OmniVPN Preview" app next
+            // to the everyday one from GitHub Releases, so an unfinished build
+            // never replaces the working app (or its subscriptions).
+            applicationIdSuffix = ".preview"
+            manifestPlaceholders["appLabel"] = "OmniVPN Preview"
             if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
         }
     }

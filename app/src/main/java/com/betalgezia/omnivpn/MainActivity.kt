@@ -100,9 +100,24 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.betalgezia.omnivpn.ui.AppearanceSettings
+import com.betalgezia.omnivpn.ui.ThemeChoice
+import com.betalgezia.omnivpn.ui.organic.AppTab
+import com.betalgezia.omnivpn.ui.organic.OrganicBottomNav
+import com.betalgezia.omnivpn.ui.organic.OrganicCard
+import com.betalgezia.omnivpn.ui.organic.OrganicSnackbarHost
+import com.betalgezia.omnivpn.ui.screens.SettingsPage
+import com.betalgezia.omnivpn.ui.screens.SettingsScreen
 import com.betalgezia.omnivpn.ui.theme.InterFontFamily
 import com.betalgezia.omnivpn.ui.theme.Nocturne
 import com.betalgezia.omnivpn.ui.theme.OmniVpnTheme
+import com.betalgezia.omnivpn.ui.theme.Organic
+import com.betalgezia.omnivpn.ui.theme.OrganicTheme
+import com.betalgezia.omnivpn.ui.theme.OrganicType
+import javax.inject.Inject
 import com.betalgezia.omnivpn.vpn.ActiveConnection
 import com.betalgezia.omnivpn.vpn.AwgObfuscation
 import com.betalgezia.omnivpn.vpn.NodeHealth
@@ -136,10 +151,111 @@ class MainActivity : ComponentActivity() {
     // the tile's action (WARP or the fastest server, per Settings).
     private val tileStart = mutableStateOf(false)
 
+    @Inject lateinit var appearance: AppearanceSettings
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         if (intent?.getBooleanExtra(EXTRA_TILE_START, false) == true) tileStart.value = true
-        setContent { OmniVpnTheme { OmniVpnScreen(tileStart = tileStart) } }
+        setContent {
+            val choice by appearance.theme.collectAsStateWithLifecycle()
+            val dark = choice?.let { it == ThemeChoice.DARK } ?: isSystemInDarkTheme()
+            OrganicTheme(dark = dark) { OrganicShell(tileStart = tileStart, dark = dark) }
+        }
+    }
+
+    /**
+     * Organic redesign shell (October 2026 handoff): content + bottom bar with
+     * Главная · Серверы · Настройки. Built in stages - until the new home and
+     * servers screens land, «Главная» still hosts the previous screen (which
+     * keeps every feature reachable) and «Серверы» is a placeholder.
+     */
+    @androidx.compose.runtime.Composable
+    private fun OrganicShell(
+        tileStart: androidx.compose.runtime.MutableState<Boolean>,
+        dark: Boolean,
+        viewModel: MainViewModel = hiltViewModel()
+    ) {
+        val c = Organic.colors
+        var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
+        val message by viewModel.message.collectAsStateWithLifecycle()
+
+        // The QS tile's consent bounce is handled by the home screen.
+        LaunchedEffect(tileStart.value) { if (tileStart.value) tab = AppTab.HOME }
+
+        val notYet: (String) -> Unit = { what ->
+            viewModel.showMessage("$what — на следующем этапе редизайна. Пока это в прежнем экране: «Главная» → ☰")
+        }
+
+        Column(Modifier.fillMaxSize().background(c.bg)) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (tab) {
+                    AppTab.HOME -> OmniVpnTheme(darkTheme = true) { OmniVpnScreen(tileStart = tileStart) }
+                    AppTab.SERVERS -> TabColumn {
+                        Column(
+                            Modifier.padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 28.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text("Серверы", style = OrganicType.tabTitle)
+                            OrganicCard(spacing = 6.dp) {
+                                Text("Скоро здесь", style = OrganicType.groupTitle)
+                                Text(
+                                    "Список серверов в новом оформлении появится на следующих этапах. " +
+                                        "Пока серверы — на вкладке «Главная».",
+                                    style = OrganicType.secondary,
+                                    color = c.neutral700
+                                )
+                            }
+                        }
+                    }
+                    AppTab.SETTINGS -> TabColumn {
+                        SettingsScreen(
+                            viewModel = viewModel,
+                            theme = if (dark) ThemeChoice.DARK else ThemeChoice.LIGHT,
+                            onThemeChange = appearance::setTheme,
+                            onOpenPage = { page ->
+                                notYet(
+                                    when (page) {
+                                        SettingsPage.SUBSCRIPTIONS -> "Подписки"
+                                        SettingsPage.WARP -> "Настройки WARP"
+                                        SettingsPage.OBFUSCATION -> "Обфускация"
+                                        SettingsPage.ABOUT -> "«О приложении»"
+                                    }
+                                )
+                            },
+                            onAddServer = { notYet("Добавление сервера") }
+                        )
+                    }
+                }
+                // The previous home screen shows its own messages.
+                if (tab != AppTab.HOME) {
+                    OrganicSnackbarHost(
+                        message = message,
+                        onShown = viewModel::consumeMessage,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
+                    )
+                }
+            }
+            OrganicBottomNav(selected = tab, onSelect = { tab = it })
+        }
+
+        // Status-bar icons: the interim home screen is dark whatever the theme.
+        val view = androidx.compose.ui.platform.LocalView.current
+        androidx.compose.runtime.SideEffect {
+            androidx.core.view.WindowCompat.getInsetsController(window, view)
+                .isAppearanceLightStatusBars = tab != AppTab.HOME && !dark
+        }
+    }
+
+    /** A tab's scrolling column under the status bar; scroll resets on tab change. */
+    @androidx.compose.runtime.Composable
+    private fun TabColumn(content: @androidx.compose.runtime.Composable () -> Unit) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .verticalScroll(rememberScrollState())
+        ) { content() }
     }
 
     override fun onNewIntent(intent: Intent) {
