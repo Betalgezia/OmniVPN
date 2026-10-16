@@ -23,4 +23,32 @@ class VpnEventBusTest {
         bus.emit(VpnEvent.Revoked)
         assertEquals(VpnState.REVOKED, bus.state.value)
     }
+
+    @Test
+    fun trafficStatusSurvivesConnectedButResetsOnEveryOtherTransition() {
+        val bus = VpnEventBus()
+        assertEquals(TrafficStatus.UNKNOWN, bus.traffic.value)
+
+        bus.emit(VpnEvent.Connected)
+        bus.setTraffic(TrafficStatus.NONE)
+        assertEquals(TrafficStatus.NONE, bus.traffic.value)
+
+        // A repeated Connected (e.g. after a hot reload) keeps the probe result
+        // until the service starts a new probe.
+        bus.emit(VpnEvent.Connected)
+        assertEquals(TrafficStatus.NONE, bus.traffic.value)
+
+        // Switching servers goes through Connecting: the old result must not
+        // stick to the new server.
+        bus.emit(VpnEvent.Connecting)
+        assertEquals(TrafficStatus.UNKNOWN, bus.traffic.value)
+
+        bus.setTraffic(TrafficStatus.OK)
+        bus.emit(VpnEvent.Disconnected)
+        assertEquals(TrafficStatus.UNKNOWN, bus.traffic.value)
+
+        bus.setTraffic(TrafficStatus.OK)
+        bus.emit(VpnEvent.Error("boom"))
+        assertEquals(TrafficStatus.UNKNOWN, bus.traffic.value)
+    }
 }

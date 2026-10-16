@@ -17,6 +17,7 @@ class VpnController @Inject constructor(
 ) {
     val state = eventBus.state
     val events = eventBus.events
+    val traffic = eventBus.traffic
 
     private val tag = "VpnController"
 
@@ -26,23 +27,51 @@ class VpnController @Inject constructor(
         return intent
     }
 
-    suspend fun start(node: Node): Result<Unit> = runCatching {
+    /**
+     * Starts the tunnel to [node]. If one is already up, the service treats
+     * this as a switch and hot-reloads the new config (OmniVpnService.reloadVpn).
+     * [label] is what the notification shows next to "Подключено".
+     */
+    suspend fun start(
+        node: Node,
+        label: String = node.name,
+        quickCheck: Boolean = false,
+        alternates: List<Node> = emptyList()
+    ): Result<Unit> = runCatching {
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val config = withContext(Dispatchers.Default) {
-            android.util.Log.d(tag, "start(node): building sing-box config")
-            SingBoxConfigBuilder.build(node)
+            android.util.Log.d(tag, "start(node): building sing-box config (${alternates.size} alternates)")
+            val withAlternates = SingBoxConfigBuilder.build(node, alternates)
+            if (alternates.isEmpty()) return@withContext withAlternates
+            // The alternates are a convenience (speed comparison); a single one
+            // the core rejects must never cost the user the connection itself.
+            val ok = runCatching {
+                com.betalgezia.omnivpn.OmniVpnApplication.libboxReady.await()
+                io.nekohasekai.libbox.Libbox.checkConfig(withAlternates)
+            }
+            if (ok.isSuccess) {
+                withAlternates
+            } else {
+                android.util.Log.w(tag, "start(node): config with alternates rejected (${ok.exceptionOrNull()?.message}) - starting without them")
+                SingBoxConfigBuilder.build(node)
+            }
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")
-        startConfig(config).getOrThrow()
+        startConfig(config, label, quickCheck).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit
     }.onFailure {
         android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
     }
 
-    suspend fun startConfig(config: String): Result<Unit> = runCatching {
+    /**
+     * [quickCheck]: verify the new tunnel with a single short probe instead of
+     * probe + patient retry - used by auto-switch, where a dead candidate
+     * should cost ~5 s, not ~11 s.
+     */
+    suspend fun startConfig(config: String, label: String? = null, quickCheck: Boolean = false): Result<Unit> = runCatching {
         check(config.isNotBlank()) { "VPN config is empty" }
         android.util.Log.d(tag, "startConfig: checking VPN permission")
         withContext(Dispatchers.Main.immediate) {
@@ -62,6 +91,8 @@ class VpnController @Inject constructor(
         withContext(Dispatchers.Main.immediate) {
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
+                if (label != null) putExtra(OmniVpnService.EXTRA_LABEL, label)
+                putExtra(OmniVpnService.EXTRA_QUICK_CHECK, quickCheck)
             }
             android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
             context.startService(intent)
@@ -112,7 +143,10 @@ class VpnController @Inject constructor(
         android.util.Log.d(tag, "startWarp: account cached, starting VPN")
 
         android.util.Log.d(tag, "startWarp: ipv6Enabled=${settings.ipv6Enabled}, obfuscation jc=${obfuscation.jc} jmin=${obfuscation.jmin} jmax=${obfuscation.jmax} tuned=${obfuscation.tunedLatencyMs != null}")
-        start(account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation)).getOrThrow()
+        start(
+            account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation),
+            label = "Cloudflare WARP"
+        ).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
         Unit
     }.onFailure {

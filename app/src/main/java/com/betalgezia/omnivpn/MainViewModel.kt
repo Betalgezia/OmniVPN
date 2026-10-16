@@ -12,7 +12,10 @@ import com.betalgezia.omnivpn.data.hasDomainWireguardEndpoint
 import com.betalgezia.omnivpn.data.model.Node
 import com.betalgezia.omnivpn.data.model.Protocol
 import com.betalgezia.omnivpn.data.model.Subscription
+import com.betalgezia.omnivpn.vpn.ActiveConnection
+import com.betalgezia.omnivpn.vpn.ConnectionManager
 import com.betalgezia.omnivpn.vpn.NodeHealth
+import com.betalgezia.omnivpn.vpn.TrafficStatus
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
@@ -40,25 +43,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/**
- * What the active VPN connection is, if any - tracked separately from
- * [VpnState] because that only reports whether a tunnel is up, not which
- * server it goes to. Every path that can bring a tunnel up (connect(),
- * connectFastest(), startWarp()) updates this, so the hero connect button
- * always has a name to show once VpnState reports CONNECTING/CONNECTED.
- */
-sealed interface ActiveConnection {
-    data object None : ActiveConnection
-    data class Server(val node: Node) : ActiveConnection
-    data object Warp : ActiveConnection
-}
-
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val nodeRepository: NodeRepository,
     private val nodeImportService: NodeImportService,
     private val subscriptionRepository: SubscriptionRepository,
     private val vpnController: VpnController,
+    private val connectionManager: ConnectionManager,
     private val nodeHealthChecker: NodeHealthChecker,
     private val warpEndpointScanner: WarpEndpointScanner,
     private val warpSettings: WarpSettings,
@@ -102,8 +93,40 @@ class MainViewModel @Inject constructor(
     private val _nodeHealth = MutableStateFlow<Map<Long, NodeHealth>>(emptyMap())
     val nodeHealth: StateFlow<Map<Long, NodeHealth>> = _nodeHealth.asStateFlow()
 
-    private val _activeConnection = MutableStateFlow<ActiveConnection>(ActiveConnection.None)
-    val activeConnection: StateFlow<ActiveConnection> = _activeConnection.asStateFlow()
+    // Owned by ConnectionManager (app-wide), so a tunnel started from the QS
+    // tile shows up here with its name too.
+    val activeConnection: StateFlow<ActiveConnection> = connectionManager.activeConnection
+
+    // Whether traffic actually flows through the tunnel (post-connect probe).
+    val trafficStatus: StateFlow<TrafficStatus> = vpnController.traffic
+
+    private val _quickTileStartsWarp = MutableStateFlow(warpSettings.quickTileStartsWarp)
+    val quickTileStartsWarp: StateFlow<Boolean> = _quickTileStartsWarp.asStateFlow()
+
+    fun setQuickTileStartsWarp(startsWarp: Boolean) {
+        warpSettings.quickTileStartsWarp = startsWarp
+        _quickTileStartsWarp.value = startsWarp
+    }
+
+    // Auto-switch to another server of the same subscription when the current
+    // one stops passing traffic (see ConnectionManager.onTunnelDead).
+    private val _autoSwitchEnabled = MutableStateFlow(warpSettings.autoSwitchEnabled)
+    val autoSwitchEnabled: StateFlow<Boolean> = _autoSwitchEnabled.asStateFlow()
+
+    fun setAutoSwitchEnabled(enabled: Boolean) {
+        warpSettings.autoSwitchEnabled = enabled
+        _autoSwitchEnabled.value = enabled
+    }
+
+    // Leave a server whose real downloads stay below ~3 Mbit/s for a faster
+    // one of the same subscription (see ConnectionManager.onSlow).
+    private val _speedSwitchEnabled = MutableStateFlow(warpSettings.speedSwitchEnabled)
+    val speedSwitchEnabled: StateFlow<Boolean> = _speedSwitchEnabled.asStateFlow()
+
+    fun setSpeedSwitchEnabled(enabled: Boolean) {
+        warpSettings.speedSwitchEnabled = enabled
+        _speedSwitchEnabled.value = enabled
+    }
 
     // True only while connectFastest() is probing - distinct from _busy (which
     // is also true during a manual "Check all"/WARP endpoint search) so the
@@ -331,28 +354,37 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+        // Auto-switch progress / "WARP is down" from ConnectionManager.
+        viewModelScope.launch {
+            connectionManager.notices.collect { _message.value = it }
+        }
     }
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
     fun prepareVpn(): Intent? = vpnController.prepareIntent()
 
+    /**
+     * Connects to [node] - or, if a tunnel is already up, switches the running
+     * tunnel over to it (the service hot-reloads the new config, see
+     * OmniVpnService.reloadVpn), with no manual disconnect in between.
+     */
     fun connect(node: Node) {
+        val switching = vpnState.value == VpnState.CONNECTED
         viewModelScope.launch {
             _busy.value = true
-            vpnController.start(node).onFailure {
+            connectionManager.connectNode(node).onFailure {
                 android.util.Log.e(TAG, "connect: failed", it)
                 _message.value = it.message ?: "Unable to start VPN"
             }.onSuccess {
-                _activeConnection.value = ActiveConnection.Server(node)
+                if (switching) _message.value = "Переключаемся на ${node.name}"
             }
             _busy.value = false
         }
     }
 
     fun stop() {
-        vpnController.stop()
-        _activeConnection.value = ActiveConnection.None
+        connectionManager.stop()
     }
 
     fun import(text: String) {
@@ -524,27 +556,19 @@ class MainViewModel @Inject constructor(
             _searchingFastest.value = true
             _nodeHealth.update { current -> current + candidates.associate { it.id to NodeHealth.Checking } }
             try {
-                // checkAll() serialises onResult even when probes run in parallel
-                // (see NodeHealthChecker.probeInParallel), so plain vars here -
-                // without a Mutex of their own - are safe to mutate from it.
-                var best: Node? = null
-                var bestLatencyMs = Long.MAX_VALUE
-                nodeHealthChecker.checkAll(candidates, mode = TestMode.QUICK) { node, health ->
+                // Same search the QS tile uses (ConnectionManager.findFastest);
+                // this one also feeds every result into the server list.
+                val found = connectionManager.findFastest(candidates) { node, health ->
                     _nodeHealth.update { it + (node.id to health) }
-                    if (health is NodeHealth.Reachable && health.latencyMs < bestLatencyMs) {
-                        best = node
-                        bestLatencyMs = health.latencyMs
-                    }
                 }
-                val winner = best
-                if (winner == null) {
+                if (found == null) {
                     _message.value = "No reachable servers found"
                 } else {
-                    vpnController.start(winner).onFailure {
+                    val (winner, bestLatencyMs) = found
+                    connectionManager.connectNode(winner).onFailure {
                         android.util.Log.e(TAG, "connectFastest: connect failed", it)
                         _message.value = it.message ?: "Unable to start VPN"
                     }.onSuccess {
-                        _activeConnection.value = ActiveConnection.Server(winner)
                         _message.value = "Connected to ${winner.name} (${bestLatencyMs} ms)"
                     }
                 }
@@ -658,12 +682,11 @@ class MainViewModel @Inject constructor(
             // saved account/keys stop working server-side; normal "Get WARP"
             // clicks always reuse the cached account instead of gambling on a
             // new one each time.
-            vpnController.startWarp(endpoint = normalizedEndpoint, forceNew = forceNew).onFailure {
+            connectionManager.connectWarp(endpoint = normalizedEndpoint, forceNew = forceNew).onFailure {
                 android.util.Log.e(TAG, "startWarp: failed (forceNew=$forceNew)", it)
                 _message.value = it.message ?: "WARP registration failed"
             }
                 .onSuccess {
-                    _activeConnection.value = ActiveConnection.Warp
                     val prefix = if (forceNew) "New WARP account registered" else "WARP registered"
                     _message.value = "$prefix (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
                 }

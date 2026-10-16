@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +7,34 @@ plugins {
     id("com.google.devtools.ksp")
     id("com.google.dagger.hilt.android")
 }
+
+// ---- Release signing ----
+// The key never lives in the repository. Locally, keystore.properties in the
+// project root (git-ignored) points at the .jks kept outside it. On GitHub
+// Actions, .github/workflows/release.yml decodes the key from repository
+// secrets and passes it in through the OMNIVPN_* environment variables.
+// Android only installs an update signed with the same key as the installed
+// app, so this one key signs every build that reaches a phone.
+val signingProps = Properties().apply {
+    val local = rootProject.file("keystore.properties")
+    if (local.exists()) local.inputStream().use { load(it) }
+}
+
+fun signingValue(property: String, env: String): String? =
+    System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: signingProps.getProperty(property)?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile: File? = signingValue("storeFile", "OMNIVPN_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+
+// ---- Version ----
+// versionCode = number of commits up to HEAD: it grows with every commit, so a
+// newer build always installs over an older one (Android refuses downgrades),
+// whether it came from GitHub Releases or over USB. versionName comes from the
+// release tag in CI (OMNIVPN_VERSION_NAME); local builds are "dev.<code>".
+val gitCommitCount: Int = runCatching {
+    providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }
+        .standardOutput.asText.get().trim().toInt()
+}.getOrDefault(1)
 
 android {
     namespace = "com.betalgezia.omnivpn"
@@ -14,8 +44,32 @@ android {
         applicationId = "com.betalgezia.omnivpn"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitCommitCount
+        versionName = System.getenv("OMNIVPN_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "dev.$gitCommitCount"
+    }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = signingValue("storePassword", "OMNIVPN_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "OMNIVPN_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "OMNIVPN_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            // Same key as release when it's available, so a build installed
+            // over USB updates the app from GitHub Releases in place (and the
+            // other way round) instead of failing on a signature mismatch.
+            if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     buildFeatures { compose = true }

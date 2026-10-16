@@ -26,7 +26,29 @@ data class ProbeConfig(
 )
 
 object SingBoxConfigBuilder {
-    fun build(node: Node): String {
+    /** Tag of the main proxy outbound in a non-endpoint [build] config. */
+    const val MAIN_PROXY_TAG = "proxy"
+
+    /** Tag of an [build] alternate's idle outbound - see `alternates`. */
+    fun alternateTag(nodeId: Long): String = "alt-$nodeId"
+
+    /** Protocols built as plain outbounds (not WireGuard-style endpoints). */
+    fun isProxyProtocol(protocol: Protocol): Boolean = when (protocol) {
+        Protocol.VLESS, Protocol.TROJAN, Protocol.HYSTERIA2,
+        Protocol.SHADOWSOCKS, Protocol.VMESS, Protocol.TUIC -> true
+        else -> false
+    }
+
+    /**
+     * [alternates]: other servers added as extra outbounds that no route ever
+     * points at. They carry no traffic and open no connections by themselves;
+     * they exist so ConnectionManager can measure them through the running
+     * core (CoreProbe.speedTestMbps on [alternateTag]) and pick a faster server
+     * without switching blind. Only proxy-type alternates are added (an extra
+     * WireGuard endpoint would bring up its own device), and one that fails to
+     * build is skipped rather than failing the whole config.
+     */
+    fun build(node: Node, alternates: List<Node> = emptyList()): String {
         val endpointMode = node.protocol == Protocol.AMNEZIAWG
         val proxyTag = if (endpointMode) AWG_TAG else PROXY_TAG
         val route = JSONObject()
@@ -314,6 +336,11 @@ object SingBoxConfigBuilder {
                 // (e.g. as the AWG/WARP endpoint bootstrap detour) instead of
                 // being silently dropped.
                 if (!endpointMode) put(buildProxyOutbound(node))
+                for (alt in alternates) {
+                    if (alt.id == node.id || !isProxyProtocol(alt.protocol)) continue
+                    runCatching { buildProxyOutbound(alt, alternateTag(alt.id)) }
+                        .onSuccess { put(it) }
+                }
                 put(JSONObject().put("type", "direct").put("tag", DIRECT_TAG).put("domain_resolver", LOCAL_DNS_TAG))
                 put(JSONObject().put("type", "block").put("tag", BLOCK_TAG))
             })

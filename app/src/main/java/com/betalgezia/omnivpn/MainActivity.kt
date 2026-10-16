@@ -103,9 +103,11 @@ import com.betalgezia.omnivpn.data.model.Subscription
 import com.betalgezia.omnivpn.ui.theme.InterFontFamily
 import com.betalgezia.omnivpn.ui.theme.Nocturne
 import com.betalgezia.omnivpn.ui.theme.OmniVpnTheme
+import com.betalgezia.omnivpn.vpn.ActiveConnection
 import com.betalgezia.omnivpn.vpn.AwgObfuscation
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.TestMode
+import com.betalgezia.omnivpn.vpn.TrafficStatus
 import com.betalgezia.omnivpn.vpn.TuneState
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.WarpSettings
@@ -122,40 +124,41 @@ import kotlin.math.roundToInt
  * button, the WARP card, the subscription-URL field, and the servers grouped
  * by subscription. Everything else (import, WARP tools, obfuscation tuner,
  * subscription management, auto-update, imported configs) lives in the
- * settings sheet. The system Quick Settings tile (OmniVpnTileService) hands a
- * "start WARP" intent back here via [EXTRA_START_WARP] when it needs the VPN
+ * settings sheet. The system Quick Settings tile (OmniVpnTileService) hands
+ * its "turn on" action back here via [EXTRA_TILE_START] when it needs the VPN
  * consent dialog, which only an Activity can show.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    // Set when the QS tile bounced a "start WARP" here because VPN consent was
-    // needed; OmniVpnScreen watches it and runs the same permission+WARP flow
-    // a manual "Cloudflare WARP" tap would.
-    private val tileStartWarp = mutableStateOf(false)
+    // Set when the QS tile bounced its "turn on" here because VPN consent was
+    // needed; OmniVpnScreen watches it and runs the same permission flow plus
+    // the tile's action (WARP or the fastest server, per Settings).
+    private val tileStart = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (intent?.getBooleanExtra(EXTRA_START_WARP, false) == true) tileStartWarp.value = true
-        setContent { OmniVpnTheme { OmniVpnScreen(tileStartWarp = tileStartWarp) } }
+        if (intent?.getBooleanExtra(EXTRA_TILE_START, false) == true) tileStart.value = true
+        setContent { OmniVpnTheme { OmniVpnScreen(tileStart = tileStart) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_START_WARP, false)) tileStartWarp.value = true
+        if (intent.getBooleanExtra(EXTRA_TILE_START, false)) tileStart.value = true
     }
 
     companion object {
         private const val TAG = "MainActivity"
-        const val EXTRA_START_WARP = "com.betalgezia.omnivpn.START_WARP"
+        const val EXTRA_TILE_START = "com.betalgezia.omnivpn.TILE_START"
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(
-        tileStartWarp: androidx.compose.runtime.MutableState<Boolean>,
+        tileStart: androidx.compose.runtime.MutableState<Boolean>,
         viewModel: MainViewModel = hiltViewModel()
     ) {
+        val trafficStatus by viewModel.trafficStatus.collectAsStateWithLifecycle()
         val nodes by viewModel.nodes.collectAsStateWithLifecycle()
         val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
         val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
@@ -229,7 +232,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // While a tunnel is up this switches to [node] in place (see
+        // MainViewModel.connect); tapping the server we're already on is a no-op.
         fun connectToNode(node: Node, afterLaunch: () -> Unit = {}) {
+            val current = activeConnection as? ActiveConnection.Server
+            if (current?.node?.id == node.id &&
+                (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING)
+            ) {
+                afterLaunch()
+                return
+            }
             val intent = viewModel.prepareVpn()
             if (intent != null) {
                 pendingNode = node
@@ -240,20 +252,21 @@ class MainActivity : ComponentActivity() {
             afterLaunch()
         }
 
+        val connectFastestFlow: () -> Unit = {
+            val intent = viewModel.prepareVpn()
+            if (intent != null) {
+                pendingFastest = true
+                permissionLauncher.launch(intent)
+            } else {
+                viewModel.connectFastest()
+            }
+        }
         val onHeroClick: () -> Unit = {
             when {
                 vpnState == VpnState.CONNECTED -> viewModel.stop()
                 searchingFastest -> viewModel.cancelTests()
                 vpnState == VpnState.CONNECTING -> viewModel.stop()
-                else -> {
-                    val intent = viewModel.prepareVpn()
-                    if (intent != null) {
-                        pendingFastest = true
-                        permissionLauncher.launch(intent)
-                    } else {
-                        viewModel.connectFastest()
-                    }
-                }
+                else -> connectFastestFlow()
             }
         }
 
@@ -273,16 +286,19 @@ class MainActivity : ComponentActivity() {
             if (isWarpActiveOrConnecting) viewModel.stop() else startWarpFlow()
         }
 
-        // The QS tile handed us a "start WARP" - run it once consent is possible.
-        LaunchedEffect(tileStartWarp.value) {
-            if (tileStartWarp.value) {
-                tileStartWarp.value = false
-                if (canStartVpn) startWarpFlow()
+        // The QS tile handed us its "turn on" because VPN consent was needed:
+        // run the same permission flow, then the tile's action from Settings.
+        LaunchedEffect(tileStart.value) {
+            if (tileStart.value) {
+                tileStart.value = false
+                if (canStartVpn) {
+                    if (viewModel.quickTileStartsWarp.value) startWarpFlow() else connectFastestFlow()
+                }
             }
         }
 
         val clipboardManager = LocalClipboardManager.current
-        val hero = heroVisualsFor(vpnState, searchingFastest, activeConnection)
+        val hero = heroVisualsFor(vpnState, searchingFastest, activeConnection, trafficStatus)
 
         Box(modifier = Modifier.fillMaxSize().background(Nocturne.bg)) {
             AuroraBackground(hero)
@@ -374,7 +390,8 @@ class MainActivity : ComponentActivity() {
                         autoUpdateIntervalMinutes = autoUpdateInterval,
                         activeConnection = activeConnection,
                         vpnState = vpnState,
-                        connectable = !busy && canStartVpn,
+                        // Also while connected: a tap switches to that server.
+                        connectable = !busy && (canStartVpn || vpnState == VpnState.CONNECTED),
                         collapsedSubscriptions = collapsedSubscriptions,
                         subscriptionTest = subscriptionTest,
                         testEnabled = !busy && canStartVpn,
@@ -509,13 +526,27 @@ private data class HeroVisuals(
 private fun heroVisualsFor(
     vpnState: VpnState,
     searching: Boolean,
-    active: ActiveConnection
+    active: ActiveConnection,
+    traffic: TrafficStatus
 ): HeroVisuals {
+    // Post-connect probe result (see TrafficProbe): "Подключено" alone used to
+    // be shown even when not a byte got through.
+    val connectedTitle = when (traffic) {
+        TrafficStatus.NONE -> "Нет трафика"
+        TrafficStatus.DNS_BROKEN -> "Нет DNS"
+        TrafficStatus.OK -> "Подключено"
+        else -> "Проверка…"
+    }
     val isWarp = active is ActiveConnection.Warp
     val activeName = when (active) {
         is ActiveConnection.Server -> active.node.name
         ActiveConnection.Warp -> "Cloudflare WARP"
         ActiveConnection.None -> null
+    }
+    val trafficProblem = when (traffic) {
+        TrafficStatus.NONE -> (activeName ?: "Сервер") + " не отвечает · выберите другой"
+        TrafficStatus.DNS_BROKEN -> "Сайты не открываются: не работает DNS"
+        else -> null
     }
     val protoLabel = when (active) {
         is ActiveConnection.Server -> protocolLabel(active.node.protocol)
@@ -556,8 +587,17 @@ private fun heroVisualsFor(
             busy = true, connectedSpin = false,
             showMeta = live, metaColor = metaColor, protoLabel = protoLabel
         )
+        vpnState == VpnState.CONNECTED && trafficProblem != null -> HeroVisuals(
+            connectedTitle, trafficProblem,
+            accent = Nocturne.warning, titleColor = Nocturne.warning,
+            ringColors = listOf(Nocturne.warning, Nocturne.warpPink, Nocturne.warning),
+            ringAlpha = 1f, glowColor = Nocturne.warning, glowAlpha = 0.28f,
+            aurora1 = Nocturne.warning, aurora2 = Nocturne.warpPink,
+            busy = false, connectedSpin = false,
+            showMeta = true, metaColor = metaColor, protoLabel = protoLabel
+        )
         vpnState == VpnState.CONNECTED && isWarp -> HeroVisuals(
-            "Подключено", "Cloudflare WARP",
+            connectedTitle, "Cloudflare WARP",
             accent = Nocturne.warp, titleColor = Nocturne.warp,
             ringColors = listOf(Nocturne.warp, Nocturne.warpAmber, Nocturne.warpPink, Nocturne.warp),
             ringAlpha = 1f, glowColor = Nocturne.warp, glowAlpha = 0.45f,
@@ -566,7 +606,7 @@ private fun heroVisualsFor(
             showMeta = true, metaColor = metaColor, protoLabel = protoLabel
         )
         vpnState == VpnState.CONNECTED -> HeroVisuals(
-            "Подключено", activeName ?: "Защищённое соединение",
+            connectedTitle, activeName ?: "Защищённое соединение",
             accent = Nocturne.connected, titleColor = Nocturne.connected,
             ringColors = listOf(Nocturne.connected, Nocturne.connectedSoft, Nocturne.vless, Nocturne.connected),
             ringAlpha = 1f, glowColor = Nocturne.connected, glowAlpha = 0.45f,
@@ -1486,6 +1526,9 @@ private fun SettingsSheet(
     val nodeHealth by viewModel.nodeHealth.collectAsStateWithLifecycle()
     val testMode by viewModel.testMode.collectAsStateWithLifecycle()
     val ipv6Enabled by viewModel.ipv6Enabled.collectAsStateWithLifecycle()
+    val quickTileStartsWarp by viewModel.quickTileStartsWarp.collectAsStateWithLifecycle()
+    val autoSwitchEnabled by viewModel.autoSwitchEnabled.collectAsStateWithLifecycle()
+    val speedSwitchEnabled by viewModel.speedSwitchEnabled.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -1575,6 +1618,87 @@ private fun SettingsSheet(
                 if (testMode == TestMode.QUICK) "TCP-рукопожатие с сервером — быстро, но без проверки протокола."
                 else "Реальный запрос через sing-box — дольше, но точнее.",
                 fontSize = 12.sp, color = Nocturne.neutral500
+            )
+
+            // 4a. Quick Settings tile action
+            Spacer(Modifier.height(22.dp))
+            SheetSectionLabel("Плитка в шторке включает")
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                SelectableChip(
+                    label = "WARP",
+                    selected = quickTileStartsWarp,
+                    selectedColor = Nocturne.warp,
+                    enabled = true,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.setQuickTileStartsWarp(true) }
+                )
+                SelectableChip(
+                    label = "Самый быстрый сервер",
+                    selected = !quickTileStartsWarp,
+                    selectedColor = Nocturne.vless,
+                    enabled = true,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.setQuickTileStartsWarp(false) }
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (quickTileStartsWarp) "Нажатие на плитку включает Cloudflare WARP."
+                else "Плитка быстро проверяет серверы подписок и подключается к самому быстрому.",
+                fontSize = 12.sp, color = Nocturne.neutral500
+            )
+
+            // 4b. Auto-switch when a server stops passing traffic
+            Spacer(Modifier.height(14.dp))
+            SettingsCardRow(
+                glyph = { LightningGlyph(color = Nocturne.vless, modifier = Modifier.size(18.dp)) },
+                tint = Nocturne.vless,
+                title = "Автопереключение",
+                subtitle = if (autoSwitchEnabled) {
+                    "Если сервер перестал пропускать трафик, перейти на другой из той же подписки. WARP — только сообщить."
+                } else {
+                    "Выкл — только сообщать, что сервер не отвечает"
+                },
+                trailing = {
+                    Switch(
+                        checked = autoSwitchEnabled,
+                        onCheckedChange = { viewModel.setAutoSwitchEnabled(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFFF3F5FE),
+                            checkedTrackColor = Nocturne.vless,
+                            uncheckedThumbColor = Color(0xFFF3F5FE),
+                            uncheckedTrackColor = Nocturne.neutral800,
+                            uncheckedBorderColor = Color.Transparent
+                        )
+                    )
+                }
+            )
+
+            // 4c. Leave a slow server for a faster one
+            Spacer(Modifier.height(10.dp))
+            SettingsCardRow(
+                glyph = { LightningGlyph(color = Nocturne.vless, modifier = Modifier.size(18.dp)) },
+                tint = Nocturne.vless,
+                title = "Уходить с медленного сервера",
+                subtitle = if (speedSwitchEnabled) {
+                    "Если загрузка (видео и т. п.) идёт медленнее 3 Мбит/с, замерить другие серверы подписки (~1 МБ на сервер) и перейти на более быстрый"
+                } else {
+                    "Выкл — оставаться на выбранном сервере, даже если он медленный"
+                },
+                trailing = {
+                    Switch(
+                        checked = speedSwitchEnabled,
+                        onCheckedChange = { viewModel.setSpeedSwitchEnabled(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFFF3F5FE),
+                            checkedTrackColor = Nocturne.vless,
+                            uncheckedThumbColor = Color(0xFFF3F5FE),
+                            uncheckedTrackColor = Nocturne.neutral800,
+                            uncheckedBorderColor = Color.Transparent
+                        )
+                    )
+                }
             )
 
             // 5. Subscriptions

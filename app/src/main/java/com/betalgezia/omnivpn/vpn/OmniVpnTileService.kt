@@ -14,19 +14,24 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Quick Settings tile that mirrors the VPN state and toggles it in one tap
- * (see the Nocturne v2 handoff §4). Default off-state action is "start WARP";
- * an optional setting switches it to "connect to the fastest server".
+ * Quick Settings tile that mirrors the VPN state and toggles it in one tap.
+ * The "turn on" action is chosen in Settings: WARP (default) or the fastest
+ * subscription server - see [WarpSettings.quickTileStartsWarp] and
+ * [ConnectionManager.startTileAction].
+ *
+ * The tile itself only renders and dispatches. The actual work runs in
+ * ConnectionManager's app-wide scope: the tile's own scope is cancelled in
+ * onStopListening, i.e. as soon as the shade closes, which used to be able to
+ * kill a start half-way through.
  *
  * Dependencies come via a Hilt [EntryPoint] rather than @AndroidEntryPoint so
- * the tile stays a plain TileService with no generated base class - it only
- * needs three singletons.
+ * the tile stays a plain TileService with no generated base class.
  */
 class OmniVpnTileService : TileService() {
 
@@ -36,27 +41,43 @@ class OmniVpnTileService : TileService() {
         fun vpnController(): VpnController
         fun eventBus(): VpnEventBus
         fun warpSettings(): WarpSettings
+        fun connectionManager(): ConnectionManager
     }
 
     private var scope: CoroutineScope? = null
-    private var watchJob: Job? = null
 
     private val deps by lazy {
         EntryPointAccessors.fromApplication(applicationContext, TileEntryPoint::class.java)
     }
 
+    private data class TileModel(
+        val state: VpnState,
+        val traffic: TrafficStatus,
+        val active: ActiveConnection,
+        val searching: Boolean,
+        val notice: String?
+    )
+
     override fun onStartListening() {
         super.onStartListening()
+        scope?.cancel()
         val s = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
-        // Keep the tile in sync for as long as it's showing.
-        watchJob = s.launch {
-            deps.eventBus().state.collect { render(it) }
+        val manager = deps.connectionManager()
+        val bus = deps.eventBus()
+        s.launch {
+            combine(
+                bus.state,
+                bus.traffic,
+                manager.activeConnection,
+                manager.tileSearching,
+                manager.tileNotice
+            ) { state, traffic, active, searching, notice ->
+                TileModel(state, traffic, active, searching, notice)
+            }.collect { render(it) }
         }
     }
 
     override fun onStopListening() {
-        watchJob?.cancel()
-        watchJob = null
         scope?.cancel()
         scope = null
         super.onStopListening()
@@ -64,64 +85,67 @@ class OmniVpnTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val controller = deps.vpnController()
-        when (deps.eventBus().state.value) {
-            VpnState.CONNECTED, VpnState.CONNECTING -> controller.stop()
-            else -> startDefaultAction(controller)
+        val manager = deps.connectionManager()
+        when {
+            manager.tileSearching.value -> manager.cancelTileAction()
+            deps.eventBus().state.value == VpnState.CONNECTED ||
+                deps.eventBus().state.value == VpnState.CONNECTING -> manager.stop()
+            else -> turnOn(manager)
         }
     }
 
-    private fun startDefaultAction(controller: VpnController) {
+    private fun turnOn(manager: ConnectionManager) {
         // Starting the tunnel needs VPN consent the first time. If it's already
-        // granted we can start straight from here; otherwise the consent dialog
-        // must come from an Activity, so hand off to MainActivity (which runs
-        // the existing permission flow and then starts WARP).
-        val permissionIntent = controller.prepareIntent()
-        if (permissionIntent == null) {
-            val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
-            s.launch {
-                runCatching { controller.startWarp() }
-                    .onFailure { android.util.Log.e(TAG, "tile startWarp failed", it) }
-            }
+        // granted we start straight from here; otherwise the consent dialog
+        // must come from an Activity, so hand off to MainActivity, which runs
+        // its permission flow and then the same action.
+        if (deps.vpnController().prepareIntent() == null) {
+            manager.startTileAction()
+            return
+        }
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(MainActivity.EXTRA_TILE_START, true)
+        }
+        if (Build.VERSION.SDK_INT >= 34) {
+            val pi = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            startActivityAndCollapse(pi)
         } else {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(MainActivity.EXTRA_START_WARP, true)
-            }
-            if (Build.VERSION.SDK_INT >= 34) {
-                val pi = PendingIntent.getActivity(
-                    this, 0, intent,
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                startActivityAndCollapse(pi)
-            } else {
-                @Suppress("DEPRECATION")
-                startActivityAndCollapse(intent)
-            }
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(intent)
         }
     }
 
-    private fun render(state: VpnState) {
+    private fun render(model: TileModel) {
         val tile = qsTile ?: return
         val startsWarp = deps.warpSettings().quickTileStartsWarp
-        tile.state = when (state) {
-            VpnState.CONNECTED, VpnState.CONNECTING -> Tile.STATE_ACTIVE
-            else -> Tile.STATE_INACTIVE
-        }
+        val live = model.state == VpnState.CONNECTED || model.state == VpnState.CONNECTING
+        tile.state = if (live || model.searching) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "OmniVPN"
         tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_tile)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = when (state) {
-                VpnState.CONNECTING -> "Подключение…"
-                VpnState.CONNECTED -> "Подключено"
-                VpnState.ERROR -> "Ошибка · нажмите, чтобы повторить"
-                else -> if (startsWarp) "Нажмите — включить WARP" else "Нажмите — самый быстрый сервер"
+            val name = when (val active = model.active) {
+                ActiveConnection.Warp -> "WARP"
+                is ActiveConnection.Server -> active.node.name
+                ActiveConnection.None -> null
+            }
+            tile.subtitle = when {
+                model.searching -> "Поиск сервера…"
+                model.state == VpnState.CONNECTING -> "Подключение…"
+                model.state == VpnState.CONNECTED -> when (model.traffic) {
+                    TrafficStatus.NONE -> "Нет трафика" + (name?.let { " · $it" } ?: "")
+                    TrafficStatus.DNS_BROKEN -> "Нет DNS" + (name?.let { " · $it" } ?: "")
+                    TrafficStatus.OK -> name ?: "Подключено"
+                    else -> "Проверка…" + (name?.let { " · $it" } ?: "")
+                }
+                model.notice != null -> model.notice
+                model.state == VpnState.ERROR -> "Ошибка · нажмите ещё раз"
+                else -> if (startsWarp) "Нажмите — WARP" else "Нажмите — быстрый сервер"
             }
         }
         tile.updateTile()
-    }
-
-    companion object {
-        private const val TAG = "OmniVpnTileService"
     }
 }
