@@ -179,7 +179,3 @@ private fun Section(title: String, content: @Composable () -> Unit) {
         OrganicCard(contentPadding = PaddingValues(vertical = 6.dp)) { content() }
     }
 }
-
-/** 15 → «15 мин», 60 → «1 ч», 1440 → «24 ч». */
-fun frequencyLabel(minutes: Int): String =
-    if (minutes < 60) "$minutes мин" else "${minutes / 60} ч"

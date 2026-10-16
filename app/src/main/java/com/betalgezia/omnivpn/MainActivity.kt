@@ -110,7 +110,9 @@ import com.betalgezia.omnivpn.ui.organic.OrganicBottomNav
 import com.betalgezia.omnivpn.ui.organic.OrganicCard
 import com.betalgezia.omnivpn.ui.organic.OrganicSnackbarHost
 import com.betalgezia.omnivpn.ui.rememberVpnActions
+import com.betalgezia.omnivpn.ui.screens.AddServerSheet
 import com.betalgezia.omnivpn.ui.screens.HomeScreen
+import com.betalgezia.omnivpn.ui.screens.ServersScreen
 import com.betalgezia.omnivpn.ui.screens.SettingsPage
 import com.betalgezia.omnivpn.ui.screens.SettingsScreen
 import com.betalgezia.omnivpn.ui.theme.InterFontFamily
@@ -198,62 +200,84 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        // The interim servers screen must not run the tile action a second time.
+        // Until stage 4, Settings' pages open the previous settings sheet
+        // (subscriptions, WARP tools, obfuscation), which must never run the
+        // tile action a second time.
+        val legacySheetState = rememberSaveable { mutableStateOf(false) }
+        var legacySheet by legacySheetState
         val noTileStart = remember { mutableStateOf(false) }
+        var addSheet by rememberSaveable { mutableStateOf(false) }
 
-        val notYet: (String) -> Unit = { what ->
-            viewModel.showMessage("$what — на следующем этапе редизайна. Пока это на вкладке «Серверы» → ☰")
-        }
-
-        Column(Modifier.fillMaxSize().background(c.bg)) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (tab) {
-                    AppTab.HOME -> TabColumn {
-                        HomeScreen(
-                            viewModel = viewModel,
-                            actions = actions,
-                            onOpenServers = { tab = AppTab.SERVERS }
-                        )
-                    }
-                    AppTab.SERVERS -> OmniVpnTheme(darkTheme = true) {
-                        OmniVpnScreen(tileStart = noTileStart, showHero = false)
-                    }
-                    AppTab.SETTINGS -> TabColumn {
-                        SettingsScreen(
-                            viewModel = viewModel,
-                            theme = if (dark) ThemeChoice.DARK else ThemeChoice.LIGHT,
-                            onThemeChange = appearance::setTheme,
-                            onOpenPage = { page ->
-                                notYet(
-                                    when (page) {
-                                        SettingsPage.SUBSCRIPTIONS -> "Подписки"
-                                        SettingsPage.WARP -> "Настройки WARP"
-                                        SettingsPage.OBFUSCATION -> "Обфускация"
-                                        SettingsPage.ABOUT -> "«О приложении»"
+        Box(Modifier.fillMaxSize().background(c.bg)) {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when (tab) {
+                        AppTab.HOME -> TabColumn {
+                            HomeScreen(
+                                viewModel = viewModel,
+                                actions = actions,
+                                onOpenServers = { tab = AppTab.SERVERS }
+                            )
+                        }
+                        AppTab.SERVERS -> TabColumn {
+                            ServersScreen(
+                                viewModel = viewModel,
+                                actions = actions,
+                                onAddServer = { addSheet = true },
+                                onOpenHome = { tab = AppTab.HOME }
+                            )
+                        }
+                        AppTab.SETTINGS -> TabColumn {
+                            SettingsScreen(
+                                viewModel = viewModel,
+                                theme = if (dark) ThemeChoice.DARK else ThemeChoice.LIGHT,
+                                onThemeChange = appearance::setTheme,
+                                onOpenPage = { page ->
+                                    if (page == SettingsPage.ABOUT) {
+                                        viewModel.showMessage("«О приложении» — на следующем этапе редизайна")
+                                    } else {
+                                        legacySheet = true
                                     }
-                                )
-                            },
-                            onAddServer = { notYet("Добавление сервера") }
+                                },
+                                onAddServer = { addSheet = true }
+                            )
+                        }
+                    }
+                    // The legacy sheet shows its own messages while it is open.
+                    if (!legacySheet) {
+                        OrganicSnackbarHost(
+                            message = message,
+                            onShown = viewModel::consumeMessage,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
                         )
                     }
                 }
-                // The previous screen (interim «Серверы») shows its own messages.
-                if (tab != AppTab.SERVERS) {
-                    OrganicSnackbarHost(
-                        message = message,
-                        onShown = viewModel::consumeMessage,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
-                    )
-                }
+                OrganicBottomNav(selected = tab, onSelect = { tab = it })
             }
-            OrganicBottomNav(selected = tab, onSelect = { tab = it })
+            AddServerSheet(
+                visible = addSheet,
+                viewModel = viewModel,
+                onDismiss = { addSheet = false },
+                onAdded = {
+                    addSheet = false
+                    tab = AppTab.SERVERS
+                }
+            )
         }
 
-        // Status-bar icons: the interim servers screen is dark whatever the theme.
+        // Always composed (it shows nothing while closed) so its VPN-consent
+        // launcher outlives the sheet: picking a server there closes the sheet
+        // before the consent result comes back.
+        OmniVpnTheme(darkTheme = true) {
+            OmniVpnScreen(tileStart = noTileStart, sheetOnly = true, sheetOpen = legacySheetState)
+        }
+
+        // The legacy (always dark) theme flips the status-bar icons; keep
+        // them on this theme's, light ones only while its dark sheet is up.
         val view = androidx.compose.ui.platform.LocalView.current
         androidx.compose.runtime.SideEffect {
             androidx.core.view.WindowCompat.getInsetsController(window, view)
-                .isAppearanceLightStatusBars = tab != AppTab.SERVERS && !dark
+                .isAppearanceLightStatusBars = !dark && !legacySheet
         }
     }
 
@@ -282,9 +306,12 @@ class MainActivity : ComponentActivity() {
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(
         tileStart: androidx.compose.runtime.MutableState<Boolean>,
-        // false while this screen is the interim «Серверы» tab: the new home
-        // screen has the hero and WARP now.
+        // false hides the old hero and WARP card (the new home screen has them).
         showHero: Boolean = true,
+        // Interim (until the stage 4 settings pages): only the old settings
+        // sheet and its dialogs, opened and closed through [sheetOpen].
+        sheetOnly: Boolean = false,
+        sheetOpen: androidx.compose.runtime.MutableState<Boolean>? = null,
         viewModel: MainViewModel = hiltViewModel()
     ) {
         val trafficStatus by viewModel.trafficStatus.collectAsStateWithLifecycle()
@@ -313,7 +340,8 @@ class MainActivity : ComponentActivity() {
         var warpEndpointInput by remember { mutableStateOf("") }
         var confirmResetWarp by remember { mutableStateOf(false) }
         var pendingDeleteNode by remember { mutableStateOf<Node?>(null) }
-        var sheetVisible by remember { mutableStateOf(false) }
+        val ownSheetState = remember { mutableStateOf(false) }
+        var sheetVisible by (sheetOpen ?: ownSheetState)
 
         var pendingNode by remember { mutableStateOf<Node?>(null) }
         var pendingWarp by remember { mutableStateOf(false) }
@@ -429,7 +457,7 @@ class MainActivity : ComponentActivity() {
         val clipboardManager = LocalClipboardManager.current
         val hero = heroVisualsFor(vpnState, searchingFastest, activeConnection, trafficStatus)
 
-        Box(modifier = Modifier.fillMaxSize().background(Nocturne.bg)) {
+        if (!sheetOnly) Box(modifier = Modifier.fillMaxSize().background(Nocturne.bg)) {
             if (showHero) AuroraBackground(hero)
 
             Column(
@@ -553,6 +581,7 @@ class MainActivity : ComponentActivity() {
                 containerColor = Color.Transparent,
                 dragHandle = null
             ) {
+              Box {
                 SettingsSheet(
                     viewModel = viewModel,
                     input = input,
@@ -585,6 +614,15 @@ class MainActivity : ComponentActivity() {
                     onConnectNode = { node -> connectToNode(node) { sheetVisible = false } },
                     onClose = { sheetVisible = false }
                 )
+                // Sheet-only: the window behind is covered, so messages show here.
+                if (sheetOnly) {
+                    SnackbarOverlay(
+                        message = message,
+                        onShown = { viewModel.consumeMessage() },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+              }
             }
         }
 

@@ -303,7 +303,11 @@ class MainViewModel @Inject constructor(
                     }
                 _refreshingSubscriptions.update { current -> current - subscription.id }
             }
-            _message.value = if (failures == 0) "All subscriptions updated" else "Updated with $failures failure(s)"
+            _message.value = when {
+                failures == 0 -> "Подписки обновлены"
+                failures == subs.size -> "Не удалось обновить подписки"
+                else -> "Подписки обновлены, кроме $failures из ${subs.size}"
+            }
         }
     }
 
@@ -401,36 +405,60 @@ class MainViewModel @Inject constructor(
         connectionManager.stop()
     }
 
+    // True while the «Добавить сервер» sheet is loading a subscription / importing.
+    private val _adding = MutableStateFlow(false)
+    val adding: StateFlow<Boolean> = _adding.asStateFlow()
+
+    /**
+     * «Добавить сервер» → Подписка. [onResult] gets null on success (the
+     * snackbar says what was added) or the error to show in the sheet.
+     */
+    fun addSubscription(url: String, onResult: (String?) -> Unit) = runAdd("subscription", onResult) {
+        val value = url.trim()
+        // Blank name: add() falls back to the URL's own host as the name (see
+        // its doc), so subscriptions don't all end up called "Subscription".
+        val id = subscriptionRepository.add("", value)
+        val parsed = subscriptionRepository.refresh(Subscription(id = id, name = "", url = value, enabled = true))
+        withNotes("Подписка добавлена · ${parsed.nodes.size} серв.", parsed.skipped, hasDomainWireguardEndpoint(parsed.nodes))
+    }
+
+    /** «Добавить сервер» → Конфигурация / Файл: links, JSON or YAML; [fileName] names a picked file. */
+    fun importConfig(text: String, fileName: String? = null, onResult: (String?) -> Unit) = runAdd("config", onResult) {
+        val result = nodeImportService.importText(text.trim())
+        val base = if (fileName != null) {
+            "«$fileName» импортирован · ${result.nodes.size} серв."
+        } else {
+            "Конфигурация импортирована · ${result.nodes.size} серв."
+        }
+        withNotes(base, 0, result.domainWireguardEndpoint)
+    }
+
+    private fun runAdd(what: String, onResult: (String?) -> Unit, block: suspend () -> String) {
+        if (_adding.value) return
+        viewModelScope.launch {
+            _adding.value = true
+            runCatching { block() }
+                .onSuccess {
+                    _message.value = it
+                    onResult(null)
+                }
+                .onFailure {
+                    // Logged explicitly: the repositories never log, so without this
+                    // a failed add left nothing in logcat.
+                    android.util.Log.e(TAG, "add $what: failed", it)
+                    onResult(addErrorText(it))
+                }
+            _adding.value = false
+        }
+    }
+
+    /** One-shot import from the legacy settings sheet: errors go to the snackbar. */
     fun import(text: String) {
         val value = text.trim()
         if (value.isEmpty()) return
-        val isSubscriptionUrl = value.startsWith("https://", ignoreCase = true)
-        viewModelScope.launch {
-            _busy.value = true
-            runCatching {
-                if (isSubscriptionUrl) {
-                    // Blank name: add() falls back to the URL's own host as the
-                    // name (see its doc). Used to be hardcoded to the literal
-                    // "Subscription" here, which is why every subscription
-                    // showed the same name regardless of its actual URL.
-                    val id = subscriptionRepository.add("", value)
-                    val parsed = subscriptionRepository.refresh(Subscription(id=id, name="", url=value, enabled=true))
-                    hasDomainWireguardEndpoint(parsed.nodes) to parsed.skipped
-                } else {
-                    nodeImportService.importText(value).domainWireguardEndpoint to 0
-                }
-            }.onSuccess { (domainWarning, skipped) ->
-                val base = withSkippedNote(if (isSubscriptionUrl) "Subscription added and synced" else "Configuration imported", skipped)
-                _message.value = if (domainWarning) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
-            }.onFailure {
-                // Logged explicitly: SubscriptionRepository/NodeImportService never call
-                // android.util.Log themselves, so without this line an import/subscription
-                // failure was visible only as a short-lived toast and left nothing in logcat.
-                android.util.Log.e(TAG, "import: failed for ${if (isSubscriptionUrl) "subscription url" else "pasted config"}", it)
-                _message.value = it.message ?: "Import failed"
-            }
-            _busy.value = false
-        }
+        val toSnackbar: (String?) -> Unit = { error -> if (error != null) _message.value = error }
+        if (value.startsWith("https://", ignoreCase = true)) addSubscription(value, toSnackbar)
+        else importConfig(value, onResult = toSnackbar)
     }
 
     fun refresh(subscription: Subscription) {
@@ -441,12 +469,15 @@ class MainViewModel @Inject constructor(
             _refreshingSubscriptions.update { it + subscription.id }
             runCatching { subscriptionRepository.refresh(subscription) }
                 .onSuccess { parsed ->
-                    val base = withSkippedNote("Updated ${parsed.nodes.size} nodes", parsed.skipped)
-                    _message.value = if (hasDomainWireguardEndpoint(parsed.nodes)) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
+                    _message.value = withNotes(
+                        "«${subscription.name}» обновлена · ${parsed.nodes.size} серв.",
+                        parsed.skipped,
+                        hasDomainWireguardEndpoint(parsed.nodes)
+                    )
                 }
                 .onFailure {
                     android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
-                    _message.value = it.message ?: "Refresh failed"
+                    _message.value = "Не удалось обновить «${subscription.name}»: ${addErrorText(it)}"
                 }
             _refreshingSubscriptions.update { it - subscription.id }
         }
@@ -465,7 +496,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { subscriptionRepository.rename(subscription, name) }.onFailure {
                 android.util.Log.e(TAG, "renameSubscription: failed for id=${subscription.id}", it)
-                _message.value = it.message ?: "Unable to rename subscription"
+                _message.value = "Не удалось переименовать подписку"
             }
         }
     }
@@ -475,11 +506,11 @@ class MainViewModel @Inject constructor(
             runCatching { nodeRepository.delete(node) }
                 .onSuccess {
                     _nodeHealth.update { it - node.id }
-                    _message.value = "Removed ${node.name}"
+                    _message.value = "«${node.name}» удалён"
                 }
                 .onFailure {
                     android.util.Log.e(TAG, "deleteNode: failed for node id=${node.id}", it)
-                    _message.value = it.message ?: "Unable to remove server"
+                    _message.value = "Не удалось удалить «${node.name}»"
                 }
         }
     }
@@ -487,6 +518,13 @@ class MainViewModel @Inject constructor(
     fun checkNode(node: Node) = checkNodes(listOf(node))
 
     fun checkNodes(targets: List<Node>) = runNodeCheck(targets, _testMode.value, subscriptionTag = null)
+
+    /**
+     * «Проверить все» on the Servers tab: every server (subscriptions and
+     * imported) in the Settings test mode. Tagged [ALL_SERVERS] in
+     * [subscriptionTest] so that button can say «Проверка…».
+     */
+    fun testAll() = runNodeCheck(nodes.value, _testMode.value, subscriptionTag = ALL_SERVERS to _testMode.value)
 
     /**
      * Shared by the per-server "Тест" (Settings test mode) and the per-group
@@ -497,7 +535,7 @@ class MainViewModel @Inject constructor(
         // Testing runs a real (if TUN-less) sing-box session on the same engine the
         // actual VPN connection uses - see NodeHealthChecker. They can't run at once.
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before testing servers"
+            _message.value = TEST_LOCKED_MESSAGE
             return
         }
         val testable = targets.filter { it.id != 0L && it.protocol != Protocol.WARP }
@@ -512,11 +550,11 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Test cancelled"
+                _message.value = "Проверка остановлена"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "checkNodes: failed", t)
-                _message.value = t.message ?: "Server test failed"
+                _message.value = t.message ?: "Проверка не удалась"
             } finally {
                 // Cancelling leaves nodes mid-probe: drop their "Testing…" label
                 // instead of stranding it, and clear busy here rather than after
@@ -613,7 +651,7 @@ class MainViewModel @Inject constructor(
      */
     fun testAllSubscriptionsFull() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before testing servers"
+            _message.value = TEST_LOCKED_MESSAGE
             return
         }
         val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
@@ -631,11 +669,11 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Test cancelled"
+                _message.value = "Проверка остановлена"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "testAllSubscriptionsFull: failed", t)
-                _message.value = t.message ?: "Server test failed"
+                _message.value = t.message ?: "Проверка не удалась"
             } finally {
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
                 _testingAllFull.value = false
@@ -720,21 +758,30 @@ class MainViewModel @Inject constructor(
     private companion object {
         private const val TAG = "MainViewModel"
 
-        // A list longer than SubscriptionParser.MAX_NODES_PER_LIST keeps only its
-        // first nodes; say so, or the cut list looks like the whole subscription.
-        fun withSkippedNote(base: String, skipped: Int): String =
-            if (skipped <= 0) base
-            else "$base\nThe list is longer than ${SubscriptionParser.MAX_NODES_PER_LIST} servers: " +
-                "the remaining $skipped were not loaded."
+        private const val TEST_LOCKED_MESSAGE = "Отключите VPN, чтобы проверить серверы"
 
-        // Shown after import/refresh when an AmneziaWG/WireGuard peer's
-        // endpoint is a domain name rather than a literal IP - see
-        // ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT for
-        // the confirmed sing-box-lx bug this warns about.
-        private const val DOMAIN_ENDPOINT_WARNING =
-            "Warning: this server's endpoint is a domain name, not an IP address. " +
-                "A known sing-box bug can prevent the WireGuard handshake from " +
-                "completing on some networks. If it won't connect, try editing the " +
-                "config to use a literal IP instead."
+        /**
+         * [base] plus two warnings when they apply: a list longer than
+         * SubscriptionParser.MAX_NODES_PER_LIST keeps only its first nodes
+         * (say so, or the cut list looks like the whole subscription), and an
+         * AmneziaWG/WireGuard peer given by domain name rather than IP - see
+         * ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT for
+         * the confirmed sing-box-lx bug that warns about.
+         */
+        fun withNotes(base: String, skipped: Int, domainEndpoint: Boolean): String = buildString {
+            append(base)
+            if (skipped > 0) {
+                append("\nВ списке больше ${SubscriptionParser.MAX_NODES_PER_LIST} серверов: остальные $skipped не загружены.")
+            }
+            if (domainEndpoint) {
+                append(
+                    "\nАдрес сервера AmneziaWG — доменное имя, а не IP. Из-за известной ошибки sing-box " +
+                        "рукопожатие в некоторых сетях не проходит; если не подключается, укажите IP."
+                )
+            }
+        }
     }
 }
+
+/** [MainViewModel.subscriptionTest] tag of «Проверить все» (no real subscription has id -1). */
+const val ALL_SERVERS = -1L
