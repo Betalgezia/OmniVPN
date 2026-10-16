@@ -346,6 +346,8 @@ class OmniVpnService : VpnService(), CommandServerHandler {
             startWatchdog(generation)
             return
         }
+        // No watchdog while traffic is down, so nothing would update these.
+        eventBus.setRates(null, null)
         // Not OK: keep re-checking quietly. A switch to another server (auto
         // or by hand) bumps the generation and ends this loop.
         while (stillCurrent(generation)) {
@@ -379,7 +381,12 @@ class OmniVpnService : VpnService(), CommandServerHandler {
                 CoreProbe.check(tag, retryTimeoutMs = 0)
             }
             when (outcome) {
-                is CoreProbe.Outcome.Ok -> return TrafficStatus.OK
+                is CoreProbe.Outcome.Ok -> {
+                    // The home screen's latency figure: refreshed by every
+                    // check that passes (connect, re-checks, watchdog).
+                    eventBus.setLatency(outcome.latencyMs)
+                    return TrafficStatus.OK
+                }
                 is CoreProbe.Outcome.Dead -> return TrafficStatus.NONE
                 is CoreProbe.Outcome.Unsupported ->
                     android.util.Log.w(TAG, "core probe can't test '$tag' (${outcome.reason}) - using HTTP probe")
@@ -407,6 +414,9 @@ class OmniVpnService : VpnService(), CommandServerHandler {
             },
             onSlow = { mbps ->
                 if (stillCurrent(generation)) eventBus.reportSlow(mbps)
+            },
+            onRates = { down, up ->
+                if (stillCurrent(generation)) eventBus.setRates(down, up)
             }
         ).also { it.start() }
     }

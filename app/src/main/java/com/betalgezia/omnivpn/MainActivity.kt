@@ -109,6 +109,8 @@ import com.betalgezia.omnivpn.ui.organic.AppTab
 import com.betalgezia.omnivpn.ui.organic.OrganicBottomNav
 import com.betalgezia.omnivpn.ui.organic.OrganicCard
 import com.betalgezia.omnivpn.ui.organic.OrganicSnackbarHost
+import com.betalgezia.omnivpn.ui.rememberVpnActions
+import com.betalgezia.omnivpn.ui.screens.HomeScreen
 import com.betalgezia.omnivpn.ui.screens.SettingsPage
 import com.betalgezia.omnivpn.ui.screens.SettingsScreen
 import com.betalgezia.omnivpn.ui.theme.InterFontFamily
@@ -166,9 +168,9 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Organic redesign shell (October 2026 handoff): content + bottom bar with
-     * Главная · Серверы · Настройки. Built in stages - until the new home and
-     * servers screens land, «Главная» still hosts the previous screen (which
-     * keeps every feature reachable) and «Серверы» is a placeholder.
+     * Главная · Серверы · Настройки. Built in stages - until the new servers
+     * screen lands, «Серверы» hosts the previous screen without its hero
+     * (its ☰ sheet keeps every not-yet-redesigned feature reachable).
      */
     @androidx.compose.runtime.Composable
     private fun OrganicShell(
@@ -179,34 +181,42 @@ class MainActivity : ComponentActivity() {
         val c = Organic.colors
         var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
         val message by viewModel.message.collectAsStateWithLifecycle()
+        val actions = rememberVpnActions(viewModel)
 
-        // The QS tile's consent bounce is handled by the home screen.
-        LaunchedEffect(tileStart.value) { if (tileStart.value) tab = AppTab.HOME }
+        // The QS tile bounced its "turn on" here because VPN consent was
+        // needed: show Главная and run the tile's action (WARP or the fastest
+        // server, per Settings) through the same consent flow.
+        LaunchedEffect(tileStart.value) {
+            if (tileStart.value) {
+                tileStart.value = false
+                tab = AppTab.HOME
+                val idle = viewModel.vpnState.value.let {
+                    it == VpnState.DISCONNECTED || it == VpnState.ERROR || it == VpnState.REVOKED
+                }
+                if (idle) {
+                    if (viewModel.quickTileStartsWarp.value) actions.startWarp() else actions.connectFastest()
+                }
+            }
+        }
+        // The interim servers screen must not run the tile action a second time.
+        val noTileStart = remember { mutableStateOf(false) }
 
         val notYet: (String) -> Unit = { what ->
-            viewModel.showMessage("$what — на следующем этапе редизайна. Пока это в прежнем экране: «Главная» → ☰")
+            viewModel.showMessage("$what — на следующем этапе редизайна. Пока это на вкладке «Серверы» → ☰")
         }
 
         Column(Modifier.fillMaxSize().background(c.bg)) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
-                    AppTab.HOME -> OmniVpnTheme(darkTheme = true) { OmniVpnScreen(tileStart = tileStart) }
-                    AppTab.SERVERS -> TabColumn {
-                        Column(
-                            Modifier.padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 28.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Text("Серверы", style = OrganicType.tabTitle)
-                            OrganicCard(spacing = 6.dp) {
-                                Text("Скоро здесь", style = OrganicType.groupTitle)
-                                Text(
-                                    "Список серверов в новом оформлении появится на следующих этапах. " +
-                                        "Пока серверы — на вкладке «Главная».",
-                                    style = OrganicType.secondary,
-                                    color = c.neutral700
-                                )
-                            }
-                        }
+                    AppTab.HOME -> TabColumn {
+                        HomeScreen(
+                            viewModel = viewModel,
+                            actions = actions,
+                            onOpenServers = { tab = AppTab.SERVERS }
+                        )
+                    }
+                    AppTab.SERVERS -> OmniVpnTheme(darkTheme = true) {
+                        OmniVpnScreen(tileStart = noTileStart, showHero = false)
                     }
                     AppTab.SETTINGS -> TabColumn {
                         SettingsScreen(
@@ -227,8 +237,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                // The previous home screen shows its own messages.
-                if (tab != AppTab.HOME) {
+                // The previous screen (interim «Серверы») shows its own messages.
+                if (tab != AppTab.SERVERS) {
                     OrganicSnackbarHost(
                         message = message,
                         onShown = viewModel::consumeMessage,
@@ -239,11 +249,11 @@ class MainActivity : ComponentActivity() {
             OrganicBottomNav(selected = tab, onSelect = { tab = it })
         }
 
-        // Status-bar icons: the interim home screen is dark whatever the theme.
+        // Status-bar icons: the interim servers screen is dark whatever the theme.
         val view = androidx.compose.ui.platform.LocalView.current
         androidx.compose.runtime.SideEffect {
             androidx.core.view.WindowCompat.getInsetsController(window, view)
-                .isAppearanceLightStatusBars = tab != AppTab.HOME && !dark
+                .isAppearanceLightStatusBars = tab != AppTab.SERVERS && !dark
         }
     }
 
@@ -272,6 +282,9 @@ class MainActivity : ComponentActivity() {
     @androidx.compose.runtime.Composable
     private fun OmniVpnScreen(
         tileStart: androidx.compose.runtime.MutableState<Boolean>,
+        // false while this screen is the interim «Серверы» tab: the new home
+        // screen has the hero and WARP now.
+        showHero: Boolean = true,
         viewModel: MainViewModel = hiltViewModel()
     ) {
         val trafficStatus by viewModel.trafficStatus.collectAsStateWithLifecycle()
@@ -417,7 +430,7 @@ class MainActivity : ComponentActivity() {
         val hero = heroVisualsFor(vpnState, searchingFastest, activeConnection, trafficStatus)
 
         Box(modifier = Modifier.fillMaxSize().background(Nocturne.bg)) {
-            AuroraBackground(hero)
+            if (showHero) AuroraBackground(hero)
 
             Column(
                 modifier = Modifier
@@ -451,21 +464,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                HeroBlock(
-                    hero = hero,
-                    connectedSince = connectedSince,
-                    onClick = onHeroClick
-                )
+                if (showHero) {
+                    HeroBlock(
+                        hero = hero,
+                        connectedSince = connectedSince,
+                        onClick = onHeroClick
+                    )
 
-                Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(4.dp))
 
-                WarpCard(
-                    vpnState = vpnState,
-                    isWarp = activeConnection is ActiveConnection.Warp,
-                    connectedSince = connectedSince,
-                    enabled = !busy,
-                    onClick = onWarpClick
-                )
+                    WarpCard(
+                        vpnState = vpnState,
+                        isWarp = activeConnection is ActiveConnection.Warp,
+                        connectedSince = connectedSince,
+                        enabled = !busy,
+                        onClick = onWarpClick
+                    )
+                }
 
                 Spacer(Modifier.height(11.dp))
 

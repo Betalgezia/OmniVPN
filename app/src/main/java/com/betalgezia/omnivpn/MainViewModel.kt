@@ -16,6 +16,7 @@ import com.betalgezia.omnivpn.vpn.ActiveConnection
 import com.betalgezia.omnivpn.vpn.ConnectionManager
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.TrafficStatus
+import com.betalgezia.omnivpn.vpn.TunnelStats
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
@@ -100,6 +101,11 @@ class MainViewModel @Inject constructor(
     // Whether traffic actually flows through the tunnel (post-connect probe).
     val trafficStatus: StateFlow<TrafficStatus> = vpnController.traffic
 
+    // Home screen counters (speed from the core's counters, latency from the
+    // last passed check) and why the last start failed.
+    val tunnelStats: StateFlow<TunnelStats> = vpnController.stats
+    val lastError: StateFlow<String?> = vpnController.lastError
+
     private val _quickTileStartsWarp = MutableStateFlow(warpSettings.quickTileStartsWarp)
     val quickTileStartsWarp: StateFlow<Boolean> = _quickTileStartsWarp.asStateFlow()
 
@@ -133,6 +139,12 @@ class MainViewModel @Inject constructor(
     // hero button can show "Searching…" only for its own action.
     private val _searchingFastest = MutableStateFlow(false)
     val searchingFastest: StateFlow<Boolean> = _searchingFastest.asStateFlow()
+
+    // True while startWarp() registers / starts WARP: the tunnel only reports
+    // CONNECTING once the service starts, after the (seconds-long) Cloudflare
+    // registration, so the home screen needs this to say "Подключаем WARP…".
+    private val _warpStarting = MutableStateFlow(false)
+    val warpStarting: StateFlow<Boolean> = _warpStarting.asStateFlow()
 
     // Same idea as _searchingFastest, for the small "full test" icon next to
     // the main screen's "Servers" label (see the September 2026 redesign) -
@@ -371,19 +383,21 @@ class MainViewModel @Inject constructor(
      */
     fun connect(node: Node) {
         val switching = vpnState.value == VpnState.CONNECTED
+        vpnController.clearError()
         viewModelScope.launch {
             _busy.value = true
             connectionManager.connectNode(node).onFailure {
                 android.util.Log.e(TAG, "connect: failed", it)
-                _message.value = it.message ?: "Unable to start VPN"
+                _message.value = it.message ?: "Не удалось запустить VPN"
             }.onSuccess {
-                if (switching) _message.value = "Переключаемся на ${node.name}"
+                if (switching) _message.value = "Переключаемся на «${node.name}»"
             }
             _busy.value = false
         }
     }
 
     fun stop() {
+        vpnController.clearError()
         connectionManager.stop()
     }
 
@@ -542,14 +556,15 @@ class MainViewModel @Inject constructor(
      */
     fun connectFastest() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before searching for the fastest server"
+            _message.value = "Отключите VPN, чтобы искать самый быстрый сервер"
             return
         }
         val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
         if (candidates.isEmpty()) {
-            _message.value = "No subscription servers yet - add a subscription first"
+            _message.value = "Нет серверов из подписок — добавьте подписку"
             return
         }
+        vpnController.clearError()
         testJob?.cancel()
         testJob = viewModelScope.launch {
             _busy.value = true
@@ -562,22 +577,22 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
                 if (found == null) {
-                    _message.value = "No reachable servers found"
+                    _message.value = "Ни один сервер не ответил"
                 } else {
                     val (winner, bestLatencyMs) = found
                     connectionManager.connectNode(winner).onFailure {
                         android.util.Log.e(TAG, "connectFastest: connect failed", it)
-                        _message.value = it.message ?: "Unable to start VPN"
+                        _message.value = it.message ?: "Не удалось запустить VPN"
                     }.onSuccess {
-                        _message.value = "Connected to ${winner.name} (${bestLatencyMs} ms)"
+                        _message.value = "Подключено к «${winner.name}» · $bestLatencyMs мс"
                     }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Search cancelled"
+                _message.value = "Поиск отменён"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "connectFastest: failed", t)
-                _message.value = t.message ?: "Search failed"
+                _message.value = t.message ?: "Поиск не удался"
             } finally {
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
                 _searchingFastest.value = false
@@ -668,8 +683,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun startWarp(endpointOverride: String? = null, forceNew: Boolean = false) {
+        vpnController.clearError()
         viewModelScope.launch {
             _busy.value = true
+            _warpStarting.value = true
             // The override was easy to lose track of - no visible confirmation
             // of which endpoint actually got used, so it was unclear from the
             // UI alone whether a typed-in override took effect (see the
@@ -684,12 +701,18 @@ class MainViewModel @Inject constructor(
             // new one each time.
             connectionManager.connectWarp(endpoint = normalizedEndpoint, forceNew = forceNew).onFailure {
                 android.util.Log.e(TAG, "startWarp: failed (forceNew=$forceNew)", it)
-                _message.value = it.message ?: "WARP registration failed"
+                _message.value = it.message ?: "Не удалось подключить WARP"
             }
                 .onSuccess {
-                    val prefix = if (forceNew) "New WARP account registered" else "WARP registered"
-                    _message.value = "$prefix (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
+                    // A plain one-tap WARP needs no message - the hero and the
+                    // WARP button already say it. Echo only the non-default parts.
+                    when {
+                        forceNew -> "Новый аккаунт WARP зарегистрирован · endpoint ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT}"
+                        normalizedEndpoint != null -> "WARP · endpoint $normalizedEndpoint"
+                        else -> null
+                    }?.let { _message.value = it }
                 }
+            _warpStarting.value = false
             _busy.value = false
         }
     }

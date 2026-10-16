@@ -18,6 +18,10 @@ class VpnController @Inject constructor(
     val state = eventBus.state
     val events = eventBus.events
     val traffic = eventBus.traffic
+    val stats = eventBus.stats
+    val lastError = eventBus.lastError
+
+    fun clearError() = eventBus.clearError()
 
     private val tag = "VpnController"
 

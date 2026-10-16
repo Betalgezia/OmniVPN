@@ -2,6 +2,7 @@ package com.betalgezia.omnivpn.vpn
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class VpnEventBusTest {
     @Test
@@ -50,5 +51,40 @@ class VpnEventBusTest {
         bus.setTraffic(TrafficStatus.OK)
         bus.emit(VpnEvent.Error("boom"))
         assertEquals(TrafficStatus.UNKNOWN, bus.traffic.value)
+    }
+
+    @Test
+    fun statsBelongToTheCurrentTunnelOnly() {
+        val bus = VpnEventBus()
+        bus.emit(VpnEvent.Connected)
+        bus.setLatency(42)
+        bus.setRates(1_000, 200)
+        assertEquals(TunnelStats(downBps = 1_000, upBps = 200, latencyMs = 42), bus.stats.value)
+
+        // Clearing rates (traffic stopped) keeps the latency.
+        bus.setRates(null, null)
+        assertEquals(TunnelStats(latencyMs = 42), bus.stats.value)
+
+        // Repeated Connected keeps them; a switch (Connecting) drops them.
+        bus.emit(VpnEvent.Connected)
+        assertEquals(42L, bus.stats.value.latencyMs)
+        bus.emit(VpnEvent.Connecting)
+        assertEquals(TunnelStats(), bus.stats.value)
+    }
+
+    @Test
+    fun lastErrorOutlivesTheFollowingDisconnectUntilTheNextAttempt() {
+        val bus = VpnEventBus()
+        bus.emit(VpnEvent.Error("sing-box start failed"))
+        // The service stops itself right after an error.
+        bus.emit(VpnEvent.Disconnected)
+        assertEquals("sing-box start failed", bus.lastError.value)
+
+        bus.emit(VpnEvent.Connecting)
+        assertNull(bus.lastError.value)
+
+        bus.emit(VpnEvent.Error("again"))
+        bus.clearError()
+        assertNull(bus.lastError.value)
     }
 }
