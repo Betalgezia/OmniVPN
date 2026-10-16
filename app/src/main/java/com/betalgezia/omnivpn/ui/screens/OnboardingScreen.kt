@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.betalgezia.omnivpn.MainViewModel
+import com.betalgezia.omnivpn.ui.VpnActions
 import com.betalgezia.omnivpn.ui.organic.ButtonKind
 import com.betalgezia.omnivpn.ui.organic.OrganicButton
 import com.betalgezia.omnivpn.ui.organic.OrganicIcons
@@ -61,7 +62,7 @@ import com.betalgezia.omnivpn.ui.theme.OrganicType
  * on Главная; when the user chose WARP in step 1 it connects right away.
  */
 @Composable
-fun OnboardingScreen(viewModel: MainViewModel) {
+fun OnboardingScreen(viewModel: MainViewModel, actions: VpnActions) {
     val c = Organic.colors
     var step by rememberSaveable { mutableIntStateOf(0) }
     var startWarp by rememberSaveable { mutableStateOf(false) }
@@ -74,9 +75,13 @@ fun OnboardingScreen(viewModel: MainViewModel) {
         if (result.resultCode == Activity.RESULT_OK) finish()
         else viewModel.showMessage("Без разрешения VPN не запустится")
     }
+    // The notification permission first (Android 13+, so the VPN shows in the
+    // shade), then the VPN one.
     val askPermission: () -> Unit = {
-        val intent = viewModel.prepareVpn()
-        if (intent == null) finish() else consent.launch(intent)
+        actions.withNotificationPermission {
+            val intent = viewModel.prepareVpn()
+            if (intent == null) finish() else consent.launch(intent)
+        }
     }
 
     BackHandler(enabled = step > 0) { step -= 1 }

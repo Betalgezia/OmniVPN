@@ -435,6 +435,13 @@ class MainViewModel @Inject constructor(
         _showOnboarding.value = false
     }
 
+    /** Whether the notification permission was already asked for (see VpnActions). */
+    var notificationsAsked: Boolean
+        get() = appearance.notificationsAsked
+        set(value) {
+            appearance.notificationsAsked = value
+        }
+
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
     fun prepareVpn(): Intent? = vpnController.prepareIntent()

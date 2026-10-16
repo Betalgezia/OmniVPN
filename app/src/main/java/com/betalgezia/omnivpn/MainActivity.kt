@@ -28,6 +28,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,6 +40,7 @@ import com.betalgezia.omnivpn.ui.ThemeChoice
 import com.betalgezia.omnivpn.ui.organic.AppTab
 import com.betalgezia.omnivpn.ui.organic.OrganicBottomNav
 import com.betalgezia.omnivpn.ui.organic.OrganicSnackbarHost
+import com.betalgezia.omnivpn.ui.organic.rememberOrganicSnackbarState
 import com.betalgezia.omnivpn.ui.rememberVpnActions
 import com.betalgezia.omnivpn.ui.screens.AddMode
 import com.betalgezia.omnivpn.ui.screens.AddServerSheet
@@ -106,6 +111,15 @@ class MainActivity : ComponentActivity() {
         val journal by viewModel.switchJournal.collectAsStateWithLifecycle()
         val onboarding by viewModel.showOnboarding.collectAsStateWithLifecycle()
         val actions = rememberVpnActions(viewModel)
+        val snackbar = rememberOrganicSnackbarState()
+        // Any tap anywhere hides the snackbar at once; the tap itself still
+        // goes on to whatever was under the finger.
+        val dismissSnackbarOnTap = Modifier.pointerInput(snackbar) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                snackbar.dismiss()
+            }
+        }
 
         LaunchedEffect(tileStart.value) {
             if (tileStart.value) {
@@ -137,12 +151,13 @@ class MainActivity : ComponentActivity() {
                 return
             }
             true -> {
-                Box(Modifier.fillMaxSize()) {
-                    OnboardingScreen(viewModel)
+                Box(Modifier.fillMaxSize().then(dismissSnackbarOnTap)) {
+                    OnboardingScreen(viewModel, actions)
                     OrganicSnackbarHost(
                         message = message,
                         onShown = viewModel::consumeMessage,
-                        modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp)
+                        modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp),
+                        state = snackbar
                     )
                 }
                 return
@@ -159,7 +174,7 @@ class MainActivity : ComponentActivity() {
             addSheet = true
         }
 
-        Box(Modifier.fillMaxSize().background(c.bg)) {
+        Box(Modifier.fillMaxSize().background(c.bg).then(dismissSnackbarOnTap)) {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     // Keyed so every tab and page opens scrolled to the top.
@@ -204,7 +219,8 @@ class MainActivity : ComponentActivity() {
                     OrganicSnackbarHost(
                         message = message,
                         onShown = viewModel::consumeMessage,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp),
+                        state = snackbar
                     )
                 }
                 OrganicBottomNav(

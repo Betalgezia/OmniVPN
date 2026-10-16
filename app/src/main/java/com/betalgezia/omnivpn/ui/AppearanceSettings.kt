@@ -37,8 +37,20 @@ class AppearanceSettings @Inject constructor(@ApplicationContext context: Contex
             prefs.edit().putBoolean(KEY_ONBOARDED, value).apply()
         }
 
+    /**
+     * The notification permission (Android 13+) has been asked for once.
+     * After that the app doesn't ask again on every connect; Settings →
+     * «Уведомление о подключении» leads to the system switch instead.
+     */
+    var notificationsAsked: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFICATIONS_ASKED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_NOTIFICATIONS_ASKED, value).apply()
+        }
+
     private companion object {
         const val KEY_THEME = "theme"
         const val KEY_ONBOARDED = "onboarded"
+        const val KEY_NOTIFICATIONS_ASKED = "notifications_asked"
     }
 }

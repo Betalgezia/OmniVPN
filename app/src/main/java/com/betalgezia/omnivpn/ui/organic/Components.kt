@@ -42,7 +42,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -594,31 +596,69 @@ fun OrganicDialog(
 // ============================ Snackbar =================================
 
 /**
+ * What the snackbar shows. Shared with the window so that any tap on the
+ * screen can [dismiss] it at once (see MainActivity's shell).
+ */
+@Stable
+class OrganicSnackbarState {
+    var text by mutableStateOf("")
+        private set
+    var visible by mutableStateOf(false)
+        private set
+    // Bumped on every new message: restarts the hide timer.
+    var shown by mutableIntStateOf(0)
+        private set
+
+    fun show(message: String) {
+        text = message
+        visible = true
+        shown++
+    }
+
+    fun dismiss() {
+        visible = false
+    }
+}
+
+@Composable
+fun rememberOrganicSnackbarState(): OrganicSnackbarState = remember { OrganicSnackbarState() }
+
+/**
  * Text-coloured pill-ish bar with background-coloured text; slides up 16 and
- * fades in over 200 ms, leaves after 3.4 s. Place it above the bottom bar.
+ * fades in over 200 ms, leaves by itself after ~2.5 s (longer texts 4 s) or
+ * at the first tap anywhere. Place it above the bottom bar.
  */
 @Composable
-fun OrganicSnackbarHost(message: String?, onShown: () -> Unit, modifier: Modifier = Modifier) {
+fun OrganicSnackbarHost(
+    message: String?,
+    onShown: () -> Unit,
+    modifier: Modifier = Modifier,
+    state: OrganicSnackbarState = rememberOrganicSnackbarState()
+) {
     val c = Organic.colors
-    var text by remember { mutableStateOf("") }
-    var visible by remember { mutableStateOf(false) }
+    // Taking the message clears it in the view model (onShown), which changes
+    // this key again - so the timer can't live here: it used to be cancelled
+    // right away and the bar never went away.
     LaunchedEffect(message) {
         if (!message.isNullOrBlank()) {
-            text = message
+            state.show(message)
             onShown()
-            visible = true
-            delay(3_400)
-            visible = false
+        }
+    }
+    LaunchedEffect(state.shown) {
+        if (state.visible) {
+            delay(if (state.text.length > 90) 4_000 else 2_500)
+            state.dismiss()
         }
     }
     AnimatedVisibility(
-        visible = visible,
+        visible = state.visible,
         modifier = modifier,
         enter = fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 3 },
         exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it / 3 }
     ) {
         Text(
-            text,
+            state.text,
             style = OrganicType.snackbar,
             color = c.bg,
             modifier = Modifier

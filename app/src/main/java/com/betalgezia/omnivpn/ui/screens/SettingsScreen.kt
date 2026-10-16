@@ -1,5 +1,13 @@
 package com.betalgezia.omnivpn.ui.screens
 
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.betalgezia.omnivpn.ui.notificationsAllowed
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -56,6 +64,13 @@ fun SettingsScreen(
     val obfuscation by viewModel.currentObfuscation.collectAsStateWithLifecycle()
     val warpInfo by viewModel.warpInfo.collectAsStateWithLifecycle()
     val coreVersion = remember { runCatching { Libbox.version() }.getOrNull() }
+    // Re-read on every return to the app: the switch lives in system settings.
+    val context = LocalContext.current
+    var notificationsOn by remember { mutableStateOf(notificationsAllowed(context)) }
+    LifecycleResumeEffect(Unit) {
+        notificationsOn = notificationsAllowed(context)
+        onPauseOrDispose { }
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 28.dp),
@@ -160,6 +175,26 @@ fun SettingsScreen(
                 onSelect = { onThemeChange(if (it == 0) ThemeChoice.LIGHT else ThemeChoice.DARK) },
                 description = ""
             )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                RowDivider()
+                SettingsLinkRow(
+                    icon = OrganicIcons.Bell,
+                    plate = c.sage200,
+                    iconTint = c.sage800,
+                    title = "Уведомление о подключении",
+                    summary = if (notificationsOn) {
+                        "Видно в шторке, пока VPN включён"
+                    } else {
+                        "Выключено — нажмите, чтобы разрешить"
+                    },
+                    onClick = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        )
+                    }
+                )
+            }
             RowDivider()
             SettingsLinkRow(
                 icon = OrganicIcons.Info,
