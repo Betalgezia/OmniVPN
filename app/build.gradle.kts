@@ -83,7 +83,26 @@ android {
         jvmTarget = "17"
     }
 
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // libbox.so (the sing-box core) is ~75 MB per ABI. Stored uncompressed
+        // (the default for minSdk 23+) it made the APK 316 MB; compressed it
+        // is ~26 MB and Android unpacks it once at install.
+        jniLibs.useLegacyPackaging = true
+    }
+
+    // One APK per phone architecture instead of all four in one: arm64-v8a for
+    // practically every phone since ~2017, armeabi-v7a for old 32-bit ones.
+    // x86/x86_64 are emulator-only and are left out. All split APKs share one
+    // versionCode and key, so either installs over the other.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
 }
 
 val libboxAar = file("libs/libbox.aar")

@@ -80,25 +80,32 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
 
-      - name: Build signed APK
+      - name: Build signed APKs
         run: |
           set -euo pipefail
           export OMNIVPN_VERSION_NAME="${TAG#v}"
           ./gradlew assembleRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk "OmniVPN-${OMNIVPN_VERSION_NAME}.apk"
+          # One APK per architecture (splits in app/build.gradle.kts).
+          out=app/build/outputs/apk/release
+          cp "$out/app-arm64-v8a-release.apk" "OmniVPN-${OMNIVPN_VERSION_NAME}-arm64.apk"
+          cp "$out/app-armeabi-v7a-release.apk" "OmniVPN-${OMNIVPN_VERSION_NAME}-armv7.apk"
+          ls -lh OmniVPN-*.apk
 
-      - name: Verify signature
+      - name: Verify signatures
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs OmniVPN-*.apk
+          for apk in OmniVPN-*.apk; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk"
+          done
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          notes="Какой файл скачать: OmniVPN-${TAG#v}-arm64.apk — для почти всех телефонов; OmniVPN-${TAG#v}-armv7.apk — только для старых 32-битных."
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" OmniVPN-*.apk --clobber
           else
-            gh release create "$TAG" OmniVPN-*.apk --title "OmniVPN ${TAG#v}" --generate-notes
+            gh release create "$TAG" OmniVPN-*.apk --title "OmniVPN ${TAG#v}" --notes "$notes" --generate-notes
           fi
