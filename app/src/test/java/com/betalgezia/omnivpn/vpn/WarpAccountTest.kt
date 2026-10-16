@@ -25,16 +25,16 @@ class WarpAccountTest {
     }
 
     @Test
-    fun endpointOmitsReservedAndIsIpv4Only() {
+    fun endpointOmitsReservedAndIpv6IsAToggle() {
         // Was: clientId became a 3-byte peer "reserved" field, and both
-        // IPv4/IPv6 were included. Changed after jc=3/jmin=64/jmax=128 + an
-        // i1 decoy packet alone (matching a manually-imported config
-        // confirmed working end-to-end) still wasn't enough on its own -
-        // two literal IPs both died at the same ~15s mark the old
-        // obfuscation did, with reserved+IPv6 present. The config that
-        // actually stayed up had neither. See the comment on
-        // toSingBoxEndpoint() for the full account; a present clientId
+        // IPv4/IPv6 were included. reserved was dropped after jc=3/jmin=64/
+        // jmax=128 + an i1 decoy packet alone still wasn't enough - the
+        // config that actually stayed up had no reserved. A present clientId
         // must no longer surface as "reserved" here.
+        // IPv6 was dropped together with it, then came back on 2026-09-26 as
+        // a toggle (WarpSettings.ipv6Enabled, default on) - see the comment on
+        // toSingBoxEndpoint(): without a local IPv6 address sing-box rejected
+        // every IPv6 destination. Off = IPv4 only, as before.
         val clientId = "AX//"
         val account = WarpAccount(
             privateKey = "private", peerPublicKey = "peer",
@@ -43,12 +43,19 @@ class WarpAccountTest {
             license = null, warpPlus = false, endpoint = WarpAccount.DEFAULT_ENDPOINT,
             createdAt = "2026-09-21T00:00:00Z"
         )
-        val endpoint = JSONObject(account.toSingBoxEndpoint())
-        assertEquals(1, endpoint.getJSONArray("address").length())
-        val peer = endpoint.getJSONArray("peers").getJSONObject(0)
-        assertFalse(peer.has("reserved"))
-        assertEquals(1, peer.getJSONArray("allowed_ips").length())
-        assertEquals("0.0.0.0/0", peer.getJSONArray("allowed_ips").getString(0))
+
+        val v4Only = JSONObject(account.toSingBoxEndpoint(includeIpv6 = false))
+        assertEquals(1, v4Only.getJSONArray("address").length())
+        val v4Peer = v4Only.getJSONArray("peers").getJSONObject(0)
+        assertFalse(v4Peer.has("reserved"))
+        assertEquals(1, v4Peer.getJSONArray("allowed_ips").length())
+        assertEquals("0.0.0.0/0", v4Peer.getJSONArray("allowed_ips").getString(0))
+
+        val dualStack = JSONObject(account.toSingBoxEndpoint())
+        assertEquals(2, dualStack.getJSONArray("address").length())
+        val dualPeer = dualStack.getJSONArray("peers").getJSONObject(0)
+        assertFalse(dualPeer.has("reserved"))
+        assertEquals(listOf("0.0.0.0/0", "::/0"), List(2) { dualPeer.getJSONArray("allowed_ips").getString(it) })
     }
 
     @Test

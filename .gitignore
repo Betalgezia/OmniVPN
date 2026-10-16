@@ -13,3 +13,7 @@ app/libs/.libbox.version
 *.log
 *.bundle
 Claude outputs/
+# Release signing key - never in the repository (see app/build.gradle.kts)
+keystore.properties
+*.jks
+*.keystore
