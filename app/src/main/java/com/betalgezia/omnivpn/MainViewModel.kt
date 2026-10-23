@@ -59,6 +59,7 @@ class MainViewModel @Inject constructor(
     private val warpObfuscationStore: WarpObfuscationStore,
     private val autoUpdateScheduler: SubscriptionAutoUpdateScheduler,
     private val appearance: com.betalgezia.omnivpn.ui.AppearanceSettings,
+    private val appUpdater: com.betalgezia.omnivpn.update.AppUpdater,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -417,6 +418,13 @@ class MainViewModel @Inject constructor(
             connectionManager.notices.collect { _message.value = it }
         }
         refreshWarpState()
+        // In-app updates: what the updater has to say, «обновлён до …» right
+        // after an update, and the quiet launch check (at most every 6 h).
+        viewModelScope.launch {
+            appUpdater.messages.collect { _message.value = it }
+        }
+        appUpdater.takeUpdatedNotice()?.let { _message.value = it }
+        appUpdater.checkOnLaunch()
         // An update from a version without the intro: whoever already has
         // servers has been through "first run" - don't show it to them.
         if (!appearance.onboarded) {
@@ -434,6 +442,23 @@ class MainViewModel @Inject constructor(
         appearance.onboarded = true
         _showOnboarding.value = false
     }
+
+    // ---- In-app update from GitHub releases (update/AppUpdater) ----
+
+    val updateState: StateFlow<com.betalgezia.omnivpn.update.UpdateState> = appUpdater.state
+    val updateChecking: StateFlow<Boolean> = appUpdater.checking
+    val updateSkippedVersion: StateFlow<String?> = appUpdater.skippedVersion
+    val updateConfirmation: StateFlow<Intent?> = appUpdater.confirmation
+    val appVersion: String get() = appUpdater.currentVersion
+    val isTestBuild: Boolean get() = appUpdater.isTestBuild
+
+    fun checkForUpdates() = appUpdater.checkNow()
+    fun startUpdate() = appUpdater.startUpdate()
+    fun cancelUpdateDownload() = appUpdater.cancelDownload()
+    fun skipUpdate() = appUpdater.skip()
+    fun updateInstallPermissionIntent(): Intent = appUpdater.installPermissionIntent()
+    fun onUpdateConfirmationShown(failed: Boolean) = appUpdater.onConfirmationShown(failed)
+    fun onAppResumed() = appUpdater.onAppResumed()
 
     /** Whether the notification permission was already asked for (see VpnActions). */
     var notificationsAsked: Boolean

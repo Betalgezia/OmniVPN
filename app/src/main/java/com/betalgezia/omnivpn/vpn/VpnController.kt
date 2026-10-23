@@ -111,7 +111,16 @@ class VpnController @Inject constructor(
                 putExtra(OmniVpnService.EXTRA_QUICK_CHECK, quickCheck)
             }
             android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (backgroundStart: IllegalStateException) {
+                // From the background (reconnecting right after an app update,
+                // see update/PackageReplacedReceiver) Android 8+ refuses a
+                // plain start; a foreground start is allowed there, and the
+                // service goes foreground straight away in startVpn().
+                android.util.Log.w(tag, "startConfig: background start refused - starting as foreground service")
+                androidx.core.content.ContextCompat.startForegroundService(context, intent)
+            }
             android.util.Log.i(tag, "startConfig: Context.startService() returned")
         }
         Unit

@@ -34,6 +34,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.betalgezia.omnivpn.ui.AppearanceSettings
 import com.betalgezia.omnivpn.ui.ThemeChoice
@@ -51,8 +52,10 @@ import com.betalgezia.omnivpn.ui.screens.SettingsPage
 import com.betalgezia.omnivpn.ui.screens.SettingsPageScreen
 import com.betalgezia.omnivpn.ui.screens.SettingsScreen
 import com.betalgezia.omnivpn.ui.screens.SwitchJournalSheet
+import com.betalgezia.omnivpn.ui.screens.UpdateSheet
 import com.betalgezia.omnivpn.ui.theme.Organic
 import com.betalgezia.omnivpn.ui.theme.OrganicTheme
+import com.betalgezia.omnivpn.update.release
 import com.betalgezia.omnivpn.vpn.VpnState
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -107,6 +110,11 @@ class MainActivity : ComponentActivity() {
         var addSheet by rememberSaveable { mutableStateOf(false) }
         var addMode by remember { mutableStateOf<AddMode?>(null) }
         var journalSheet by rememberSaveable { mutableStateOf(false) }
+        var updateSheet by rememberSaveable { mutableStateOf(false) }
+        val update by viewModel.updateState.collectAsStateWithLifecycle()
+        val updateSkipped by viewModel.updateSkippedVersion.collectAsStateWithLifecycle()
+        val updateConfirmation by viewModel.updateConfirmation.collectAsStateWithLifecycle()
+        val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
         val message by viewModel.message.collectAsStateWithLifecycle()
         val journal by viewModel.switchJournal.collectAsStateWithLifecycle()
         val onboarding by viewModel.showOnboarding.collectAsStateWithLifecycle()
@@ -133,6 +141,19 @@ class MainActivity : ComponentActivity() {
                     if (viewModel.quickTileStartsWarp.value) actions.startWarp() else actions.connectFastest()
                 }
             }
+        }
+
+        // In-app update: Android's "install this update?" screen, shown while
+        // the app is in front (collected only when started), and a recheck of
+        // the install permission on every return from Settings.
+        LaunchedEffect(updateConfirmation) {
+            val confirm = updateConfirmation ?: return@LaunchedEffect
+            val failed = runCatching { startActivity(confirm) }.isFailure
+            viewModel.onUpdateConfirmationShown(failed)
+        }
+        LifecycleResumeEffect(Unit) {
+            viewModel.onAppResumed()
+            onPauseOrDispose { }
         }
 
         LaunchedEffect(openTab.value) {
@@ -185,7 +206,8 @@ class MainActivity : ComponentActivity() {
                                     viewModel = viewModel,
                                     actions = actions,
                                     onOpenServers = { tab = AppTab.SERVERS },
-                                    onOpenJournal = { journalSheet = true }
+                                    onOpenJournal = { journalSheet = true },
+                                    onOpenUpdate = { updateSheet = true }
                                 )
                                 AppTab.SERVERS -> ServersScreen(
                                     viewModel = viewModel,
@@ -201,7 +223,8 @@ class MainActivity : ComponentActivity() {
                                             viewModel = viewModel,
                                             actions = actions,
                                             onBack = { page = null },
-                                            onAddSubscription = { openAdd(AddMode.SUBSCRIPTION) }
+                                            onAddSubscription = { openAdd(AddMode.SUBSCRIPTION) },
+                                            onOpenUpdate = { updateSheet = true }
                                         )
                                     } else {
                                         SettingsScreen(
@@ -243,6 +266,24 @@ class MainActivity : ComponentActivity() {
                 startMode = addMode
             )
             SwitchJournalSheet(visible = journalSheet, events = journal, onDismiss = { journalSheet = false })
+            UpdateSheet(
+                visible = updateSheet,
+                state = update,
+                currentVersion = viewModel.appVersion,
+                vpnOn = vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING,
+                skipped = update.release?.version == updateSkipped,
+                onDismiss = { updateSheet = false },
+                onUpdate = viewModel::startUpdate,
+                onCancel = viewModel::cancelUpdateDownload,
+                onSkip = {
+                    viewModel.skipUpdate()
+                    updateSheet = false
+                },
+                onAllowInstall = {
+                    runCatching { startActivity(viewModel.updateInstallPermissionIntent()) }
+                        .onFailure { viewModel.showMessage("Не удалось открыть настройки Android") }
+                }
+            )
         }
     }
 

@@ -84,6 +84,7 @@ import com.betalgezia.omnivpn.ui.organic.latencyLook
 import com.betalgezia.omnivpn.ui.theme.Organic
 import com.betalgezia.omnivpn.ui.theme.OrganicShapes
 import com.betalgezia.omnivpn.ui.theme.OrganicType
+import com.betalgezia.omnivpn.update.UpdateState
 import com.betalgezia.omnivpn.vpn.ActiveConnection
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.TrafficStatus
@@ -121,9 +122,12 @@ fun HomeScreen(
     viewModel: MainViewModel,
     actions: VpnActions,
     onOpenServers: () -> Unit,
-    onOpenJournal: () -> Unit
+    onOpenJournal: () -> Unit,
+    onOpenUpdate: () -> Unit
 ) {
     val c = Organic.colors
+    val update by viewModel.updateState.collectAsStateWithLifecycle()
+    val skippedUpdate by viewModel.updateSkippedVersion.collectAsStateWithLifecycle()
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val searching by viewModel.searchingFastest.collectAsStateWithLifecycle()
     val warpStarting by viewModel.warpStarting.collectAsStateWithLifecycle()
@@ -215,6 +219,14 @@ fun HomeScreen(
             OrbitMark(Modifier.size(32.dp))
             Text("OmniVPN", style = OrganicType.appName, color = c.text)
         }
+
+        // A new version on GitHub (hidden by «Пропустить» until the next one).
+        val showUpdate = when (val u = update) {
+            UpdateState.Idle -> false
+            is UpdateState.Available -> u.release.version != skippedUpdate
+            else -> true
+        }
+        if (showUpdate) UpdateBanner(update, onOpen = onOpenUpdate, onSkip = viewModel::skipUpdate)
 
         val look = heroLook(kind, warp = warpActive)
         val titleColor by animateColorAsState(look.title, tween(500), label = "heroTitle")

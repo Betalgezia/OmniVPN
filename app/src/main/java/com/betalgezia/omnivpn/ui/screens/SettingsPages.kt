@@ -87,7 +87,8 @@ fun SettingsPageScreen(
     viewModel: MainViewModel,
     actions: VpnActions,
     onBack: () -> Unit,
-    onAddSubscription: () -> Unit
+    onAddSubscription: () -> Unit,
+    onOpenUpdate: () -> Unit
 ) {
     Column(
         Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 28.dp),
@@ -108,7 +109,7 @@ fun SettingsPageScreen(
             SettingsPage.SUBSCRIPTIONS -> SubscriptionsPage(viewModel, actions, onAddSubscription)
             SettingsPage.WARP -> WarpPage(viewModel, actions)
             SettingsPage.OBFUSCATION -> ObfuscationPage(viewModel)
-            SettingsPage.ABOUT -> AboutPage()
+            SettingsPage.ABOUT -> AboutPage(viewModel, onOpenUpdate)
         }
     }
 }
@@ -513,17 +514,24 @@ private fun MonoChip(text: String) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AboutPage() {
+private fun AboutPage(viewModel: MainViewModel, onOpenUpdate: () -> Unit) {
     val c = Organic.colors
-    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    val version = remember {
-        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "—"
-    }
+    val update by viewModel.updateState.collectAsStateWithLifecycle()
+    val checking by viewModel.updateChecking.collectAsStateWithLifecycle()
+    val version = viewModel.appVersion.ifEmpty { "—" }
     val core = remember { runCatching { Libbox.version().removePrefix("v") }.getOrNull() ?: "—" }
 
     OrganicCard(contentPadding = PaddingValues(vertical = 6.dp)) {
         InfoRow("Версия", version)
+        RowDivider()
+        UpdateAboutRow(
+            state = update,
+            checking = checking,
+            testBuild = viewModel.isTestBuild,
+            onCheck = viewModel::checkForUpdates,
+            onOpen = onOpenUpdate
+        )
         RowDivider()
         InfoRow("Ядро", "sing-box-lx $core")
         RowDivider()
