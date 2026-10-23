@@ -13,7 +13,8 @@ import kotlinx.coroutines.withContext
 @Singleton
 class VpnController @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val eventBus: VpnEventBus
+    private val eventBus: VpnEventBus,
+    private val dnsSettings: DnsSettings
 ) {
     val state = eventBus.state
     val events = eventBus.events
@@ -48,22 +49,38 @@ class VpnController @Inject constructor(
     ): Result<Unit> = runCatching {
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
+        val dns = dnsSettings.endpoint()
+        android.util.Log.d(tag, "start(node): dns=${dns?.text ?: "default"}")
         val config = withContext(Dispatchers.Default) {
             android.util.Log.d(tag, "start(node): building sing-box config (${alternates.size} alternates)")
-            val withAlternates = SingBoxConfigBuilder.build(node, alternates)
-            if (alternates.isEmpty()) return@withContext withAlternates
-            // The alternates are a convenience (speed comparison); a single one
-            // the core rejects must never cost the user the connection itself.
-            val ok = runCatching {
+            val preferred = SingBoxConfigBuilder.build(node, alternates, dns)
+            // Nothing optional is in play: the config is just the node.
+            if (alternates.isEmpty() && dns == null) return@withContext preferred
+
+            // A user-chosen DNS transport or an alternate outbound can both be
+            // rejected by the core (a bad DoH URL, a protocol field the
+            // endpoint can't carry, ...). Each is a convenience: a rejected
+            // variant must never cost the user the connection itself, so try
+            // the cheaper subsets and fall all the way back to the plain config.
+            val candidates = listOfNotNull(
+                preferred,
+                if (alternates.isNotEmpty()) SingBoxConfigBuilder.build(node, emptyList(), dns) else null,
+                if (dns != null) SingBoxConfigBuilder.build(node, alternates, null) else null,
+                if (dns != null && alternates.isNotEmpty()) SingBoxConfigBuilder.build(node, emptyList(), null) else null
+            ).distinct()
+            if (candidates.size == 1) return@withContext candidates.first()
+
+            val ready = runCatching {
                 com.betalgezia.omnivpn.OmniVpnApplication.libboxReady.await()
-                io.nekohasekai.libbox.Libbox.checkConfig(withAlternates)
             }
-            if (ok.isSuccess) {
-                withAlternates
-            } else {
-                android.util.Log.w(tag, "start(node): config with alternates rejected (${ok.exceptionOrNull()?.message}) - starting without them")
-                SingBoxConfigBuilder.build(node)
+            if (ready.isFailure) return@withContext preferred
+            for (candidate in candidates) {
+                val ok = runCatching { io.nekohasekai.libbox.Libbox.checkConfig(candidate) }
+                if (ok.isSuccess) return@withContext candidate
+                android.util.Log.w(tag, "start(node): config variant rejected (${ok.exceptionOrNull()?.message})")
             }
+            android.util.Log.w(tag, "start(node): every variant rejected - starting without alternates and the custom DNS")
+            SingBoxConfigBuilder.build(node)
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")

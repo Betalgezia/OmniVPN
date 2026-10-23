@@ -70,6 +70,10 @@ The app updates itself from this repository's GitHub Releases:
 
 To publish an update, push a tag such as `v1.3.0`. `.github/workflows/release.yml` runs the unit tests, builds signed APKs and attaches them to that tag's release. `versionCode` is the commit count, so a newer release always installs over an older one. The first build that contains the updater has to be installed manually once.
 
+## DNS
+
+Settings → «DNS-сервер» picks the resolver AmneziaWG/WARP use: named DoH presets (Cloudflare, Google, Quad9) or a group of geo-unblock/AI resolvers, plus a custom DoH URL or plain DNS IP. The choice is stored locally and applied on the next connection; DoH queries, including the bootstrap lookup of the DoH hostname, go through the tunnel. Proxy protocols (VLESS/Trojan/Hysteria2/…) are unaffected: the proxy server resolves their destination domains itself.
+
 ## Command-line build
 
 The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build. Active VPN configuration is encrypted at rest with Android Keystore.

@@ -22,6 +22,8 @@ import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.AwgObfuscation
+import com.betalgezia.omnivpn.vpn.DnsCatalog
+import com.betalgezia.omnivpn.vpn.DnsSettings
 import com.betalgezia.omnivpn.vpn.TuneState
 import com.betalgezia.omnivpn.vpn.WarpAccount
 import com.betalgezia.omnivpn.vpn.WarpEndpointScanner
@@ -29,6 +31,7 @@ import com.betalgezia.omnivpn.vpn.WarpObfuscationStore
 import com.betalgezia.omnivpn.vpn.WarpObfuscationTuner
 import com.betalgezia.omnivpn.vpn.WarpSettings
 import com.betalgezia.omnivpn.vpn.WarpStorage
+import com.betalgezia.omnivpn.vpn.parseDnsEndpoint
 import com.betalgezia.omnivpn.vpn.SubscriptionParser
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -55,6 +58,7 @@ class MainViewModel @Inject constructor(
     private val nodeHealthChecker: NodeHealthChecker,
     private val warpEndpointScanner: WarpEndpointScanner,
     private val warpSettings: WarpSettings,
+    private val dnsSettings: DnsSettings,
     private val warpObfuscationTuner: WarpObfuscationTuner,
     private val warpObfuscationStore: WarpObfuscationStore,
     private val autoUpdateScheduler: SubscriptionAutoUpdateScheduler,
@@ -118,6 +122,40 @@ class MainViewModel @Inject constructor(
 
     private val _quickTileStartsWarp = MutableStateFlow(warpSettings.quickTileStartsWarp)
     val quickTileStartsWarp: StateFlow<Boolean> = _quickTileStartsWarp.asStateFlow()
+
+    // DNS for AmneziaWG/WARP (DnsSettings): the selected preset id and the
+    // custom field's text. The settings screen derives its summary from both.
+    private val _dnsSelection = MutableStateFlow(dnsSettings.selectedId)
+    val dnsSelection: StateFlow<String> = _dnsSelection.asStateFlow()
+    private val _dnsCustom = MutableStateFlow(dnsSettings.customText)
+    val dnsCustom: StateFlow<String> = _dnsCustom.asStateFlow()
+
+    fun selectDns(id: String) {
+        if (id != DnsCatalog.DEFAULT_ID && id != DnsCatalog.CUSTOM_ID && DnsCatalog.byId(id) == null) return
+        // "Custom" only means something once a valid address was saved.
+        if (id == DnsCatalog.CUSTOM_ID && parseDnsEndpoint(dnsSettings.customText) == null) return
+        if (id == _dnsSelection.value) return
+        dnsSettings.selectedId = id
+        _dnsSelection.value = id
+        noticeDnsAppliesLater()
+    }
+
+    /** Validates, normalises and selects [value]; false keeps the field's error shown. */
+    fun saveCustomDns(value: String): Boolean {
+        val endpoint = parseDnsEndpoint(value) ?: return false
+        dnsSettings.customText = endpoint.text
+        dnsSettings.selectedId = DnsCatalog.CUSTOM_ID
+        _dnsCustom.value = endpoint.text
+        _dnsSelection.value = DnsCatalog.CUSTOM_ID
+        noticeDnsAppliesLater()
+        return true
+    }
+
+    private fun noticeDnsAppliesLater() {
+        if (vpnState.value == VpnState.CONNECTED || vpnState.value == VpnState.CONNECTING) {
+            _message.value = "Новый DNS применится при следующем подключении"
+        }
+    }
 
     fun setQuickTileStartsWarp(startsWarp: Boolean) {
         warpSettings.quickTileStartsWarp = startsWarp

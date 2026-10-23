@@ -34,10 +34,11 @@ import com.betalgezia.omnivpn.ui.organic.SettingsSwitchRow
 import com.betalgezia.omnivpn.ui.theme.Organic
 import com.betalgezia.omnivpn.ui.theme.OrganicType
 import com.betalgezia.omnivpn.vpn.TestMode
+import com.betalgezia.omnivpn.vpn.dnsSummary
 import io.nekohasekai.libbox.Libbox
 
 /** Pages reachable from the settings root (handoff §3a). */
-enum class SettingsPage { SUBSCRIPTIONS, WARP, OBFUSCATION, ABOUT }
+enum class SettingsPage { SUBSCRIPTIONS, WARP, DNS, OBFUSCATION, ABOUT }
 
 /**
  * Settings root (handoff §3): sections of cards, every row shows its current
@@ -62,6 +63,8 @@ fun SettingsScreen(
     val ipv6 by viewModel.ipv6Enabled.collectAsStateWithLifecycle()
     val obfCustom by viewModel.obfuscationIsCustom.collectAsStateWithLifecycle()
     val obfuscation by viewModel.currentObfuscation.collectAsStateWithLifecycle()
+    val dnsSelection by viewModel.dnsSelection.collectAsStateWithLifecycle()
+    val dnsCustom by viewModel.dnsCustom.collectAsStateWithLifecycle()
     val warpInfo by viewModel.warpInfo.collectAsStateWithLifecycle()
     val coreVersion = remember { runCatching { Libbox.version() }.getOrNull() }
     // Re-read on every return to the app: the switch lives in system settings.
@@ -155,6 +158,15 @@ fun SettingsScreen(
                 title = "Cloudflare WARP",
                 summary = warpSummary(ipv6, warpInfo.endpoint),
                 onClick = { onOpenPage(SettingsPage.WARP) }
+            )
+            RowDivider()
+            SettingsLinkRow(
+                icon = OrganicIcons.Server,
+                plate = c.sage200,
+                iconTint = c.sage800,
+                title = "DNS-сервер",
+                summary = dnsSummary(dnsSelection, dnsCustom),
+                onClick = { onOpenPage(SettingsPage.DNS) }
             )
             RowDivider()
             SettingsLinkRow(

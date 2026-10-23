@@ -77,6 +77,7 @@ import io.nekohasekai.libbox.Libbox
 private fun SettingsPage.title(): String = when (this) {
     SettingsPage.SUBSCRIPTIONS -> "Подписки"
     SettingsPage.WARP -> "Cloudflare WARP"
+    SettingsPage.DNS -> "DNS-сервер"
     SettingsPage.OBFUSCATION -> "Обфускация AmneziaWG"
     SettingsPage.ABOUT -> "О приложении"
 }
@@ -108,6 +109,7 @@ fun SettingsPageScreen(
         when (page) {
             SettingsPage.SUBSCRIPTIONS -> SubscriptionsPage(viewModel, actions, onAddSubscription)
             SettingsPage.WARP -> WarpPage(viewModel, actions)
+            SettingsPage.DNS -> DnsPage(viewModel)
             SettingsPage.OBFUSCATION -> ObfuscationPage(viewModel)
             SettingsPage.ABOUT -> AboutPage(viewModel, onOpenUpdate)
         }

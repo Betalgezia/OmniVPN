@@ -47,8 +47,12 @@ object SingBoxConfigBuilder {
      * without switching blind. Only proxy-type alternates are added (an extra
      * WireGuard endpoint would bring up its own device), and one that fails to
      * build is skipped rather than failing the whole config.
+     *
+     * [dns]: the resolver for AmneziaWG/WARP traffic (see [DnsSettings]).
+     * null keeps the built-in UDP 1.1.1.1 through the tunnel. Ignored for
+     * VLESS/Trojan/Hysteria2 - their domains are resolved by the proxy server.
      */
-    fun build(node: Node, alternates: List<Node> = emptyList()): String {
+    fun build(node: Node, alternates: List<Node> = emptyList(), dns: DnsEndpoint? = null): String {
         val endpointMode = node.protocol == Protocol.AMNEZIAWG
         val proxyTag = if (endpointMode) AWG_TAG else PROXY_TAG
         val route = JSONObject()
@@ -64,7 +68,7 @@ object SingBoxConfigBuilder {
             // tracing. "info" still carries what diagnosis actually needs (each
             // inbound/outbound connection, DNS exchanges, errors with their cause).
             .put("log", JSONObject().put("level", "info"))
-            .put("dns", buildDns(endpointMode))
+            .put("dns", buildDns(endpointMode, dns))
             .put("route", route.put("rules", JSONArray().apply {
                 put(JSONObject()
                     .put("inbound", JSONArray().put(TUN_TAG))
@@ -740,7 +744,7 @@ object SingBoxConfigBuilder {
         return obj
     }
 
-    private fun buildDns(endpointMode: Boolean): JSONObject = JSONObject()
+    private fun buildDns(endpointMode: Boolean, dns: DnsEndpoint?): JSONObject = JSONObject()
         .put("servers", JSONArray().apply {
             put(JSONObject().put("type", "local").put("tag", LOCAL_DNS_TAG))
             // endpointMode does NOT declare a fakeip server at all - round 6's
@@ -852,8 +856,14 @@ object SingBoxConfigBuilder {
             // connect, to catch any stall while the awg handshake is still in
             // flight and dns-tunnel's first query has to wait on it.
             if (endpointMode) {
-                put(JSONObject().put("type", "udp").put("tag", TUNNEL_DNS_TAG)
-                    .put("server", TUNNEL_DNS_SERVER).put("detour", AWG_TAG))
+                // The resolver the user picked in Settings → DNS (DnsSettings);
+                // null keeps the historical UDP 1.1.1.1. Both kinds keep the
+                // detour to the awg endpoint, so the physical network still
+                // never sees these queries. A DoH server is a hostname, so
+                // sing-box needs one plain resolver to bootstrap it: a UDP
+                // 1.1.1.1 that also goes through the tunnel (not dns-local,
+                // which on Android always leaves via the physical interface).
+                tunnelDnsServers(dns).forEach { put(it) }
             }
         })
         // A/AAAA queries must answer from fakeip, not local. "local" resolves
@@ -962,6 +972,52 @@ object SingBoxConfigBuilder {
         // sandbox cannot check against sing-box-lx's actual validation.
         .put("reverse_mapping", !endpointMode)
 
+    /**
+     * The endpointMode resolver block: one UDP server, or a bootstrap UDP
+     * server plus the DoH transport. [TUNNEL_DNS_TAG] stays on whichever
+     * server actually answers A/AAAA, so the resolve rule and "final" above
+     * pick the user's choice up without knowing its type.
+     */
+    private fun tunnelDnsServers(dns: DnsEndpoint?): List<JSONObject> =
+        when (val choice = dns ?: DnsEndpoint.Udp(DnsCatalog.DEFAULT_SERVER)) {
+            is DnsEndpoint.Udp -> listOf(
+                JSONObject()
+                    .put("type", "udp")
+                    .put("tag", TUNNEL_DNS_TAG)
+                    .put("server", choice.server)
+                    .apply { if (choice.port != 53) put("server_port", choice.port) }
+                    .put("detour", AWG_TAG)
+            )
+            is DnsEndpoint.Doh -> buildList {
+                // A DoH server is addressed by name, and its name has to be
+                // resolved before TLS can start. That bootstrap query uses
+                // plain UDP 1.1.1.1 through the same tunnel (dns-local would
+                // resolve outside it - see buildDns()'s note on Android), so
+                // don't declare it when the DoH host is already an IP.
+                if (!isIpv4(choice.server)) {
+                    add(
+                        JSONObject()
+                            .put("type", "udp")
+                            .put("tag", DNS_BOOTSTRAP_TAG)
+                            .put("server", DnsCatalog.DEFAULT_SERVER)
+                            .put("detour", AWG_TAG)
+                    )
+                }
+                add(
+                    JSONObject()
+                        .put("type", "https")
+                        .put("tag", TUNNEL_DNS_TAG)
+                        .put("server", choice.server)
+                        .apply { if (choice.port != 443) put("server_port", choice.port) }
+                        .put("path", choice.path)
+                        .put("detour", AWG_TAG)
+                        .apply {
+                            if (!isIpv4(choice.server)) put("domain_resolver", DNS_BOOTSTRAP_TAG)
+                        }
+                )
+            }
+        }
+
     private fun String.requireServer(): String = trim().also { require(it.isNotEmpty()) { "Server is required" } }
     private fun Int.requirePort(): Int = also { require(it in 1..65535) { "Port must be between 1 and 65535" } }
 
@@ -981,11 +1037,9 @@ object SingBoxConfigBuilder {
     private const val LOCAL_DNS_TAG = "dns-local"
     private const val FAKE_IP_DNS_TAG = "dns-fakeip"
     private const val TUNNEL_DNS_TAG = "dns-tunnel"
-    // Round 7 (see buildDns()). Cloudflare's own resolver - on-net for WARP
-    // specifically, and a fast, neutral public default for a generic
-    // AmneziaWG server otherwise. Nothing here depends on it being
-    // Cloudflare; swapping it is a one-line change.
-    private const val TUNNEL_DNS_SERVER = "1.1.1.1"
+    // Plain resolver sing-box uses only to bootstrap a DoH server's hostname
+    // (see tunnelDnsServers). Shares the tunnel detour, so it does not leak.
+    private const val DNS_BOOTSTRAP_TAG = "dns-bootstrap"
 
     private const val DEFAULT_TLS_FINGERPRINT = "chrome"
     // Kept in step with ConfigParser.VALID_FINGERPRINTS: a fingerprint that
