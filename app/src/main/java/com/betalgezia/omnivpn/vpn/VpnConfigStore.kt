@@ -48,13 +48,14 @@ class VpnConfigStore(context: Context) {
         }
         val payload = FileInputStream(configFile).use { it.readBytes() }
         if (payload.size < MAGIC.size || !payload.copyOf(MAGIC.size).contentEquals(MAGIC)) {
-            // Migrate the pre-encryption format on first read. We intentionally
-            // return the config even if migration fails; startup remains compatible
-            // on devices where the Keystore is temporarily unavailable.
-            val legacy = payload.toString(Charsets.UTF_8)
-            require(legacy.isNotBlank()) { "Active VPN configuration is empty" }
-            runCatching { write(legacy) }
-            return legacy
+            // SECURITY: the pre-encryption (plaintext) legacy format carried no
+            // integrity protection, so a local attacker with access to filesDir
+            // could silently swap in a malicious config and turn every future
+            // session into a MitM. Legacy files are therefore never trusted:
+            // they are discarded and the user must reconnect explicitly.
+            android.util.Log.w("VpnConfigStore", "Discarding unauthenticated legacy config file")
+            clear()
+            return null
         }
 
         require(payload.size > MAGIC.size + IV_SIZE) { "Active VPN configuration is corrupt" }

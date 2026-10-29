@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Same as Android's default (cleartext off, system CAs only) except for the
-    three endpoints TrafficProbe hits over plain HTTP to check the tunnel
-    quickly. That traffic is still encrypted by the VPN tunnel itself.
+    Android's default posture, applied explicitly: cleartext HTTP is forbidden
+    for every host (TrafficProbe switched to HTTPS-only endpoints in October
+    2026, so no domain exception is needed anymore) and only system CA roots
+    are trusted - user-added / debug CAs are never accepted, which closes off
+    a trivial MitM via a proxy certificate installed on the device.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -10,9 +12,4 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">cp.cloudflare.com</domain>
-        <domain includeSubdomains="false">connectivitycheck.gstatic.com</domain>
-        <domain includeSubdomains="false">1.1.1.1</domain>
-    </domain-config>
 </network-security-config>

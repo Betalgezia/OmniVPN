@@ -21,6 +21,21 @@ import kotlinx.coroutines.withContext
 
 private const val MAX_ERROR_BODY_CHARS = 64 * 1024
 
+/**
+ * SECURITY: messages of exceptions that reach logcat or the UI (via
+ * `it.message`) must never echo raw request/response bodies - a registration
+ * response contains the account token and our freshly generated private key is
+ * threaded through the same call path. This filter keeps diagnostics useful
+ * (exception class + first line only) while stripping any secret material an
+ * upstream failure might have interpolated into its message.
+ */
+private fun sanitizeCauseMessage(t: Throwable?): String {
+    if (t == null) return "unknown error"
+    val firstLine = t.message?.lineSequence()?.firstOrNull()?.trim().orEmpty()
+    val redacted = firstLine.take(200)
+    return "${t::class.simpleName}: $redacted"
+}
+
 class CloudflareWarpClient {
     suspend fun register(licenseKey: String? = null, endpointOverride: String? = null): WarpAccount = withContext(Dispatchers.IO) {
         val endpoint = endpointOverride?.trim().takeUnless { it.isNullOrEmpty() } ?: WarpAccount.DEFAULT_ENDPOINT
@@ -50,7 +65,7 @@ class CloudflareWarpClient {
             }
         }
         val account = registered ?: throw IllegalStateException(
-            "WARP registration failed: ${lastError?.message ?: "unknown error"}",
+            "WARP registration failed: ${sanitizeCauseMessage(lastError)}",
             lastError
         )
         val license = licenseKey?.trim().takeUnless { it.isNullOrEmpty() }
@@ -111,7 +126,7 @@ class CloudflareWarpClient {
             }
         }
         throw IllegalStateException(
-            "WARP license application failed: ${lastError?.message ?: "unknown error"}",
+            "WARP license application failed: ${sanitizeCauseMessage(lastError)}",
             lastError
         )
     }

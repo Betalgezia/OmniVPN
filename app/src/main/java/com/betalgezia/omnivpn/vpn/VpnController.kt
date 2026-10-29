@@ -47,7 +47,10 @@ class VpnController @Inject constructor(
         detail: String = VpnNotification.serverDetail(node),
         switchable: Boolean = true
     ): Result<Unit> = runCatching {
-        android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
+        // SECURITY: never log server host/port or the config itself - these end
+        // up in logcat where any app with READ_LOGS-adjacent access (or adb) can
+        // read them. Only non-sensitive metadata is logged.
+        android.util.Log.i(tag, "start(node): protocol=${node.protocol}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val dns = dnsSettings.endpoint()
         android.util.Log.d(tag, "start(node): dns=${dns?.text ?: "default"}")
@@ -83,7 +86,9 @@ class VpnController @Inject constructor(
             SingBoxConfigBuilder.build(node)
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
-        android.util.Log.d(tag, "start(node): full config=$config")
+        // SECURITY: the full sing-box config contains credentials (VLESS UUID,
+        // Trojan/SS passwords, Hysteria2 auth, WireGuard private keys). It must
+        // never be written to logcat. Do not re-add a dump of `$config` here.
         startConfig(config, label, quickCheck, detail, switchable).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit

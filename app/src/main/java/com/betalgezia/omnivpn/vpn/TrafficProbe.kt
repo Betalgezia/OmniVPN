@@ -35,12 +35,13 @@ enum class TrafficStatus {
  * itself from its own VPN (only sing-box's sockets are protect()ed), so they go
  * through the TUN like any other app's traffic, DNS included.
  *
- * Tuned for speed (October 2026): plain HTTP instead of HTTPS - the request is
- * encrypted by the tunnel anyway, and skipping TLS saves one or two round
- * trips through the proxy; every URL is tried at once and the first answer
- * wins; and the whole check is capped at [TOTAL_MS] instead of up to a minute
- * of sequential retries. Cleartext is allowed for exactly these hosts in
- * res/xml/network_security_config.xml, nothing else.
+ * Tuned for speed (October 2026): every URL is tried at once and the first
+ * answer wins; the whole check is capped at [TOTAL_MS] instead of up to a
+ * minute of sequential retries. HTTPS everywhere - cleartext is not allowed
+ * anywhere in the app (see res/xml/network_security_config.xml); the extra TLS
+ * handshake costs one round trip but keeps the probe honest even if a malicious
+ * node inside the tunnel would otherwise answer plain HTTP requests itself and
+ * fake a "connected" state.
  *
  * Any HTTP response counts as traffic. A hostname URL answering means the
  * tunnel works end to end; only the raw-IP URL answering means DNS through
@@ -51,10 +52,10 @@ object TrafficProbe {
     enum class Result { OK, DNS_BROKEN, NONE }
 
     private val HOST_URLS = listOf(
-        "http://cp.cloudflare.com/generate_204",
-        "http://connectivitycheck.gstatic.com/generate_204"
+        "https://cp.cloudflare.com/generate_204",
+        "https://connectivitycheck.gstatic.com/generate_204"
     )
-    private const val IP_URL = "http://1.1.1.1/cdn-cgi/trace"
+    private const val IP_URL = "https://1.1.1.1/cdn-cgi/trace"
 
     private const val TOTAL_MS = 7_000L
     private const val REQUEST_TIMEOUT_MS = 3_000
