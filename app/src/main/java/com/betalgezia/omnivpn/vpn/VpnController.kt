@@ -3,11 +3,15 @@ package com.betalgezia.omnivpn.vpn
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import com.betalgezia.omnivpn.analytics.Analytics
 import com.betalgezia.omnivpn.data.model.Node
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Singleton
@@ -25,6 +29,64 @@ class VpnController @Inject constructor(
     fun clearError() = eventBus.clearError()
 
     private val tag = "VpnController"
+
+    // Analytics only: which protocol the last start was for, and a read-only
+    // observer of the lifecycle. Nothing here can change VPN behaviour.
+    @Volatile
+    private var currentProtocol = UNKNOWN_PROTOCOL
+
+    // The protocol that actually reached CONNECTED. Kept separately so a
+    // failed switch to another server doesn't relabel the still-running old
+    // tunnel's disconnect.
+    @Volatile
+    private var connectedProtocol = UNKNOWN_PROTOCOL
+    private val analyticsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    init {
+        analyticsScope.launch {
+            var previous = eventBus.state.value
+            eventBus.state.collect { state ->
+                when {
+                    state == VpnState.CONNECTED && previous != VpnState.CONNECTED -> {
+                        connectedProtocol = currentProtocol
+                        if (connectedProtocol != UNKNOWN_PROTOCOL) {
+                            Analytics.connected(connectedProtocol)
+                        }
+                    }
+
+                    state == VpnState.ERROR && previous != VpnState.ERROR -> {
+                        val protocol = if (previous == VpnState.CONNECTED) connectedProtocol else currentProtocol
+                        if (protocol != UNKNOWN_PROTOCOL) {
+                            Analytics.connectionError(
+                                protocol,
+                                if (previous == VpnState.CONNECTED) "runtime" else "connect"
+                            )
+                        }
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+
+                    state == VpnState.DISCONNECTED && previous == VpnState.CONNECTED -> {
+                        if (connectedProtocol != UNKNOWN_PROTOCOL) {
+                            Analytics.disconnected(
+                                connectedProtocol,
+                                if (eventBus.lastError.value != null) "error" else "stopped"
+                            )
+                        }
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+
+                    state == VpnState.REVOKED && previous != VpnState.REVOKED -> {
+                        val protocol = if (connectedProtocol != UNKNOWN_PROTOCOL) connectedProtocol else currentProtocol
+                        if (protocol != UNKNOWN_PROTOCOL) {
+                            Analytics.disconnected(protocol, "revoked")
+                        }
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+                }
+                previous = state
+            }
+        }
+    }
 
     fun prepareIntent(): Intent? {
         val intent = VpnService.prepare(context)
@@ -45,8 +107,14 @@ class VpnController @Inject constructor(
         // The notification's second line («VLESS · host:port») and whether it
         // offers «Сменить сервер» (not for WARP).
         detail: String = VpnNotification.serverDetail(node),
-        switchable: Boolean = true
+        switchable: Boolean = true,
+        // Set only by startWarp(): keeps WARP distinct from an imported
+        // AmneziaWG server in analytics and avoids a second attempt event.
+        isWarp: Boolean = false
     ): Result<Unit> = runCatching {
+        val protocol = if (isWarp) Analytics.WARP_PROTOCOL else Analytics.protocolName(node.protocol)
+        currentProtocol = protocol
+        if (!isWarp) Analytics.connectAttempt(protocol)
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
         val dns = dnsSettings.endpoint()
@@ -89,6 +157,13 @@ class VpnController @Inject constructor(
         Unit
     }.onFailure {
         android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
+        // startWarp() reports its own failure: this method is its inner step.
+        if (!isWarp) {
+            Analytics.connectionError(
+                Analytics.protocolName(node.protocol),
+                "start"
+            )
+        }
     }
 
     /**
@@ -145,6 +220,8 @@ class VpnController @Inject constructor(
         android.util.Log.e(tag, "startConfig: FAILED: ${it.message}", it)
     }
     suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
+        currentProtocol = Analytics.WARP_PROTOCOL
+        Analytics.connectAttempt(Analytics.WARP_PROTOCOL)
         android.util.Log.i(tag, "startWarp: begin forceNew=${forceNew}, endpointOverride=${!endpoint.isNullOrBlank()}, licenseProvided=${!licenseKey.isNullOrBlank()}")
         val storage = WarpStorage(context)
         val settings = WarpSettings(context)
@@ -189,12 +266,16 @@ class VpnController @Inject constructor(
             account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation),
             label = "Cloudflare WARP",
             detail = account.endpoint,
-            switchable = false
+            switchable = false,
+            isWarp = true
         ).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
         Unit
     }.onFailure {
         android.util.Log.e(tag, "startWarp: FAILED: ${it.message}", it)
+        // Covers both registration failures (before start()) and failures
+        // inside start(); start() itself skips its error report for WARP.
+        Analytics.connectionError(Analytics.WARP_PROTOCOL, "start")
     }
     fun stop() {
         android.util.Log.i(tag, "stop: requesting OmniVpnService ACTION_STOP")
@@ -207,5 +288,9 @@ class VpnController @Inject constructor(
             android.util.Log.w(tag, "stop: ACTION_STOP delivery failed; falling back to stopService", it)
             context.stopService(intent)
         }
+    }
+
+    private companion object {
+        const val UNKNOWN_PROTOCOL = "unknown"
     }
 }

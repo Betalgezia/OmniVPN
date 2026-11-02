@@ -74,6 +74,12 @@ To publish an update, push a tag such as `v1.3.0`. `.github/workflows/release.ym
 
 Settings → «DNS-сервер» picks the resolver AmneziaWG/WARP use: named DoH presets (Cloudflare, Google, Quad9) or a group of geo-unblock/AI resolvers, plus a custom DoH URL or plain DNS IP. The choice is stored locally and applied on the next connection; DoH queries, including the bootstrap lookup of the DoH hostname, go through the tunnel. Proxy protocols (VLESS/Trojan/Hysteria2/…) are unaffected: the proxy server resolves their destination domains itself.
 
+## Analytics
+
+Yandex AppMetrica (`io.appmetrica.analytics:analytics`, initialized once in `OmniVpnApplication`) provides first launches, active users, sessions and retention automatically. The app additionally reports `app_launch`, `vpn_connect_attempt`, `vpn_connected`, `vpn_connect_error`, `vpn_disconnected`, `warp_connected` and `amneziawg_connected`.
+
+Event parameters are limited to `protocol`, `phase` and `reason`. No node names or addresses, subscription links, configuration contents, keys, DNS queries or VPN traffic are sent. Location, advertising/App Set IDs, billing and ad-revenue modules are excluded, crash/ANR interception is disabled, and Google Play Install Referrer is excluded, so analytics has no Google Play dependency. AppMetrica queues events while offline and uploads them when connectivity returns.
+
 ## Command-line build
 
 The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build. Active VPN configuration is encrypted at rest with Android Keystore.
