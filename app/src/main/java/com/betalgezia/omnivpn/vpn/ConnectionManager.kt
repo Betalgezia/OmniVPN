@@ -47,7 +47,8 @@ class ConnectionManager @Inject constructor(
     private val eventBus: VpnEventBus,
     private val nodeRepository: NodeRepository,
     private val nodeHealthChecker: NodeHealthChecker,
-    private val warpSettings: WarpSettings
+    private val warpSettings: WarpSettings,
+    private val journalStore: SwitchJournalStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -69,6 +70,31 @@ class ConnectionManager @Inject constructor(
     // app shows them in its snackbar.
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val notices: SharedFlow<String> = _notices.asSharedFlow()
+
+    // ---- Switch events for the home screen card and the journal ----
+    // The latest automatic decision; cleared on disconnect, on a server or
+    // WARP picked by hand, and when the user hides the card.
+    private val _switchNotice = MutableStateFlow<SwitchEvent?>(null)
+    val switchNotice: StateFlow<SwitchEvent?> = _switchNotice.asStateFlow()
+
+    // A slow-server measurement in progress (~1 MB per server).
+    private val _measuring = MutableStateFlow<SpeedMeasuring?>(null)
+    val measuring: StateFlow<SpeedMeasuring?> = _measuring.asStateFlow()
+
+    // The last SwitchJournalStore.MAX decisions, newest first, kept across restarts.
+    private val _journal = MutableStateFlow(journalStore.load())
+    val journal: StateFlow<List<SwitchEvent>> = _journal.asStateFlow()
+
+    fun dismissSwitchNotice() {
+        _switchNotice.value = null
+    }
+
+    private fun record(event: SwitchEvent) {
+        _switchNotice.value = event
+        val list = (listOf(event) + _journal.value).take(SwitchJournalStore.MAX)
+        _journal.value = list
+        journalStore.save(list)
+    }
 
     // ---- Auto-switch state (all touched on the main thread only) ----
     private var failoverJob: Job? = null
@@ -93,6 +119,7 @@ class ConnectionManager @Inject constructor(
                     _activeConnection.value = ActiveConnection.None
                     alternates = emptyList()
                     resetRound()
+                    _switchNotice.value = null
                 }
                 if (state != VpnState.DISCONNECTED && state != VpnState.ERROR) _tileNotice.value = null
             }
@@ -118,6 +145,7 @@ class ConnectionManager @Inject constructor(
     suspend fun connectNode(node: Node): Result<Unit> {
         resetRound()
         speedQuietUntil = 0L
+        _switchNotice.value = null
         return startNode(node)
     }
 
@@ -138,6 +166,7 @@ class ConnectionManager @Inject constructor(
 
     suspend fun connectWarp(endpoint: String? = null, forceNew: Boolean = false): Result<Unit> {
         resetRound()
+        _switchNotice.value = null
         return vpnController.startWarp(endpoint = endpoint, forceNew = forceNew).onSuccess {
             _activeConnection.value = ActiveConnection.Warp
             alternates = emptyList()
@@ -164,45 +193,52 @@ class ConnectionManager @Inject constructor(
         val candidates = alternates
         if (current.sourceId == null || candidates.isEmpty()) return
 
+        // Progress and outcome go to the home screen card and the journal
+        // (switchNotice / measuring / journal), not to one-off messages.
         speedJob = scope.launch {
-            android.util.Log.i(TAG, "slow?: ${current.name} peaked at ${mbps(bestSeenMbps)} Mbit/s - measuring")
-            val currentMbps = CoreProbe.speedTestMbps(SingBoxConfigBuilder.MAIN_PROXY_TAG)
-            if (!stillOn(current)) return@launch
-            if (currentMbps == null || currentMbps >= ThroughputMonitor.SLOW_MBPS) {
-                android.util.Log.i(TAG, "slow?: ${current.name} measured ${currentMbps?.let { mbps(it) } ?: "n/a"} Mbit/s - keeping")
-                quietFor(SPEED_FALSE_ALARM_QUIET_MS)
-                return@launch
-            }
-
-            var best: Node? = null
-            var bestMbps = 0.0
-            for (candidate in candidates.take(MAX_SPEED_CANDIDATES)) {
+            try {
+                android.util.Log.i(TAG, "slow?: ${current.name} peaked at ${mbps(bestSeenMbps)} Mbit/s - measuring")
+                _measuring.value = SpeedMeasuring(current.name, candidate = null)
+                val currentMbps = CoreProbe.speedTestMbps(SingBoxConfigBuilder.MAIN_PROXY_TAG)
                 if (!stillOn(current)) return@launch
-                val measured = CoreProbe.speedTestMbps(SingBoxConfigBuilder.alternateTag(candidate.id)) ?: continue
-                android.util.Log.i(TAG, "slow?: candidate ${candidate.name}: ${mbps(measured)} Mbit/s")
-                if (measured > bestMbps) {
-                    best = candidate
-                    bestMbps = measured
+                if (currentMbps == null || currentMbps >= ThroughputMonitor.SLOW_MBPS) {
+                    android.util.Log.i(TAG, "slow?: ${current.name} measured ${currentMbps?.let { mbps(it) } ?: "n/a"} Mbit/s - keeping")
+                    quietFor(SPEED_FALSE_ALARM_QUIET_MS)
+                    return@launch
                 }
-                if (measured >= GOOD_ENOUGH_MBPS) break
-            }
-            if (!stillOn(current)) return@launch
 
-            val target = best
-            if (target != null && bestMbps >= ThroughputMonitor.SLOW_MBPS && bestMbps >= currentMbps * MIN_SPEED_GAIN) {
-                android.util.Log.i(TAG, "speed switch: ${current.name} ${mbps(currentMbps)} -> ${target.name} ${mbps(bestMbps)} Mbit/s")
-                _notices.tryEmit(
-                    "«${current.name}» медленный (≈${mbps(currentMbps)} Мбит/с) — переключаюсь на «${target.name}» (≈${mbps(bestMbps)} Мбит/с)"
-                )
-                quietFor(SPEED_SWITCH_QUIET_MS)
-                startNode(target).onFailure {
-                    android.util.Log.e(TAG, "speed switch to ${target.name} failed", it)
+                var best: Node? = null
+                var bestMbps = 0.0
+                for (candidate in candidates.take(MAX_SPEED_CANDIDATES)) {
+                    if (!stillOn(current)) return@launch
+                    _measuring.value = SpeedMeasuring(current.name, candidate.name)
+                    val measured = CoreProbe.speedTestMbps(SingBoxConfigBuilder.alternateTag(candidate.id)) ?: continue
+                    android.util.Log.i(TAG, "slow?: candidate ${candidate.name}: ${mbps(measured)} Mbit/s")
+                    if (measured > bestMbps) {
+                        best = candidate
+                        bestMbps = measured
+                    }
+                    if (measured >= GOOD_ENOUGH_MBPS) break
                 }
-            } else {
-                _notices.tryEmit(
-                    "«${current.name}» медленный (≈${mbps(currentMbps)} Мбит/с), но другие серверы подписки не быстрее — похоже, медленная сама сеть."
-                )
-                quietFor(SPEED_NO_BETTER_QUIET_MS)
+                if (!stillOn(current)) return@launch
+                _measuring.value = null
+
+                val target = best
+                if (target != null && bestMbps >= ThroughputMonitor.SLOW_MBPS && bestMbps >= currentMbps * MIN_SPEED_GAIN) {
+                    android.util.Log.i(TAG, "speed switch: ${current.name} ${mbps(currentMbps)} -> ${target.name} ${mbps(bestMbps)} Mbit/s")
+                    record(SwitchEvent(SwitchKind.SLOW, current.name, target.name, currentMbps, bestMbps, System.currentTimeMillis()))
+                    quietFor(SPEED_SWITCH_QUIET_MS)
+                    startNode(target).onFailure {
+                        android.util.Log.e(TAG, "speed switch to ${target.name} failed", it)
+                        _notices.tryEmit("Не удалось переключиться на «${target.name}»: ${it.message}")
+                    }
+                } else {
+                    android.util.Log.i(TAG, "speed: nothing faster than ${current.name} - staying")
+                    record(SwitchEvent(SwitchKind.SLOW_STAY, current.name, null, currentMbps, null, System.currentTimeMillis()))
+                    quietFor(SPEED_NO_BETTER_QUIET_MS)
+                }
+            } finally {
+                _measuring.value = null
             }
         }
     }
@@ -281,6 +317,7 @@ class ConnectionManager @Inject constructor(
             }
             roundAttempts++
             android.util.Log.i(TAG, "auto-switch #$roundAttempts: ${dead.name} -> ${next.name}")
+            record(SwitchEvent(SwitchKind.DEAD, dead.name, next.name, atMs = System.currentTimeMillis()))
             _notices.tryEmit("«${dead.name}» не пропускает трафик — переключаюсь на «${next.name}»")
             startNode(next, quickCheck = true).onFailure {
                 android.util.Log.e(TAG, "auto-switch to ${next.name} failed", it)

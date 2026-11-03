@@ -1,19 +1,7 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive icon foreground (108dp canvas, mark scaled into the 72dp safe zone). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <group android:scaleX="0.5" android:scaleY="0.5" android:translateX="6" android:translateY="6">
-        <path
-            android:pathData="M20.27,10.04 A8.5,8.5 0 1,1 13.96,3.73"
-            android:strokeColor="#FFE9E9ED"
-            android:strokeWidth="2.4"
-            android:strokeLineCap="round"
-            android:fillColor="#00000000" />
-        <path
-            android:pathData="M18,6 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0"
-            android:fillColor="#FFB5ABFC" />
-    </group>
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#C67139" android:strokeWidth="10" android:strokeLineCap="round"
+        android:fillColor="#00000000" android:pathData="M76,54A22,22 0,1 1,54 32"/>
+    <path android:fillColor="#7A8A5E" android:pathData="M69.56,38.44m-8.5,0a8.5,8.5 0,1 1,17 0a8.5,8.5 0,1 1,-17 0"/>
 </vector>

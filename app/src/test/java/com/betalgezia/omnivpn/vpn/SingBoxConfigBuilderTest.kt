@@ -95,6 +95,92 @@ class SingBoxConfigBuilderTest {
         assertFalse(outbound.has("packet_encoding"))
     }
 
+    @Test fun awgUsesTheSelectedDohResolver() {
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(awgTestNode(), emptyList(), DnsEndpoint.Doh("cloudflare-dns.com"))
+        )
+        val dns = config.getJSONObject("dns")
+        val servers = (0 until dns.getJSONArray("servers").length())
+            .map { dns.getJSONArray("servers").getJSONObject(it) }
+
+        val tunnel = requireNotNull(servers.firstOrNull { it.optString("tag") == "dns-tunnel" })
+        assertEquals("https", tunnel.getString("type"))
+        assertEquals("cloudflare-dns.com", tunnel.getString("server"))
+        assertEquals("/dns-query", tunnel.getString("path"))
+        assertEquals("awg", tunnel.getString("detour"))
+        assertEquals("dns-bootstrap", tunnel.getString("domain_resolver"))
+        assertFalse(tunnel.has("server_port"), "443 is the DoH default and should stay implicit")
+
+        val bootstrap = requireNotNull(servers.firstOrNull { it.optString("tag") == "dns-bootstrap" }) {
+            "a DoH hostname needs a tunnel-routed bootstrap resolver"
+        }
+        assertEquals("udp", bootstrap.getString("type"))
+        assertEquals(DnsCatalog.DEFAULT_SERVER, bootstrap.getString("server"))
+        assertEquals("awg", bootstrap.getString("detour"))
+
+        val rules = (0 until dns.getJSONArray("rules").length()).map { dns.getJSONArray("rules").getJSONObject(it) }
+        val addressRule = rules.first { it.getJSONArray("query_type").toString().contains("\"A\"") }
+        assertEquals("dns-tunnel", addressRule.getString("server"))
+        assertEquals("dns-tunnel", dns.getString("final"))
+        // The resolve backstop points at the tag, so it follows the choice too.
+        val resolveRule = (0 until config.getJSONObject("route").getJSONArray("rules").length())
+            .map { config.getJSONObject("route").getJSONArray("rules").getJSONObject(it) }
+            .first { it.optString("action") == "resolve" }
+        assertEquals("dns-tunnel", resolveRule.getString("server"))
+    }
+
+    @Test fun awgUsesACustomUdpServerAndPort() {
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(awgTestNode(), emptyList(), DnsEndpoint.Udp("9.9.9.9", 5353))
+        )
+        val servers = (0 until config.getJSONObject("dns").getJSONArray("servers").length())
+            .map { config.getJSONObject("dns").getJSONArray("servers").getJSONObject(it) }
+        val tunnel = requireNotNull(servers.firstOrNull { it.optString("tag") == "dns-tunnel" })
+        assertEquals("udp", tunnel.getString("type"))
+        assertEquals("9.9.9.9", tunnel.getString("server"))
+        assertEquals(5353, tunnel.getInt("server_port"))
+        assertEquals("awg", tunnel.getString("detour"))
+        assertFalse(servers.any { it.optString("tag") == "dns-bootstrap" }, "an IP needs no bootstrap")
+    }
+
+    @Test fun vlessIgnoresTheDnsSelection() {
+        val config = JSONObject(
+            SingBoxConfigBuilder.build(
+                Node(
+                    name = "v", protocol = Protocol.VLESS, server = "example.com", port = 443,
+                    uuid = "00000000-0000-0000-0000-000000000001"
+                ),
+                emptyList(),
+                DnsEndpoint.Doh("dns.google")
+            )
+        )
+        val servers = config.getJSONObject("dns").getJSONArray("servers").toString()
+        assertTrue(servers.contains("fakeip"))
+        assertFalse(servers.contains("dns-tunnel"))
+        assertFalse(servers.contains("dns.google"))
+        assertFalse(servers.contains("dns-bootstrap"))
+    }
+
+    private fun awgTestNode() = Node(
+        name = "awg", protocol = Protocol.AMNEZIAWG, server = "203.0.113.10", port = 51820,
+        privateKey = "base64-private",
+        rawConfig = JSONObject()
+            .put("type", "wireguard")
+            .put("address", JSONArray().put("10.0.0.2/32"))
+            .put("private_key", "base64-private")
+            .put(
+                "peers",
+                JSONArray().put(
+                    JSONObject()
+                        .put("address", "203.0.113.10")
+                        .put("port", 51820)
+                        .put("public_key", "base64-public")
+                        .put("allowed_ips", JSONArray().put("0.0.0.0/0"))
+                )
+            )
+            .toString()
+    )
+
     @Test fun awgBuildsEndpointAndRoutesThroughIt() {
         val raw = JSONObject().put("type","wireguard").put("tag","bad-tag").put("address", JSONArray().put("10.0.0.2/32")).put("private_key","base64-private").put("jc",10).put("h1",123).put("peers",JSONArray().put(JSONObject().put("address","203.0.113.10").put("port",51820).put("public_key","base64-public").put("allowed_ips",JSONArray().put("0.0.0.0/0")))).toString()
         val config = JSONObject(SingBoxConfigBuilder.build(Node(name="awg", protocol=Protocol.AMNEZIAWG, server="203.0.113.10", port=51820, privateKey="base64-private", awg=AwgParameters(jc=10,h1=123), rawConfig=raw)))

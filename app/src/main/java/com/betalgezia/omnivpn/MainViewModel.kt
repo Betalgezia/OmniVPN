@@ -16,11 +16,14 @@ import com.betalgezia.omnivpn.vpn.ActiveConnection
 import com.betalgezia.omnivpn.vpn.ConnectionManager
 import com.betalgezia.omnivpn.vpn.NodeHealth
 import com.betalgezia.omnivpn.vpn.TrafficStatus
+import com.betalgezia.omnivpn.vpn.TunnelStats
 import com.betalgezia.omnivpn.vpn.NodeHealthChecker
 import com.betalgezia.omnivpn.vpn.TestMode
 import com.betalgezia.omnivpn.vpn.VpnController
 import com.betalgezia.omnivpn.vpn.VpnState
 import com.betalgezia.omnivpn.vpn.AwgObfuscation
+import com.betalgezia.omnivpn.vpn.DnsCatalog
+import com.betalgezia.omnivpn.vpn.DnsSettings
 import com.betalgezia.omnivpn.vpn.TuneState
 import com.betalgezia.omnivpn.vpn.WarpAccount
 import com.betalgezia.omnivpn.vpn.WarpEndpointScanner
@@ -28,6 +31,7 @@ import com.betalgezia.omnivpn.vpn.WarpObfuscationStore
 import com.betalgezia.omnivpn.vpn.WarpObfuscationTuner
 import com.betalgezia.omnivpn.vpn.WarpSettings
 import com.betalgezia.omnivpn.vpn.WarpStorage
+import com.betalgezia.omnivpn.vpn.parseDnsEndpoint
 import com.betalgezia.omnivpn.vpn.SubscriptionParser
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -38,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
@@ -53,9 +58,12 @@ class MainViewModel @Inject constructor(
     private val nodeHealthChecker: NodeHealthChecker,
     private val warpEndpointScanner: WarpEndpointScanner,
     private val warpSettings: WarpSettings,
+    private val dnsSettings: DnsSettings,
     private val warpObfuscationTuner: WarpObfuscationTuner,
     private val warpObfuscationStore: WarpObfuscationStore,
     private val autoUpdateScheduler: SubscriptionAutoUpdateScheduler,
+    private val appearance: com.betalgezia.omnivpn.ui.AppearanceSettings,
+    private val appUpdater: com.betalgezia.omnivpn.update.AppUpdater,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -100,8 +108,54 @@ class MainViewModel @Inject constructor(
     // Whether traffic actually flows through the tunnel (post-connect probe).
     val trafficStatus: StateFlow<TrafficStatus> = vpnController.traffic
 
+    // Home screen counters (speed from the core's counters, latency from the
+    // last passed check) and why the last start failed.
+    val tunnelStats: StateFlow<TunnelStats> = vpnController.stats
+    val lastError: StateFlow<String?> = vpnController.lastError
+
+    // Automatic switches (ConnectionManager): the latest one for the home
+    // card, a slow-server measurement in progress, and the journal.
+    val switchNotice: StateFlow<com.betalgezia.omnivpn.vpn.SwitchEvent?> = connectionManager.switchNotice
+    val speedMeasuring: StateFlow<com.betalgezia.omnivpn.vpn.SpeedMeasuring?> = connectionManager.measuring
+    val switchJournal: StateFlow<List<com.betalgezia.omnivpn.vpn.SwitchEvent>> = connectionManager.journal
+    fun dismissSwitchNotice() = connectionManager.dismissSwitchNotice()
+
     private val _quickTileStartsWarp = MutableStateFlow(warpSettings.quickTileStartsWarp)
     val quickTileStartsWarp: StateFlow<Boolean> = _quickTileStartsWarp.asStateFlow()
+
+    // DNS for AmneziaWG/WARP (DnsSettings): the selected preset id and the
+    // custom field's text. The settings screen derives its summary from both.
+    private val _dnsSelection = MutableStateFlow(dnsSettings.selectedId)
+    val dnsSelection: StateFlow<String> = _dnsSelection.asStateFlow()
+    private val _dnsCustom = MutableStateFlow(dnsSettings.customText)
+    val dnsCustom: StateFlow<String> = _dnsCustom.asStateFlow()
+
+    fun selectDns(id: String) {
+        if (id != DnsCatalog.DEFAULT_ID && id != DnsCatalog.CUSTOM_ID && DnsCatalog.byId(id) == null) return
+        // "Custom" only means something once a valid address was saved.
+        if (id == DnsCatalog.CUSTOM_ID && parseDnsEndpoint(dnsSettings.customText) == null) return
+        if (id == _dnsSelection.value) return
+        dnsSettings.selectedId = id
+        _dnsSelection.value = id
+        noticeDnsAppliesLater()
+    }
+
+    /** Validates, normalises and selects [value]; false keeps the field's error shown. */
+    fun saveCustomDns(value: String): Boolean {
+        val endpoint = parseDnsEndpoint(value) ?: return false
+        dnsSettings.customText = endpoint.text
+        dnsSettings.selectedId = DnsCatalog.CUSTOM_ID
+        _dnsCustom.value = endpoint.text
+        _dnsSelection.value = DnsCatalog.CUSTOM_ID
+        noticeDnsAppliesLater()
+        return true
+    }
+
+    private fun noticeDnsAppliesLater() {
+        if (vpnState.value == VpnState.CONNECTED || vpnState.value == VpnState.CONNECTING) {
+            _message.value = "Новый DNS применится при следующем подключении"
+        }
+    }
 
     fun setQuickTileStartsWarp(startsWarp: Boolean) {
         warpSettings.quickTileStartsWarp = startsWarp
@@ -133,6 +187,12 @@ class MainViewModel @Inject constructor(
     // hero button can show "Searching…" only for its own action.
     private val _searchingFastest = MutableStateFlow(false)
     val searchingFastest: StateFlow<Boolean> = _searchingFastest.asStateFlow()
+
+    // True while startWarp() registers / starts WARP: the tunnel only reports
+    // CONNECTING once the service starts, after the (seconds-long) Cloudflare
+    // registration, so the home screen needs this to say "Подключаем WARP…".
+    private val _warpStarting = MutableStateFlow(false)
+    val warpStarting: StateFlow<Boolean> = _warpStarting.asStateFlow()
 
     // Same idea as _searchingFastest, for the small "full test" icon next to
     // the main screen's "Servers" label (see the September 2026 redesign) -
@@ -213,6 +273,34 @@ class MainViewModel @Inject constructor(
         _obfuscationIsCustom.value = warpObfuscationStore.load() != null
     }
 
+    /** What the WARP page and the Settings summary show about the saved account. */
+    data class WarpInfo(val accountSaved: Boolean, val endpoint: String)
+
+    private val _warpInfo = MutableStateFlow(WarpInfo(accountSaved = false, endpoint = WarpAccount.DEFAULT_ENDPOINT))
+    val warpInfo: StateFlow<WarpInfo> = _warpInfo.asStateFlow()
+
+    /**
+     * Re-reads the WARP account and this network's obfuscation profile (both
+     * can change underneath: a connect registers the account, the profile is
+     * per network). The endpoint is the one a plain «Подключить WARP» would
+     * use - same precedence as VpnController.startWarp without an override.
+     */
+    fun refreshWarpState() {
+        refreshObfuscationState()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val account = runCatching { WarpStorage(appContext).get() }.getOrNull()
+            val obfuscation = warpObfuscationStore.currentOrDefault()
+            val endpoint = obfuscation.endpoint?.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
+                ?: account?.endpoint?.takeIf { WarpAccount.isLiteralIpEndpoint(it) }
+                ?: WarpAccount.DEFAULT_ENDPOINT
+            _warpInfo.value = WarpInfo(accountSaved = account != null, endpoint = endpoint)
+        }
+    }
+
+    /** True while «Найти рабочий endpoint» runs. */
+    private val _endpointScanning = MutableStateFlow(false)
+    val endpointScanning: StateFlow<Boolean> = _endpointScanning.asStateFlow()
+
     /**
      * Manual obfuscation autotune (see WarpObfuscationTuner). Requires the VPN
      * to be disconnected for the same single-engine reason as every other
@@ -220,12 +308,12 @@ class MainViewModel @Inject constructor(
      */
     fun startTune() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before tuning obfuscation"
+            _message.value = "Отключите VPN перед подбором обфускации"
             return
         }
         val account = WarpStorage(appContext).get()
         if (account == null) {
-            _message.value = "Register WARP first (tap Cloudflare WARP), then tune"
+            _message.value = "Сначала подключите WARP один раз — тогда можно подбирать параметры"
             return
         }
         tuneJob?.cancel()
@@ -244,7 +332,7 @@ class MainViewModel @Inject constructor(
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "startTune: failed", t)
                 _tuneState.value = TuneState.Idle
-                _message.value = t.message ?: "Tuning failed"
+                _message.value = t.message ?: "Подбор не удался"
             } finally {
                 _busy.value = false
             }
@@ -255,16 +343,16 @@ class MainViewModel @Inject constructor(
         tuneJob?.cancel()
         tuneJob = null
         _tuneState.value = TuneState.Idle
-        _message.value = "Tuning stopped - parameters unchanged"
+        _message.value = "Подбор остановлен — параметры не изменены"
     }
 
     fun applyTune() {
         val found = _tuneState.value as? TuneState.Found ?: return
         viewModelScope.launch {
             warpObfuscationTuner.apply(found.best)
-            refreshObfuscationState()
+            refreshWarpState()
             _tuneState.value = TuneState.Idle
-            _message.value = "Obfuscation applied for this network"
+            _message.value = "Обфускация применена для этой сети"
         }
     }
 
@@ -272,9 +360,9 @@ class MainViewModel @Inject constructor(
 
     fun resetObfuscation() {
         warpObfuscationTuner.reset()
-        refreshObfuscationState()
+        refreshWarpState()
         _tuneState.value = TuneState.Idle
-        _message.value = "Reverted to default obfuscation"
+        _message.value = "Возвращены стандартные параметры"
     }
 
     fun refreshAll() {
@@ -291,7 +379,11 @@ class MainViewModel @Inject constructor(
                     }
                 _refreshingSubscriptions.update { current -> current - subscription.id }
             }
-            _message.value = if (failures == 0) "All subscriptions updated" else "Updated with $failures failure(s)"
+            _message.value = when {
+                failures == 0 -> "Подписки обновлены"
+                failures == subs.size -> "Не удалось обновить подписки"
+                else -> "Подписки обновлены, кроме $failures из ${subs.size}"
+            }
         }
     }
 
@@ -342,6 +434,11 @@ class MainViewModel @Inject constructor(
         runNodeCheck(targets, mode, subscriptionTag = subscription.id to mode)
     }
 
+    // First run's three-step intro; null while it isn't known yet (see the
+    // check in the init below). Declared before that init, which writes it.
+    private val _showOnboarding = MutableStateFlow<Boolean?>(if (appearance.onboarded) false else null)
+    val showOnboarding: StateFlow<Boolean?> = _showOnboarding.asStateFlow()
+
     // Session-timer source: stamped in a trailing init (after the backing
     // field above is declared, so no forward reference).
     init {
@@ -358,7 +455,55 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             connectionManager.notices.collect { _message.value = it }
         }
+        refreshWarpState()
+        // In-app updates: what the updater has to say, «обновлён до …» right
+        // after an update, and the quiet launch check (at most every 6 h).
+        viewModelScope.launch {
+            appUpdater.messages.collect { _message.value = it }
+        }
+        appUpdater.takeUpdatedNotice()?.let { _message.value = it }
+        appUpdater.checkOnLaunch()
+        // An update from a version without the intro: whoever already has
+        // servers has been through "first run" - don't show it to them.
+        if (!appearance.onboarded) {
+            viewModelScope.launch {
+                val hasServers = runCatching {
+                    nodeRepository.nodes.first().isNotEmpty() || subscriptionRepository.subscriptions.first().isNotEmpty()
+                }.getOrDefault(false)
+                if (hasServers) appearance.onboarded = true
+                _showOnboarding.value = !hasServers
+            }
+        }
     }
+
+    fun finishOnboarding() {
+        appearance.onboarded = true
+        _showOnboarding.value = false
+    }
+
+    // ---- In-app update from GitHub releases (update/AppUpdater) ----
+
+    val updateState: StateFlow<com.betalgezia.omnivpn.update.UpdateState> = appUpdater.state
+    val updateChecking: StateFlow<Boolean> = appUpdater.checking
+    val updateSkippedVersion: StateFlow<String?> = appUpdater.skippedVersion
+    val updateConfirmation: StateFlow<Intent?> = appUpdater.confirmation
+    val appVersion: String get() = appUpdater.currentVersion
+    val isTestBuild: Boolean get() = appUpdater.isTestBuild
+
+    fun checkForUpdates() = appUpdater.checkNow()
+    fun startUpdate() = appUpdater.startUpdate()
+    fun cancelUpdateDownload() = appUpdater.cancelDownload()
+    fun skipUpdate() = appUpdater.skip()
+    fun updateInstallPermissionIntent(): Intent = appUpdater.installPermissionIntent()
+    fun onUpdateConfirmationShown(failed: Boolean) = appUpdater.onConfirmationShown(failed)
+    fun onAppResumed() = appUpdater.onAppResumed()
+
+    /** Whether the notification permission was already asked for (see VpnActions). */
+    var notificationsAsked: Boolean
+        get() = appearance.notificationsAsked
+        set(value) {
+            appearance.notificationsAsked = value
+        }
 
     fun consumeMessage() { _message.value = null }
     fun showMessage(message: String) { _message.value = message }
@@ -371,52 +516,78 @@ class MainViewModel @Inject constructor(
      */
     fun connect(node: Node) {
         val switching = vpnState.value == VpnState.CONNECTED
+        vpnController.clearError()
         viewModelScope.launch {
             _busy.value = true
             connectionManager.connectNode(node).onFailure {
                 android.util.Log.e(TAG, "connect: failed", it)
-                _message.value = it.message ?: "Unable to start VPN"
+                _message.value = it.message ?: "Не удалось запустить VPN"
             }.onSuccess {
-                if (switching) _message.value = "Переключаемся на ${node.name}"
+                if (switching) _message.value = "Переключаемся на «${node.name}»"
             }
             _busy.value = false
         }
     }
 
     fun stop() {
+        vpnController.clearError()
         connectionManager.stop()
     }
 
+    // True while the «Добавить сервер» sheet is loading a subscription / importing.
+    private val _adding = MutableStateFlow(false)
+    val adding: StateFlow<Boolean> = _adding.asStateFlow()
+
+    /**
+     * «Добавить сервер» → Подписка. [onResult] gets null on success (the
+     * snackbar says what was added) or the error to show in the sheet.
+     */
+    fun addSubscription(url: String, onResult: (String?) -> Unit) = runAdd("subscription", onResult) {
+        val value = url.trim()
+        // Blank name: add() falls back to the URL's own host as the name (see
+        // its doc), so subscriptions don't all end up called "Subscription".
+        val id = subscriptionRepository.add("", value)
+        val parsed = subscriptionRepository.refresh(Subscription(id = id, name = "", url = value, enabled = true))
+        withNotes("Подписка добавлена · ${parsed.nodes.size} серв.", parsed.skipped, hasDomainWireguardEndpoint(parsed.nodes))
+    }
+
+    /** «Добавить сервер» → Конфигурация / Файл: links, JSON or YAML; [fileName] names a picked file. */
+    fun importConfig(text: String, fileName: String? = null, onResult: (String?) -> Unit) = runAdd("config", onResult) {
+        val result = nodeImportService.importText(text.trim())
+        val base = if (fileName != null) {
+            "«$fileName» импортирован · ${result.nodes.size} серв."
+        } else {
+            "Конфигурация импортирована · ${result.nodes.size} серв."
+        }
+        withNotes(base, 0, result.domainWireguardEndpoint)
+    }
+
+    private fun runAdd(what: String, onResult: (String?) -> Unit, block: suspend () -> String) {
+        if (_adding.value) return
+        viewModelScope.launch {
+            _adding.value = true
+            runCatching { block() }
+                .onSuccess {
+                    _message.value = it
+                    onResult(null)
+                }
+                .onFailure {
+                    // Logged explicitly: the repositories never log, so without this
+                    // a failed add left nothing in logcat.
+                    android.util.Log.e(TAG, "add $what: failed", it)
+                    onResult(addErrorText(it))
+                }
+            _adding.value = false
+        }
+    }
+
+    /** One-shot import from the legacy settings sheet: errors go to the snackbar. */
     fun import(text: String) {
         val value = text.trim()
         if (value.isEmpty()) return
-        val isSubscriptionUrl = value.startsWith("https://", ignoreCase = true)
-        viewModelScope.launch {
-            _busy.value = true
-            runCatching {
-                if (isSubscriptionUrl) {
-                    // Blank name: add() falls back to the URL's own host as the
-                    // name (see its doc). Used to be hardcoded to the literal
-                    // "Subscription" here, which is why every subscription
-                    // showed the same name regardless of its actual URL.
-                    val id = subscriptionRepository.add("", value)
-                    val parsed = subscriptionRepository.refresh(Subscription(id=id, name="", url=value, enabled=true))
-                    hasDomainWireguardEndpoint(parsed.nodes) to parsed.skipped
-                } else {
-                    nodeImportService.importText(value).domainWireguardEndpoint to 0
-                }
-            }.onSuccess { (domainWarning, skipped) ->
-                val base = withSkippedNote(if (isSubscriptionUrl) "Subscription added and synced" else "Configuration imported", skipped)
-                _message.value = if (domainWarning) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
-            }.onFailure {
-                // Logged explicitly: SubscriptionRepository/NodeImportService never call
-                // android.util.Log themselves, so without this line an import/subscription
-                // failure was visible only as a short-lived toast and left nothing in logcat.
-                android.util.Log.e(TAG, "import: failed for ${if (isSubscriptionUrl) "subscription url" else "pasted config"}", it)
-                _message.value = it.message ?: "Import failed"
-            }
-            _busy.value = false
-        }
+        val toSnackbar: (String?) -> Unit = { error -> if (error != null) _message.value = error }
+        if (value.startsWith("https://", ignoreCase = true)) addSubscription(value, toSnackbar)
+        else importConfig(value, onResult = toSnackbar)
     }
 
     fun refresh(subscription: Subscription) {
@@ -427,12 +598,15 @@ class MainViewModel @Inject constructor(
             _refreshingSubscriptions.update { it + subscription.id }
             runCatching { subscriptionRepository.refresh(subscription) }
                 .onSuccess { parsed ->
-                    val base = withSkippedNote("Updated ${parsed.nodes.size} nodes", parsed.skipped)
-                    _message.value = if (hasDomainWireguardEndpoint(parsed.nodes)) "$base\n$DOMAIN_ENDPOINT_WARNING" else base
+                    _message.value = withNotes(
+                        "«${subscription.name}» обновлена · ${parsed.nodes.size} серв.",
+                        parsed.skipped,
+                        hasDomainWireguardEndpoint(parsed.nodes)
+                    )
                 }
                 .onFailure {
                     android.util.Log.e(TAG, "refresh: failed for subscription id=${subscription.id}", it)
-                    _message.value = it.message ?: "Refresh failed"
+                    _message.value = "Не удалось обновить «${subscription.name}»: ${addErrorText(it)}"
                 }
             _refreshingSubscriptions.update { it - subscription.id }
         }
@@ -440,10 +614,12 @@ class MainViewModel @Inject constructor(
 
     fun delete(subscription: Subscription) {
         viewModelScope.launch {
-            runCatching { subscriptionRepository.delete(subscription) }.onFailure {
-                android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
-                _message.value = it.message
-            }
+            runCatching { subscriptionRepository.delete(subscription) }
+                .onSuccess { _message.value = "Подписка «${subscription.name}» удалена" }
+                .onFailure {
+                    android.util.Log.e(TAG, "delete: failed for subscription id=${subscription.id}", it)
+                    _message.value = "Не удалось удалить подписку «${subscription.name}»"
+                }
         }
     }
 
@@ -451,7 +627,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { subscriptionRepository.rename(subscription, name) }.onFailure {
                 android.util.Log.e(TAG, "renameSubscription: failed for id=${subscription.id}", it)
-                _message.value = it.message ?: "Unable to rename subscription"
+                _message.value = "Не удалось переименовать подписку"
             }
         }
     }
@@ -461,11 +637,11 @@ class MainViewModel @Inject constructor(
             runCatching { nodeRepository.delete(node) }
                 .onSuccess {
                     _nodeHealth.update { it - node.id }
-                    _message.value = "Removed ${node.name}"
+                    _message.value = "«${node.name}» удалён"
                 }
                 .onFailure {
                     android.util.Log.e(TAG, "deleteNode: failed for node id=${node.id}", it)
-                    _message.value = it.message ?: "Unable to remove server"
+                    _message.value = "Не удалось удалить «${node.name}»"
                 }
         }
     }
@@ -473,6 +649,13 @@ class MainViewModel @Inject constructor(
     fun checkNode(node: Node) = checkNodes(listOf(node))
 
     fun checkNodes(targets: List<Node>) = runNodeCheck(targets, _testMode.value, subscriptionTag = null)
+
+    /**
+     * «Проверить все» on the Servers tab: every server (subscriptions and
+     * imported) in the Settings test mode. Tagged [ALL_SERVERS] in
+     * [subscriptionTest] so that button can say «Проверка…».
+     */
+    fun testAll() = runNodeCheck(nodes.value, _testMode.value, subscriptionTag = ALL_SERVERS to _testMode.value)
 
     /**
      * Shared by the per-server "Тест" (Settings test mode) and the per-group
@@ -483,7 +666,7 @@ class MainViewModel @Inject constructor(
         // Testing runs a real (if TUN-less) sing-box session on the same engine the
         // actual VPN connection uses - see NodeHealthChecker. They can't run at once.
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before testing servers"
+            _message.value = TEST_LOCKED_MESSAGE
             return
         }
         val testable = targets.filter { it.id != 0L && it.protocol != Protocol.WARP }
@@ -498,11 +681,11 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Test cancelled"
+                _message.value = "Проверка остановлена"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "checkNodes: failed", t)
-                _message.value = t.message ?: "Server test failed"
+                _message.value = t.message ?: "Проверка не удалась"
             } finally {
                 // Cancelling leaves nodes mid-probe: drop their "Testing…" label
                 // instead of stranding it, and clear busy here rather than after
@@ -542,14 +725,15 @@ class MainViewModel @Inject constructor(
      */
     fun connectFastest() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before searching for the fastest server"
+            _message.value = "Отключите VPN, чтобы искать самый быстрый сервер"
             return
         }
         val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
         if (candidates.isEmpty()) {
-            _message.value = "No subscription servers yet - add a subscription first"
+            _message.value = "Нет серверов из подписок — добавьте подписку"
             return
         }
+        vpnController.clearError()
         testJob?.cancel()
         testJob = viewModelScope.launch {
             _busy.value = true
@@ -562,22 +746,22 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
                 if (found == null) {
-                    _message.value = "No reachable servers found"
+                    _message.value = "Ни один сервер не ответил"
                 } else {
                     val (winner, bestLatencyMs) = found
                     connectionManager.connectNode(winner).onFailure {
                         android.util.Log.e(TAG, "connectFastest: connect failed", it)
-                        _message.value = it.message ?: "Unable to start VPN"
+                        _message.value = it.message ?: "Не удалось запустить VPN"
                     }.onSuccess {
-                        _message.value = "Connected to ${winner.name} (${bestLatencyMs} ms)"
+                        _message.value = "Подключено к «${winner.name}» · $bestLatencyMs мс"
                     }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Search cancelled"
+                _message.value = "Поиск отменён"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "connectFastest: failed", t)
-                _message.value = t.message ?: "Search failed"
+                _message.value = t.message ?: "Поиск не удался"
             } finally {
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
                 _searchingFastest.value = false
@@ -598,7 +782,7 @@ class MainViewModel @Inject constructor(
      */
     fun testAllSubscriptionsFull() {
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before testing servers"
+            _message.value = TEST_LOCKED_MESSAGE
             return
         }
         val candidates = nodes.value.filter { it.id != 0L && it.sourceId != null && it.protocol != Protocol.WARP }
@@ -616,11 +800,11 @@ class MainViewModel @Inject constructor(
                     _nodeHealth.update { it + (node.id to health) }
                 }
             } catch (cancelled: CancellationException) {
-                _message.value = "Test cancelled"
+                _message.value = "Проверка остановлена"
                 throw cancelled
             } catch (t: Throwable) {
                 android.util.Log.e(TAG, "testAllSubscriptionsFull: failed", t)
-                _message.value = t.message ?: "Server test failed"
+                _message.value = t.message ?: "Проверка не удалась"
             } finally {
                 _nodeHealth.update { current -> current.filterValues { it != NodeHealth.Checking } }
                 _testingAllFull.value = false
@@ -637,26 +821,35 @@ class MainViewModel @Inject constructor(
     fun findWarpEndpoint() {
         // Same single-engine constraint as the server test - see NodeHealthChecker.
         if (!canTestNow()) {
-            _message.value = "Disconnect the VPN before searching for a WARP endpoint"
+            _message.value = "Отключите VPN перед поиском endpoint"
             return
         }
         testJob?.cancel()
         testJob = viewModelScope.launch {
             _busy.value = true
-            _message.value = "Trying WARP endpoints…"
+            _endpointScanning.value = true
             try {
                 warpEndpointScanner.findWorkingEndpoint()
                     .onSuccess {
-                        _message.value = "WARP endpoint ${it.endpoint} works (${it.latencyMs} ms) and is now saved"
+                        _message.value = "Endpoint ${it.endpoint} работает · ${it.latencyMs} мс, сохранён"
+                        refreshWarpState()
                     }
                     .onFailure {
                         android.util.Log.e(TAG, "findWarpEndpoint: failed", it)
-                        _message.value = it.message ?: "No working WARP endpoint found"
+                        val text = it.message.orEmpty()
+                        _message.value = when {
+                            text.startsWith("Register WARP first") ->
+                                "Сначала подключите WARP один раз — тогда можно искать endpoint"
+                            text.startsWith("None of the") ->
+                                "Ни один адрес Cloudflare не пропустил трафик"
+                            else -> text.ifBlank { "Рабочий endpoint не найден" }
+                        }
                     }
             } catch (cancelled: CancellationException) {
-                _message.value = "Endpoint search cancelled"
+                _message.value = "Поиск endpoint остановлен"
                 throw cancelled
             } finally {
+                _endpointScanning.value = false
                 _busy.value = false
             }
         }
@@ -668,8 +861,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun startWarp(endpointOverride: String? = null, forceNew: Boolean = false) {
+        vpnController.clearError()
         viewModelScope.launch {
             _busy.value = true
+            _warpStarting.value = true
             // The override was easy to lose track of - no visible confirmation
             // of which endpoint actually got used, so it was unclear from the
             // UI alone whether a typed-in override took effect (see the
@@ -684,12 +879,20 @@ class MainViewModel @Inject constructor(
             // new one each time.
             connectionManager.connectWarp(endpoint = normalizedEndpoint, forceNew = forceNew).onFailure {
                 android.util.Log.e(TAG, "startWarp: failed (forceNew=$forceNew)", it)
-                _message.value = it.message ?: "WARP registration failed"
+                _message.value = it.message ?: "Не удалось подключить WARP"
             }
                 .onSuccess {
-                    val prefix = if (forceNew) "New WARP account registered" else "WARP registered"
-                    _message.value = "$prefix (endpoint: ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT})"
+                    // A plain one-tap WARP needs no message - the hero and the
+                    // WARP button already say it. Echo only the non-default parts.
+                    when {
+                        forceNew -> "Новый аккаунт WARP зарегистрирован · endpoint ${normalizedEndpoint ?: WarpAccount.DEFAULT_ENDPOINT}"
+                        normalizedEndpoint != null -> "WARP · endpoint $normalizedEndpoint"
+                        else -> null
+                    }?.let { _message.value = it }
+                    // The account / endpoint the WARP page shows may be new now.
+                    refreshWarpState()
                 }
+            _warpStarting.value = false
             _busy.value = false
         }
     }
@@ -697,21 +900,30 @@ class MainViewModel @Inject constructor(
     private companion object {
         private const val TAG = "MainViewModel"
 
-        // A list longer than SubscriptionParser.MAX_NODES_PER_LIST keeps only its
-        // first nodes; say so, or the cut list looks like the whole subscription.
-        fun withSkippedNote(base: String, skipped: Int): String =
-            if (skipped <= 0) base
-            else "$base\nThe list is longer than ${SubscriptionParser.MAX_NODES_PER_LIST} servers: " +
-                "the remaining $skipped were not loaded."
+        private const val TEST_LOCKED_MESSAGE = "Отключите VPN, чтобы проверить серверы"
 
-        // Shown after import/refresh when an AmneziaWG/WireGuard peer's
-        // endpoint is a domain name rather than a literal IP - see
-        // ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT for
-        // the confirmed sing-box-lx bug this warns about.
-        private const val DOMAIN_ENDPOINT_WARNING =
-            "Warning: this server's endpoint is a domain name, not an IP address. " +
-                "A known sing-box bug can prevent the WireGuard handshake from " +
-                "completing on some networks. If it won't connect, try editing the " +
-                "config to use a literal IP instead."
+        /**
+         * [base] plus two warnings when they apply: a list longer than
+         * SubscriptionParser.MAX_NODES_PER_LIST keeps only its first nodes
+         * (say so, or the cut list looks like the whole subscription), and an
+         * AmneziaWG/WireGuard peer given by domain name rather than IP - see
+         * ConfigParser.isLiteralIpHost and WarpAccount.DEFAULT_ENDPOINT for
+         * the confirmed sing-box-lx bug that warns about.
+         */
+        fun withNotes(base: String, skipped: Int, domainEndpoint: Boolean): String = buildString {
+            append(base)
+            if (skipped > 0) {
+                append("\nВ списке больше ${SubscriptionParser.MAX_NODES_PER_LIST} серверов: остальные $skipped не загружены.")
+            }
+            if (domainEndpoint) {
+                append(
+                    "\nАдрес сервера AmneziaWG — доменное имя, а не IP. Из-за известной ошибки sing-box " +
+                        "рукопожатие в некоторых сетях не проходит; если не подключается, укажите IP."
+                )
+            }
+        }
     }
 }
+
+/** [MainViewModel.subscriptionTest] tag of «Проверить все» (no real subscription has id -1). */
+const val ALL_SERVERS = -1L

@@ -62,12 +62,15 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            manifestPlaceholders["appLabel"] = "OmniVPN"
             if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
         }
         debug {
-            // Same key as release when it's available, so a build installed
-            // over USB updates the app from GitHub Releases in place (and the
-            // other way round) instead of failing on a signature mismatch.
+            // USB test builds install as a separate "OmniVPN Preview" app next
+            // to the everyday one from GitHub Releases, so an unfinished build
+            // never replaces the working app (or its subscriptions).
+            applicationIdSuffix = ".preview"
+            manifestPlaceholders["appLabel"] = "OmniVPN Preview"
             if (releaseStoreFile != null) signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -83,7 +86,26 @@ android {
         jvmTarget = "17"
     }
 
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // libbox.so (the sing-box core) is ~75 MB per ABI. Stored uncompressed
+        // (the default for minSdk 23+) it made the APK 316 MB; compressed it
+        // is ~26 MB and Android unpacks it once at install.
+        jniLibs.useLegacyPackaging = true
+    }
+
+    // One APK per phone architecture instead of all four in one: arm64-v8a for
+    // practically every phone since ~2017, armeabi-v7a for old 32-bit ones.
+    // x86/x86_64 are emulator-only and are left out. All split APKs share one
+    // versionCode and key, so either installs over the other.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
 }
 
 val libboxAar = file("libs/libbox.aar")
@@ -106,7 +128,6 @@ dependencies {
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.ui:ui-text-google-fonts")
     implementation("androidx.compose.material3:material3")
     // Subscription auto-update (see SubscriptionAutoUpdateWorker) - a plain
     // CoroutineWorker reached over a Hilt EntryPoint, so no hilt-work needed.
@@ -123,4 +144,9 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.83")
     implementation("org.yaml:snakeyaml:2.7")
     implementation(files(libboxAar))
+
+    // PostHog product analytics (EU Cloud). Pinned SDK version; the Android
+    // artifact pulls the core SDK and lifecycle-process. Session Replay,
+    // feature flags, surveys and error tracking are disabled in Analytics.setup.
+    implementation("com.posthog:posthog-android:3.75.1")
 }

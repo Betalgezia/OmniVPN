@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- OrganicLight.bg - see ui/theme/OrganicColors.kt -->
+    <color name="organic_bg">#F5EAD8</color>
+</resources>

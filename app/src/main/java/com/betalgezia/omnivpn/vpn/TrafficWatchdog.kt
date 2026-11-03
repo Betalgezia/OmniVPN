@@ -211,6 +211,48 @@ class ThroughputMonitor(
 }
 
 /**
+ * Download/upload rate for the home screen, from consecutive counter samples
+ * (bytes/s). Lightly smoothed so the number doesn't jump every second; a gap
+ * in the samples (screen-off batching, stream hiccup) restarts the average
+ * instead of averaging across it. Pure logic, unit-tested in RateMeterTest.
+ */
+class RateMeter(private val smoothing: Double = 0.5) {
+    private var prev: StallDetector.Sample? = null
+    private var down = -1.0
+    private var up = -1.0
+
+    fun reset() {
+        prev = null
+        down = -1.0
+        up = -1.0
+    }
+
+    /** Returns (download, upload) in bytes/s, or null if this sample can't be rated yet. */
+    fun onSample(s: StallDetector.Sample): Pair<Long, Long>? {
+        val p = prev
+        prev = s
+        if (p == null) return null
+        val dt = s.nowMs - p.nowMs
+        if (dt <= 0) return null
+        // Totals only grow within one box; a drop means a new one - rate it from zero.
+        val d = (s.downlinkTotal - p.downlinkTotal).coerceAtLeast(0) * 1000.0 / dt
+        val u = (s.uplinkTotal - p.uplinkTotal).coerceAtLeast(0) * 1000.0 / dt
+        if (dt > MAX_GAP_MS || down < 0) {
+            down = d
+            up = u
+        } else {
+            down += smoothing * (d - down)
+            up += smoothing * (u - up)
+        }
+        return down.toLong() to up.toLong()
+    }
+
+    private companion object {
+        private const val MAX_GAP_MS = 2_500L
+    }
+}
+
+/**
  * Watches a running tunnel (see [StallDetector]) and calls [onDead] once two
  * checks in a row fail. [probe] must return true when traffic flows. Runs
  * until [stop] or until it has reported a dead tunnel.
@@ -225,7 +267,9 @@ class TrafficWatchdog(
     private val probe: suspend () -> Boolean,
     private val onDead: () -> Unit,
     /** Tunnel looks slow (see [ThroughputMonitor]); arg = best seen Mbit/s. */
-    private val onSlow: ((Double) -> Unit)? = null
+    private val onSlow: ((Double) -> Unit)? = null,
+    /** Current (download, upload) rate in bytes/s, about once a second (see [RateMeter]). */
+    private val onRates: ((Long, Long) -> Unit)? = null
 ) {
     private var job: Job? = null
     @Volatile
@@ -289,6 +333,7 @@ class TrafficWatchdog(
         detector.reset(android.os.SystemClock.elapsedRealtime())
         val throughput = ThroughputMonitor()
         throughput.reset(android.os.SystemClock.elapsedRealtime())
+        val rates = RateMeter()
         var lastSample: StallDetector.Sample? = null
         var gotStatus = false
         android.util.Log.i(TAG, "watching")
@@ -309,6 +354,11 @@ class TrafficWatchdog(
                     screenOn = power?.isInteractive != false
                 )
                 lastSample = sample
+                // Rates only from real status messages too: a synthetic tick
+                // repeats the old totals and would read as a dead-still 0.
+                if (received != null && onRates != null) {
+                    rates.onSample(received)?.let { (down, up) -> onRates.invoke(down, up) }
+                }
                 // Slowness is judged only from real status messages; a
                 // synthetic fallback tick breaks its series (dt > 2.5 s).
                 if (onSlow != null) {

@@ -58,6 +58,28 @@ Implemented:
 - Gradle Wrapper 9.3.1 committed to the repository.
 - GitHub Actions build/test workflow plus Gradle Wrapper integrity validation.
 
+## In-app updates
+
+The app updates itself from this repository's GitHub Releases:
+
+- at launch, and again on returning after a long pause (at most once every 6 hours), it asks `releases/latest`;
+- when the release is newer, a card appears on «Главная» and «О приложении» gets a check row;
+- «Обновить» downloads the APK for the phone's ABI (`OmniVPN-<version>-arm64.apk` or `-armv7.apk`), verifies the SHA-256 published by GitHub and hands the file to Android's installer;
+- Android asks once to allow OmniVPN to install apps; after that an update is one button;
+- Android accepts an install only over the same signing key, so every release is signed with the release key.
+
+To publish an update, push a tag such as `v1.3.0`. `.github/workflows/release.yml` runs the unit tests, builds signed APKs and attaches them to that tag's release. `versionCode` is the commit count, so a newer release always installs over an older one. The first build that contains the updater has to be installed manually once.
+
+## DNS
+
+Settings → «DNS-сервер» picks the resolver AmneziaWG/WARP use: named DoH presets (Cloudflare, Google, Quad9) or a group of geo-unblock/AI resolvers, plus a custom DoH URL or plain DNS IP. The choice is stored locally and applied on the next connection; DoH queries, including the bootstrap lookup of the DoH hostname, go through the tunnel. Proxy protocols (VLESS/Trojan/Hysteria2/…) are unaffected: the proxy server resolves their destination domains itself.
+
+## Analytics
+
+PostHog (`com.posthog:posthog-android`, pinned in `app/build.gradle.kts`, EU Cloud host) is initialized once in `OmniVpnApplication` with lifecycle autocapture enabled: Application Installed/Opened/Backgrounded replace the old manual `app_launch`. The app additionally reports `vpn_connect_attempt`, `vpn_connected`, `warp_connected` and `vpn_disconnected`.
+
+Every event, including automatic lifecycle events, carries `build_type = debug|release`. Event parameters are limited to `protocol` and `reason`. No node names or addresses, subscription links, configuration contents, keys, DNS queries or VPN traffic are sent. Session Replay, feature flags, surveys and error tracking are disabled in the SDK config. PostHog queues events while offline and uploads them when connectivity returns.
+
 ## Command-line build
 
 The repository is self-contained except for the pinned `libbox.aar`, which is fetched and SHA-256 verified before the build. Active VPN configuration is encrypted at rest with Android Keystore.

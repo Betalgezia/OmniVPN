@@ -3,23 +3,85 @@ package com.betalgezia.omnivpn.vpn
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import com.betalgezia.omnivpn.analytics.Analytics
 import com.betalgezia.omnivpn.data.model.Node
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Singleton
 class VpnController @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val eventBus: VpnEventBus
+    private val eventBus: VpnEventBus,
+    private val dnsSettings: DnsSettings
 ) {
     val state = eventBus.state
     val events = eventBus.events
     val traffic = eventBus.traffic
+    val stats = eventBus.stats
+    val lastError = eventBus.lastError
+
+    fun clearError() = eventBus.clearError()
 
     private val tag = "VpnController"
+
+    // Analytics only: which protocol the last start was for, and a read-only
+    // observer of the lifecycle. Nothing here can change VPN behaviour.
+    @Volatile
+    private var currentProtocol = UNKNOWN_PROTOCOL
+
+    // The protocol that actually reached CONNECTED. Kept separately so a
+    // failed switch to another server doesn't relabel the still-running old
+    // tunnel's disconnect.
+    @Volatile
+    private var connectedProtocol = UNKNOWN_PROTOCOL
+    private val analyticsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    init {
+        analyticsScope.launch {
+            var previous = eventBus.state.value
+            eventBus.state.collect { state ->
+                when {
+                    state == VpnState.CONNECTED && previous != VpnState.CONNECTED -> {
+                        connectedProtocol = currentProtocol
+                        if (connectedProtocol != UNKNOWN_PROTOCOL) {
+                            Analytics.connected(connectedProtocol)
+                        }
+                    }
+
+                    state == VpnState.ERROR && previous != VpnState.ERROR -> {
+                        // No error event in the PostHog contract; just forget
+                        // which tunnel was connected.
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+
+                    state == VpnState.DISCONNECTED && previous == VpnState.CONNECTED -> {
+                        if (connectedProtocol != UNKNOWN_PROTOCOL) {
+                            Analytics.disconnected(
+                                connectedProtocol,
+                                if (eventBus.lastError.value != null) "error" else "stopped"
+                            )
+                        }
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+
+                    state == VpnState.REVOKED && previous != VpnState.REVOKED -> {
+                        val protocol = if (connectedProtocol != UNKNOWN_PROTOCOL) connectedProtocol else currentProtocol
+                        if (protocol != UNKNOWN_PROTOCOL) {
+                            Analytics.disconnected(protocol, "revoked")
+                        }
+                        connectedProtocol = UNKNOWN_PROTOCOL
+                    }
+                }
+                previous = state
+            }
+        }
+    }
 
     fun prepareIntent(): Intent? {
         val intent = VpnService.prepare(context)
@@ -36,30 +98,56 @@ class VpnController @Inject constructor(
         node: Node,
         label: String = node.name,
         quickCheck: Boolean = false,
-        alternates: List<Node> = emptyList()
+        alternates: List<Node> = emptyList(),
+        // The notification's second line («VLESS · host:port») and whether it
+        // offers «Сменить сервер» (not for WARP).
+        detail: String = VpnNotification.serverDetail(node),
+        switchable: Boolean = true,
+        // Set only by startWarp(): keeps WARP distinct from an imported
+        // AmneziaWG server in analytics and avoids a second attempt event.
+        isWarp: Boolean = false
     ): Result<Unit> = runCatching {
+        val protocol = if (isWarp) Analytics.WARP_PROTOCOL else Analytics.protocolName(node.protocol)
+        currentProtocol = protocol
+        if (!isWarp) Analytics.connectAttempt(protocol)
         android.util.Log.i(tag, "start(node): protocol=${node.protocol}, server=${node.server}, port=${node.port}")
         android.util.Log.d(tag, "start(node): currentState=${eventBus.state.value}")
+        val dns = dnsSettings.endpoint()
+        android.util.Log.d(tag, "start(node): dns=${dns?.text ?: "default"}")
         val config = withContext(Dispatchers.Default) {
             android.util.Log.d(tag, "start(node): building sing-box config (${alternates.size} alternates)")
-            val withAlternates = SingBoxConfigBuilder.build(node, alternates)
-            if (alternates.isEmpty()) return@withContext withAlternates
-            // The alternates are a convenience (speed comparison); a single one
-            // the core rejects must never cost the user the connection itself.
-            val ok = runCatching {
+            val preferred = SingBoxConfigBuilder.build(node, alternates, dns)
+            // Nothing optional is in play: the config is just the node.
+            if (alternates.isEmpty() && dns == null) return@withContext preferred
+
+            // A user-chosen DNS transport or an alternate outbound can both be
+            // rejected by the core (a bad DoH URL, a protocol field the
+            // endpoint can't carry, ...). Each is a convenience: a rejected
+            // variant must never cost the user the connection itself, so try
+            // the cheaper subsets and fall all the way back to the plain config.
+            val candidates = listOfNotNull(
+                preferred,
+                if (alternates.isNotEmpty()) SingBoxConfigBuilder.build(node, emptyList(), dns) else null,
+                if (dns != null) SingBoxConfigBuilder.build(node, alternates, null) else null,
+                if (dns != null && alternates.isNotEmpty()) SingBoxConfigBuilder.build(node, emptyList(), null) else null
+            ).distinct()
+            if (candidates.size == 1) return@withContext candidates.first()
+
+            val ready = runCatching {
                 com.betalgezia.omnivpn.OmniVpnApplication.libboxReady.await()
-                io.nekohasekai.libbox.Libbox.checkConfig(withAlternates)
             }
-            if (ok.isSuccess) {
-                withAlternates
-            } else {
-                android.util.Log.w(tag, "start(node): config with alternates rejected (${ok.exceptionOrNull()?.message}) - starting without them")
-                SingBoxConfigBuilder.build(node)
+            if (ready.isFailure) return@withContext preferred
+            for (candidate in candidates) {
+                val ok = runCatching { io.nekohasekai.libbox.Libbox.checkConfig(candidate) }
+                if (ok.isSuccess) return@withContext candidate
+                android.util.Log.w(tag, "start(node): config variant rejected (${ok.exceptionOrNull()?.message})")
             }
+            android.util.Log.w(tag, "start(node): every variant rejected - starting without alternates and the custom DNS")
+            SingBoxConfigBuilder.build(node)
         }
         android.util.Log.d(tag, "start(node): config built (${config.length} chars)")
         android.util.Log.d(tag, "start(node): full config=$config")
-        startConfig(config, label, quickCheck).getOrThrow()
+        startConfig(config, label, quickCheck, detail, switchable).getOrThrow()
         android.util.Log.i(tag, "start(node): startConfig completed")
         Unit
     }.onFailure {
@@ -71,7 +159,13 @@ class VpnController @Inject constructor(
      * probe + patient retry - used by auto-switch, where a dead candidate
      * should cost ~5 s, not ~11 s.
      */
-    suspend fun startConfig(config: String, label: String? = null, quickCheck: Boolean = false): Result<Unit> = runCatching {
+    suspend fun startConfig(
+        config: String,
+        label: String? = null,
+        quickCheck: Boolean = false,
+        detail: String? = null,
+        switchable: Boolean = true
+    ): Result<Unit> = runCatching {
         check(config.isNotBlank()) { "VPN config is empty" }
         android.util.Log.d(tag, "startConfig: checking VPN permission")
         withContext(Dispatchers.Main.immediate) {
@@ -92,10 +186,21 @@ class VpnController @Inject constructor(
             val intent = Intent(context, OmniVpnService::class.java).apply {
                 action = OmniVpnService.ACTION_START
                 if (label != null) putExtra(OmniVpnService.EXTRA_LABEL, label)
+                if (detail != null) putExtra(OmniVpnService.EXTRA_DETAIL, detail)
+                putExtra(OmniVpnService.EXTRA_SWITCHABLE, switchable)
                 putExtra(OmniVpnService.EXTRA_QUICK_CHECK, quickCheck)
             }
             android.util.Log.i(tag, "startConfig: calling Context.startService() for VpnService")
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (backgroundStart: IllegalStateException) {
+                // From the background (reconnecting right after an app update,
+                // see update/PackageReplacedReceiver) Android 8+ refuses a
+                // plain start; a foreground start is allowed there, and the
+                // service goes foreground straight away in startVpn().
+                android.util.Log.w(tag, "startConfig: background start refused - starting as foreground service")
+                androidx.core.content.ContextCompat.startForegroundService(context, intent)
+            }
             android.util.Log.i(tag, "startConfig: Context.startService() returned")
         }
         Unit
@@ -103,6 +208,8 @@ class VpnController @Inject constructor(
         android.util.Log.e(tag, "startConfig: FAILED: ${it.message}", it)
     }
     suspend fun startWarp(licenseKey: String? = null, endpoint: String? = null, forceNew: Boolean = false): Result<Unit> = runCatching {
+        currentProtocol = Analytics.WARP_PROTOCOL
+        Analytics.connectAttempt(Analytics.WARP_PROTOCOL)
         android.util.Log.i(tag, "startWarp: begin forceNew=${forceNew}, endpointOverride=${!endpoint.isNullOrBlank()}, licenseProvided=${!licenseKey.isNullOrBlank()}")
         val storage = WarpStorage(context)
         val settings = WarpSettings(context)
@@ -145,7 +252,10 @@ class VpnController @Inject constructor(
         android.util.Log.d(tag, "startWarp: ipv6Enabled=${settings.ipv6Enabled}, obfuscation jc=${obfuscation.jc} jmin=${obfuscation.jmin} jmax=${obfuscation.jmax} tuned=${obfuscation.tunedLatencyMs != null}")
         start(
             account.toNode(includeIpv6 = settings.ipv6Enabled, obfuscation = obfuscation),
-            label = "Cloudflare WARP"
+            label = "Cloudflare WARP",
+            detail = account.endpoint,
+            switchable = false,
+            isWarp = true
         ).getOrThrow()
         android.util.Log.i(tag, "startWarp: VPN start requested successfully")
         Unit
@@ -163,5 +273,9 @@ class VpnController @Inject constructor(
             android.util.Log.w(tag, "stop: ACTION_STOP delivery failed; falling back to stopService", it)
             context.stopService(intent)
         }
+    }
+
+    private companion object {
+        const val UNKNOWN_PROTOCOL = "unknown"
     }
 }

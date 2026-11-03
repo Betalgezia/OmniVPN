@@ -1,6 +1,7 @@
 package com.betalgezia.omnivpn
 
 import android.app.Application
+import com.betalgezia.omnivpn.analytics.Analytics
 import dagger.hilt.android.HiltAndroidApp
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.SetupOptions
@@ -19,6 +20,9 @@ class OmniVpnApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Before any screen, service or event: PostHog must be set up once per
+        // process. Failures are contained inside Analytics.
+        Analytics.setup(this)
 
         applicationScope.launch {
             runCatching {
