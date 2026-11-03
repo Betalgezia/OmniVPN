@@ -25,4 +25,11 @@ class AnalyticsTest {
         // WARP runs on AmneziaWG underneath, but the dashboard separates them.
         assertEquals("amneziawg", Analytics.protocolName(Protocol.AMNEZIAWG))
     }
+
+    @Test
+    fun warpHasItsOwnProtocolGroup() {
+        assertEquals("warp", Analytics.protocolGroup(Analytics.WARP_PROTOCOL))
+        assertEquals("proxy", Analytics.protocolGroup("vless"))
+        assertEquals("proxy", Analytics.protocolGroup("amneziawg"))
+    }
 }

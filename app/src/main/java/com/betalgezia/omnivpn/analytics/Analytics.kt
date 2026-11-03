@@ -39,7 +39,11 @@ object Analytics {
     private const val EVENT_WARP_CONNECTED = "warp_connected"
 
     private const val KEY_PROTOCOL = "protocol"
+    private const val KEY_PROTOCOL_GROUP = "protocol_group"
     private const val KEY_REASON = "reason"
+
+    private const val GROUP_WARP = "warp"
+    private const val GROUP_PROXY = "proxy"
 
     @Volatile
     private var active = false
@@ -106,18 +110,33 @@ object Analytics {
     }
 
     /** A new VPN start was requested, for any protocol. */
-    fun connectAttempt(protocol: String) =
-        report(EVENT_CONNECT_ATTEMPT, mapOf(KEY_PROTOCOL to protocol))
+    fun connectAttempt(protocol: String) = report(
+        EVENT_CONNECT_ATTEMPT,
+        mapOf(KEY_PROTOCOL to protocol, KEY_PROTOCOL_GROUP to protocolGroup(protocol))
+    )
 
     /** The tunnel reached CONNECTED. [protocol] is "warp", "vless", … */
     fun connected(protocol: String) {
-        report(EVENT_CONNECTED, mapOf(KEY_PROTOCOL to protocol))
+        report(
+            EVENT_CONNECTED,
+            mapOf(KEY_PROTOCOL to protocol, KEY_PROTOCOL_GROUP to protocolGroup(protocol))
+        )
         if (protocol == WARP_PROTOCOL) report(EVENT_WARP_CONNECTED)
     }
 
     /** A previously connected tunnel went down. */
-    fun disconnected(protocol: String, reason: String) =
-        report(EVENT_DISCONNECTED, mapOf(KEY_PROTOCOL to protocol, KEY_REASON to reason))
+    fun disconnected(protocol: String, reason: String) = report(
+        EVENT_DISCONNECTED,
+        mapOf(
+            KEY_PROTOCOL to protocol,
+            KEY_PROTOCOL_GROUP to protocolGroup(protocol),
+            KEY_REASON to reason
+        )
+    )
+
+    /** WARP is its own group; every proxy protocol shares the "proxy" group. */
+    internal fun protocolGroup(protocol: String): String =
+        if (protocol == WARP_PROTOCOL) GROUP_WARP else GROUP_PROXY
 
     /** Stable, non-personal protocol label for event parameters. */
     fun protocolName(protocol: Protocol): String = when (protocol) {
