@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.betalgezia.omnivpn.analytics.Analytics
 import com.betalgezia.omnivpn.data.NodeImportService
 import com.betalgezia.omnivpn.data.NodeRepository
 import com.betalgezia.omnivpn.data.SubscriptionAutoUpdateScheduler
@@ -69,9 +68,6 @@ class MainViewModel @Inject constructor(
 ) : ViewModel() {
 
     init {
-        // A UI start: AppMetrica's automatic first-launch/session reports are
-        // separate; this event is the product-side "app opened" marker.
-        Analytics.appLaunch()
         viewModelScope.launch {
             runCatching { nodeRepository.removeLegacyDemoNode() }
         }

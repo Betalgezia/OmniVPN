@@ -145,25 +145,8 @@ dependencies {
     implementation("org.yaml:snakeyaml:2.7")
     implementation(files(libboxAar))
 
-    // Yandex AppMetrica (analytics only, no Google Play dependency).
-    // The aggregate artifact pulls optional modules that depend on Google Play
-    // services/libraries: location (play-services-location), billing (Google
-    // Billing), ad-revenue (play-services-ads) and the advertising/App Set IDs.
-    // This app is distributed as a sideloaded GitHub APK, so none of them may
-    // be required - and the advertising/location modules are unwanted on
-    // privacy grounds. The core SDK and custom events work without them.
-    implementation("io.appmetrica.analytics:analytics:8.6.0") {
-        exclude(group = "io.appmetrica.analytics", module = "analytics-location")
-        exclude(group = "io.appmetrica.analytics", module = "analytics-billing")
-        exclude(group = "io.appmetrica.analytics", module = "analytics-ad-revenue")
-        exclude(group = "io.appmetrica.analytics", module = "analytics-identifiers")
-        exclude(group = "io.appmetrica.analytics", module = "analytics-appsetid")
-        exclude(group = "io.appmetrica.analytics", module = "analytics-screenshot")
-        // Google Play Install Referrer: AppMetrica only uses it for Play Store
-        // install attribution, and guards every use with a class-existence
-        // check (verified in the 8.6.0 bytecode). This APK is sideloaded from
-        // GitHub, so there is nothing to attribute and no need for a Google
-        // Play dependency.
-        exclude(group = "com.android.installreferrer", module = "installreferrer")
-    }
+    // PostHog product analytics (EU Cloud). Pinned SDK version; the Android
+    // artifact pulls the core SDK and lifecycle-process. Session Replay,
+    // feature flags, surveys and error tracking are disabled in Analytics.setup.
+    implementation("com.posthog:posthog-android:3.75.1")
 }

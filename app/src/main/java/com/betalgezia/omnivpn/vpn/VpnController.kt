@@ -55,13 +55,8 @@ class VpnController @Inject constructor(
                     }
 
                     state == VpnState.ERROR && previous != VpnState.ERROR -> {
-                        val protocol = if (previous == VpnState.CONNECTED) connectedProtocol else currentProtocol
-                        if (protocol != UNKNOWN_PROTOCOL) {
-                            Analytics.connectionError(
-                                protocol,
-                                if (previous == VpnState.CONNECTED) "runtime" else "connect"
-                            )
-                        }
+                        // No error event in the PostHog contract; just forget
+                        // which tunnel was connected.
                         connectedProtocol = UNKNOWN_PROTOCOL
                     }
 
@@ -157,13 +152,6 @@ class VpnController @Inject constructor(
         Unit
     }.onFailure {
         android.util.Log.e(tag, "start(node): FAILED: ${it.message}", it)
-        // startWarp() reports its own failure: this method is its inner step.
-        if (!isWarp) {
-            Analytics.connectionError(
-                Analytics.protocolName(node.protocol),
-                "start"
-            )
-        }
     }
 
     /**
@@ -273,9 +261,6 @@ class VpnController @Inject constructor(
         Unit
     }.onFailure {
         android.util.Log.e(tag, "startWarp: FAILED: ${it.message}", it)
-        // Covers both registration failures (before start()) and failures
-        // inside start(); start() itself skips its error report for WARP.
-        Analytics.connectionError(Analytics.WARP_PROTOCOL, "start")
     }
     fun stop() {
         android.util.Log.i(tag, "stop: requesting OmniVpnService ACTION_STOP")

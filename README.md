@@ -76,9 +76,9 @@ Settings → «DNS-сервер» picks the resolver AmneziaWG/WARP use: named D
 
 ## Analytics
 
-Yandex AppMetrica (`io.appmetrica.analytics:analytics`, initialized once in `OmniVpnApplication`) provides first launches, active users, sessions and retention automatically. The app additionally reports `app_launch`, `vpn_connect_attempt`, `vpn_connected`, `vpn_connect_error`, `vpn_disconnected`, `warp_connected` and `amneziawg_connected`.
+PostHog (`com.posthog:posthog-android`, pinned in `app/build.gradle.kts`, EU Cloud host) is initialized once in `OmniVpnApplication` with lifecycle autocapture enabled: Application Installed/Opened/Backgrounded replace the old manual `app_launch`. The app additionally reports `vpn_connect_attempt`, `vpn_connected`, `warp_connected` and `vpn_disconnected`.
 
-Event parameters are limited to `protocol`, `phase` and `reason`. No node names or addresses, subscription links, configuration contents, keys, DNS queries or VPN traffic are sent. Location, advertising/App Set IDs, billing and ad-revenue modules are excluded, crash/ANR interception is disabled, and Google Play Install Referrer is excluded, so analytics has no Google Play dependency. AppMetrica queues events while offline and uploads them when connectivity returns.
+Every event, including automatic lifecycle events, carries `build_type = debug|release`. Event parameters are limited to `protocol` and `reason`. No node names or addresses, subscription links, configuration contents, keys, DNS queries or VPN traffic are sent. Session Replay, feature flags, surveys and error tracking are disabled in the SDK config. PostHog queues events while offline and uploads them when connectivity returns.
 
 ## Command-line build
 
